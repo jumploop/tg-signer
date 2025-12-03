@@ -26,13 +26,15 @@ COPY --from=builder /build/*.whl /tmp/
 COPY --from=builder /etc/apt/sources.list.d/debian.sources/* /etc/apt/sources.list.d/debian.sources/
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends tzdata && \
+    apt-get install -y --no-install-recommends tzdata vim && \
     ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && \
     echo ${TZ} > /etc/timezone && \
     rm -rf /var/lib/apt/lists/*
 
 RUN pip config set global.index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple && \
+    pip install -U pip && \
     pip install /tmp/*.whl && \
     pip install -U "tg-signer[tgcrypto]"
 
 WORKDIR /opt/tg-signer
+COPY start.sh .
