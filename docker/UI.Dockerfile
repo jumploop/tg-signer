@@ -37,4 +37,8 @@ RUN pip config set global.index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/we
     pip install -U "tg-signer[tgcrypto]"
 
 WORKDIR /opt/tg-signer
-COPY start.sh .
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 8080
+CMD ["/entrypoint.sh"]

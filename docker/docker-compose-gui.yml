@@ -1,0 +1,17 @@
+networks:
+  tg_host_ui:
+    external: false
+
+services:
+  tg-signer:
+    image: jumploop/tg-signer:gui
+    container_name: tg-signer-gui
+    ports:
+      - "8080:8080"
+    volumes:
+      - $PWD:/opt/tg-signer
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+    networks:
+      - tg_host_ui
+    restart: unless-stopped
