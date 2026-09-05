@@ -1,11 +1,27 @@
+import copy
 import json
 import os
+import secrets
 from pathlib import Path
 from typing import Callable, Dict
 
 from nicegui import app, ui
 from pydantic import TypeAdapter
 
+from tg_signer.webui.account import (
+    cancel_login,
+    complete_login,
+    list_accounts,
+    logout_account,
+    send_login_code,
+)
+from tg_signer.webui.auth import (
+    AUTH_ATTEMPTS_KEY,
+    AUTH_MAX_ATTEMPTS,
+    auth_lock_remaining,
+    clear_auth_failures,
+    record_auth_failure,
+)
 from tg_signer.webui.data import (
     CONFIG_META,
     DEFAULT_LOG_FILE,
@@ -17,6 +33,7 @@ from tg_signer.webui.data import (
     list_log_files,
     list_task_names,
     load_config,
+    load_group_chats,
     load_logs,
     load_sign_records,
     load_user_infos,
@@ -204,6 +221,8 @@ class BaseConfigBlock:
             self.refresh_options()
             self.select.value = target
             self.select.update()
+            self.selected_name["value"] = target
+            self.on_loaded(target)
             ui.notify("保存成功", type="positive")
         except Exception as exc:  # noqa: BLE001
             notify_error(exc)
@@ -219,12 +238,27 @@ class BaseConfigBlock:
         if not target:
             ui.notify("请选择要删除的配置", type="warning")
             return
+
+        with ui.dialog() as dialog, ui.card().classes("p-4 min-w-[320px]"):
+            ui.label(f"确认删除配置: {target}？").classes("text-lg font-semibold")
+            ui.label("删除后不可恢复。").classes("text-sm text-gray-500")
+            with ui.row().classes("w-full justify-end gap-2 mt-2"):
+                ui.button("取消", on_click=dialog.close).props("flat")
+                ui.button(
+                    "删除",
+                    color="negative",
+                    on_click=lambda: (dialog.close(), self._do_delete(target)),
+                )
+        dialog.open()
+
+    def _do_delete(self, target: str) -> None:
         try:
             delete_config(self.kind, target, workdir=state.workdir)
             self.refresh_options()
             if self.select.value == target:
                 self.select.value = None
                 self.select.update()
+            self.selected_name["value"] = ""
             ui.notify("已删除配置", type="positive")
         except Exception as exc:  # noqa: BLE001
             notify_error(exc)
@@ -269,6 +303,36 @@ class SignerBlock(BaseConfigBlock):
     def goto_records(self):
         self._goto_records(self.selected_name["value"])
 
+    def apply_chat(self, chat: Dict[str, object]) -> None:
+        content = self.editor.properties["content"].get("json")
+        if not isinstance(content, dict):
+            content = {"chats": []}
+        chats = content.get("chats")
+        if not isinstance(chats, list):
+            chats = []
+            content["chats"] = chats
+        if not chats:
+            chats.append(
+                {
+                    "chat_id": None,
+                    "message_thread_id": None,
+                    "name": "",
+                    "delete_after": None,
+                    "actions": [{"action": 1, "text": "签到"}],
+                    "action_interval": 1,
+                }
+            )
+        chat_item = chats[0]
+        chat_item["chat_id"] = chat.get("id")
+        chat_item["name"] = str(chat.get("title") or chat.get("username") or "")
+        self.editor.properties["content"]["json"] = content
+        self.editor.update()
+        self.editor.run_editor_method(":expand", "[]", "path => true")
+        ui.notify(
+            f"已填入签到配置: {chat_item['name'] or chat.get('id')}",
+            type="positive",
+        )
+
     def open_interactive(self):
         def on_complete():
             self.refresh_options()
@@ -291,6 +355,23 @@ class SignerBlock(BaseConfigBlock):
 class MonitorBlock(BaseConfigBlock):
     def __init__(self, template: Dict[str, object]):
         super().__init__("monitor", template)
+
+    def apply_chat(self, chat: Dict[str, object]) -> None:
+        content = self.editor.properties["content"].get("json")
+        if not isinstance(content, dict):
+            content = {"match_cfgs": []}
+        match_cfgs = content.get("match_cfgs")
+        if not isinstance(match_cfgs, list):
+            match_cfgs = []
+            content["match_cfgs"] = match_cfgs
+        if not match_cfgs:
+            match_cfgs.append(copy.deepcopy(MONITOR_TEMPLATE["match_cfgs"][0]))
+        match_cfg = match_cfgs[0]
+        match_cfg["chat_id"] = chat.get("id")
+        self.editor.properties["content"]["json"] = content
+        self.editor.update()
+        self.editor.run_editor_method(":expand", "[]", "path => true")
+        ui.notify(f"已填入监控配置: {chat.get('id')}", type="positive")
 
 
 def user_info_block() -> Callable[[], None]:
@@ -511,8 +592,17 @@ def log_block() -> Callable[[], None]:
             refresh_status(f"文件: {path} | 显示最新 {len(lines)} 行")
 
         with ui.row().classes("gap-2 mt-2 items-center justify-between"):
-            ui.button("刷新日志", on_click=refresh)
+            with ui.row().classes("gap-2 items-center"):
+                ui.button("刷新日志", on_click=refresh)
+                auto_refresh = ui.checkbox("自动刷新（5秒）", value=False)
             log_status = ui.label("").classes("text-xs text-gray-500")
+
+        log_timer = ui.timer(5.0, refresh, active=False)
+
+        def toggle_auto_refresh(e) -> None:
+            log_timer.active = bool(e.value)
+
+        auto_refresh.on_value_change(toggle_auto_refresh)
 
         def refresh_status(text: str) -> None:
             log_status.text = text
@@ -520,6 +610,209 @@ def log_block() -> Callable[[], None]:
 
         refresh_log_options()
 
+    return refresh
+
+
+def group_chat_block(
+    on_pick: Callable[[Dict[str, object], str], None],
+) -> Callable[[], None]:
+    container = ui.column().classes("w-full gap-2")
+    filter_input = ui.input(
+        label="筛选群组",
+        placeholder="名称 / 用户名 / ID",
+    ).classes("w-full")
+
+    def refresh(filter_text: str = "") -> None:
+        container.clear()
+        keyword = (filter_text or "").strip().lower()
+        chats = [
+            chat
+            for chat in load_group_chats(state.workdir)
+            if not keyword
+            or keyword in str(chat.get("title") or "").lower()
+            or keyword in str(chat.get("username") or "").lower()
+            or keyword in str(chat.get("id") or "")
+        ]
+        with container:
+            if not chats:
+                ui.label(
+                    "未找到群组/频道信息，请先运行 tg-signer login 或 run 生成 "
+                    "users/*/latest_chats.json"
+                ).classes("text-gray-500")
+                return
+            for chat in chats:
+                title = chat.get("title") or chat.get("first_name") or "未命名"
+                username = f"@{chat['username']}" if chat.get("username") else "-"
+                with ui.card().classes("w-full p-3"):
+                    with ui.row().classes("w-full items-center gap-3"):
+                        with ui.column().classes("flex-grow gap-0"):
+                            ui.label(str(title)).classes("font-medium")
+                            ui.label(
+                                f"{chat.get('type')} | {username} "
+                                f"| ID: {chat.get('id')} | 账号: {chat.get('account') or '-'}"
+                            ).classes("text-sm text-gray-500")
+                        ui.button(
+                            "填入签到配置",
+                            on_click=lambda c=chat: on_pick(c, "signer"),
+                        ).props("outline dense")
+                        ui.button(
+                            "填入监控配置",
+                            on_click=lambda c=chat: on_pick(c, "monitor"),
+                        ).props("outline dense")
+
+    def refresh_with_filter() -> None:
+        refresh(filter_input.value)
+
+    filter_input.on_value_change(lambda _e: refresh_with_filter())
+    refresh()
+    return refresh_with_filter
+
+
+def account_block() -> Callable[[], None]:
+    container = ui.column().classes("w-full gap-2")
+
+    def logout_confirm(account: str) -> None:
+        def do_logout() -> None:
+            dialog.close()
+            try:
+                message = logout_account(account, state.workdir)
+                ui.notify(message, type="positive")
+            except Exception as exc:  # noqa: BLE001
+                notify_error(exc)
+            refresh()
+
+        with ui.dialog() as dialog, ui.card().classes("p-4 min-w-[320px]"):
+            ui.label(f"确认登出 {account}？").classes("text-lg font-semibold")
+            ui.label(
+                "将调用 Telegram 登出并删除 <account>.session / .session_string 文件。"
+            ).classes("text-sm text-gray-500")
+            with ui.row().classes("w-full justify-end gap-2 mt-2"):
+                ui.button("取消", on_click=dialog.close).props("flat")
+                ui.button("确认登出", color="negative", on_click=do_logout)
+        dialog.open()
+
+    def open_login_dialog() -> None:
+        state_cell = {"account": "", "phase": "phone"}
+
+        with ui.dialog() as dialog, ui.card().classes("w-full max-w-xl"):
+            ui.label("登录 Telegram 账号").classes("text-lg font-bold")
+            account_input = ui.input(
+                label="账号名称（session 文件名）", value="my_account"
+            ).classes("w-full")
+            phone_input = ui.input(label="手机号（含区号，如 +8613800138000）").classes(
+                "w-full"
+            )
+            code_input = ui.input(label="验证码").classes("w-full")
+            password_input = ui.input(
+                label="两步验证密码（如启用）",
+                placeholder="仅需要时填写",
+                password=True,
+                password_toggle_button=True,
+            ).classes("w-full")
+            status = ui.label("").classes("text-sm text-gray-600")
+
+            code_input.disable()
+            password_input.disable()
+
+            def cancel() -> None:
+                if state_cell["phase"] == "code":
+                    cancel_login(state_cell["account"])
+                dialog.close()
+
+            def send_code() -> None:
+                account = (account_input.value or "").strip()
+                phone = (phone_input.value or "").strip()
+                if not account or not phone:
+                    status.text = "请填写账号名称和手机号"
+                    status.update()
+                    return
+                state_cell["account"] = account
+                send_btn.disable()
+                status.text = "正在发送验证码..."
+                status.update()
+                result, message = send_login_code(account, phone, state.workdir)
+                if result == "ok":
+                    state_cell["phase"] = "code"
+                    code_input.enable()
+                    password_input.enable()
+                    complete_btn.enable()
+                    status.text = message
+                else:
+                    send_btn.enable()
+                    cancel_login(account)
+                    status.text = message
+                status.update()
+
+            def do_complete() -> None:
+                code = (code_input.value or "").strip()
+                if not code:
+                    status.text = "请填写验证码"
+                    status.update()
+                    return
+                complete_btn.disable()
+                status.text = "正在登录..."
+                status.update()
+                result, message = complete_login(
+                    state_cell["account"],
+                    code,
+                    (password_input.value or "").strip() or None,
+                )
+                if result == "password_needed":
+                    status.text = "需要两步验证密码，请填写后再次点击完成登录"
+                    complete_btn.enable()
+                elif result == "ok":
+                    status.text = message
+                    status.update()
+                    dialog.close()
+                    refresh()
+                    return
+                else:
+                    status.text = message
+                    complete_btn.enable()
+                status.update()
+
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("取消", on_click=cancel).props("flat")
+                send_btn = ui.button("发送验证码", on_click=send_code)
+                complete_btn = ui.button("完成登录", on_click=do_complete)
+                complete_btn.disable()
+
+        dialog.open()
+
+    def refresh() -> None:
+        container.clear()
+        accounts = list_accounts(state.workdir)
+        with container:
+            with ui.row().classes("w-full items-center justify-between"):
+                ui.label(f"已发现 {len(accounts)} 个账号").classes(
+                    "text-sm text-gray-500"
+                )
+                ui.button(
+                    "登录新账号",
+                    icon="person_add",
+                    on_click=open_login_dialog,
+                )
+            if not accounts:
+                ui.label(
+                    "未找到 session 文件。登录后会在工作目录生成 <account>.session。"
+                ).classes("text-gray-500")
+                return
+            for info in accounts:
+                with ui.card().classes("w-full p-3"):
+                    with ui.row().classes("w-full items-center gap-3"):
+                        with ui.column().classes("flex-grow gap-0"):
+                            ui.label(info["account"]).classes("font-medium")
+                            ui.label(
+                                f"{', '.join(info['kind'])} "
+                                f"| {info.get('session_file') or '-'}"
+                            ).classes("text-sm text-gray-500")
+                        ui.button(
+                            "登出并删除Session",
+                            color="negative",
+                            on_click=lambda a=info["account"]: logout_confirm(a),
+                        ).props("outline")
+
+    refresh()
     return refresh
 
 
@@ -565,9 +858,29 @@ def _build_dashboard(container) -> None:
 
         with ui.tabs().classes("w-full") as tabs:
             tab_configs = ui.tab("配置管理")
+            tab_accounts = ui.tab("账号管理")
+            tab_groups = ui.tab("群组配置")
             tab_users = ui.tab("用户信息")
             tab_records = ui.tab("签到记录")
             tab_logs = ui.tab("日志")
+
+        sub_tabs = None
+        signer_block = None
+        monitor_block = None
+
+        def pick_group(chat: Dict[str, object], kind: str) -> None:
+            if kind == "signer" and signer_block is not None:
+                signer_block.apply_chat(chat)
+                target_panel = tab_signer
+            elif kind == "monitor" and monitor_block is not None:
+                monitor_block.apply_chat(chat)
+                target_panel = tab_monitor
+            else:
+                return
+            tabs.value = tab_configs
+            tabs.update()
+            sub_tabs.value = target_panel
+            sub_tabs.update()
 
         def goto_records(task_name: str) -> None:
             tabs.value = tab_records
@@ -584,11 +897,26 @@ def _build_dashboard(container) -> None:
                     tab_monitor = ui.tab("Monitor")
                 with ui.tab_panels(sub_tabs, value=tab_signer).classes("w-full"):
                     with ui.tab_panel(tab_signer):
-                        refreshers.append(
-                            SignerBlock(SIGNER_TEMPLATE, goto_records=goto_records)
+                        signer_block = SignerBlock(
+                            SIGNER_TEMPLATE, goto_records=goto_records
                         )
+                        refreshers.append(signer_block)
                     with ui.tab_panel(tab_monitor):
-                        refreshers.append(MonitorBlock(MONITOR_TEMPLATE))
+                        monitor_block = MonitorBlock(MONITOR_TEMPLATE)
+                        refreshers.append(monitor_block)
+
+            with ui.tab_panel(tab_accounts):
+                ui.label(
+                    "登录账号以获取 session，并管理已有账号（登出会删除 session 文件）。"
+                ).classes("text-gray-600")
+                refreshers.append(account_block())
+
+            with ui.tab_panel(tab_groups):
+                ui.label(
+                    "从已登录账号缓存 (users/*/latest_chats.json) 列出群组/频道，"
+                    "选择后可自动填入签到或监控配置。"
+                ).classes("text-gray-600")
+                refreshers.append(group_chat_block(pick_group))
 
             with ui.tab_panel(tab_users):
                 ui.label("查看当前已登录账户信息 (users/*/me.json)。").classes(
@@ -633,20 +961,34 @@ def _auth_gate(container, auth_code: str, on_success: Callable[[], None]) -> Non
                 status = ui.label("").classes("text-sm text-negative")
 
                 def verify() -> None:
-                    # TODO: Security improvements needed
-                    # 1. Add rate limiting (e.g. max 5 attempts per minute) to prevent brute-force attacks.
-                    # 2. Use secrets.compare_digest(code, auth_code) to prevent timing attacks.
+                    storage = app.storage.user
+                    lock_remaining = auth_lock_remaining(storage)
+                    if lock_remaining > 0:
+                        seconds = int(lock_remaining) + 1
+                        status.text = f"尝试过于频繁，请在 {seconds} 秒后重试"
+                        status.update()
+                        return
                     code = (code_input.value or "").strip()
                     if not code:
                         ui.notify("请输入授权码", type="warning")
                         return
-                    if code != auth_code:
-                        status.text = "授权码错误，请重试"
+                    if not secrets.compare_digest(
+                        code.encode("utf-8"), auth_code.encode("utf-8")
+                    ):
+                        locked_for = record_auth_failure(storage)
+                        if locked_for:
+                            status.text = f"失败次数过多，已锁定 {int(locked_for)} 秒"
+                        else:
+                            remaining = AUTH_MAX_ATTEMPTS - int(
+                                storage.get(AUTH_ATTEMPTS_KEY, 0)
+                            )
+                            status.text = f"授权码错误，请重试（剩余 {remaining} 次）"
                         status.update()
                         code_input.set_value("")
                         ui.notify("认证失败", type="negative")
                         return
-                    app.storage.user[AUTH_STORAGE_KEY] = auth_code
+                    clear_auth_failures(storage)
+                    storage[AUTH_STORAGE_KEY] = auth_code
                     ui.notify("认证成功", type="positive")
                     container.clear()
                     on_success()

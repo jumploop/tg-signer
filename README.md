@@ -40,6 +40,7 @@ pip install "tg-signer[gui]"
 
 ![webgui](./assets/webui.jpeg)
 
+WebUI 包含账号管理（登录/登出）、配置管理、群组配置、用户信息、签到记录和日志页面；账号管理页可登录账号获取 session 并登出删除 session 文件，群组配置页可列出账号缓存的群组/频道并快速填入签到或监控配置。
 
 ### Docker
 
@@ -133,6 +134,8 @@ tg-signer monitor run  # 配置个人、群组、频道消息监控与自动回�
 tg-signer multi-run -a account_a -a account_b same_task  # 使用'same_task'的配置同时运行'account_a'和'account_b'两个账号
 tg-signer webgui --auth-code averycomplexcode  # 启动一个WebGUI
 ```
+
+启用 `--auth-code` 后，连续输错 5 次授权码会锁定 60 秒。
 
 ### 自动化规则（automation）
 

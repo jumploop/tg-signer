@@ -278,3 +278,27 @@ def load_logs(
 ) -> Tuple[Path, List[str]]:
     path = _resolve_log_path(log_path)
     return path, tail_file(path, limit=limit)
+
+
+GROUP_CHAT_TYPES = {"basic", "group", "supergroup", "channel"}
+
+
+def load_group_chats(workdir: Optional[Path | str] = None) -> List[Dict[str, Any]]:
+    """Aggregate group/channel info from all users' latest_chats.json, deduplicated by id."""
+    seen: Dict[Any, Dict[str, Any]] = {}
+    for info in load_user_infos(workdir):
+        account = (
+            info.data.get("first_name") or info.data.get("username") or info.user_id
+        )
+        for chat in info.latest_chats or []:
+            chat_type = str(chat.get("type") or "").lower()
+            if chat_type not in GROUP_CHAT_TYPES:
+                continue
+            chat_id = chat.get("id")
+            if chat_id is None:
+                continue
+            seen.setdefault(chat_id, {**chat, "account": str(account)})
+    return sorted(
+        seen.values(),
+        key=lambda c: str(c.get("title") or c.get("username") or "").lower(),
+    )

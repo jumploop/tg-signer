@@ -36,6 +36,8 @@ pip install "tg-signer[gui]"
 
 ![webgui](./assets/webui.jpeg)
 
+The WebUI includes account management (login/logout), config management, group selection, user info, sign records and log pages. The account page can log in to obtain a session and log out to delete session files; the group selection page lists cached groups/channels and can quickly fill them into signer or monitor configs.
+
 ### Docker
 
 #### GitHub Container Registry
@@ -140,6 +142,8 @@ tg-signer monitor run  # Configure and run personal/group/channel message monito
 tg-signer multi-run -a account_a -a account_b same_task  # Run 'account_a' and 'account_b' using the same 'same_task' config
 tg-signer webgui --auth-code averycomplexcode  # Start the WebGUI
 ```
+
+When `--auth-code` is set, 5 consecutive wrong attempts lock the login for 60 seconds.
 
 ### Configure a Proxy (Optional)
 

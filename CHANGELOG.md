@@ -2,6 +2,14 @@
 
 ## 版本变动日志
 
+### 0.9.2
+- WebUI 新增账号管理：登录账号获取 session，登出并删除 session 文件
+- WebUI 新增群组配置页：列出账号缓存的群组/频道，可快速填入签到或监控配置
+- WebUI 认证加固：使用安全比较并增加失败次数锁定（5 次失败锁定 60 秒）
+- WebUI 删除配置增加二次确认，日志支持自动刷新，保存后同步选中状态
+- CI 升级 `actions/checkout` 到 v5、`actions/setup-python` 到 v6，规避 Node.js 20 弃用
+- 修复 Windows 下 `test_initializes_defaults` 的路径断言，使测试跨平台通过
+
 ### 0.9.0
 - 新增 `list-folders` 和 `--from-folder`，支持从 Telegram 普通对话 Folder 加载手动添加的对话
 - 兼容 Kurigram 同步与异步论坛话题解析接口
