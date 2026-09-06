@@ -95,6 +95,7 @@ class UIState:
 
     def set_workdir(self, path_str: str) -> None:
         self.workdir = get_workdir(Path(path_str).expanduser())
+        self.log_path = self.workdir / "logs" / DEFAULT_LOG_FILE.name
 
     def set_log_path(self, path_str: str) -> None:
         self.log_path = Path(path_str).expanduser()
@@ -524,7 +525,7 @@ def log_block() -> Callable[[], None]:
                 format="%d",
             ).classes("w-32")
             log_select = ui.select(
-                label=f"选择日志文件（{LOG_DIR}/）",
+                label="选择日志文件（logs/ 或 <workdir>/logs/）",
                 options=[],
                 on_change=lambda e: select_log_file(e.value),
             ).classes("min-w-[220px]")
@@ -553,8 +554,28 @@ def log_block() -> Callable[[], None]:
             return "text-gray-800"
 
         def refresh_log_options() -> None:
-            options = [str(p) for p in list_log_files(LOG_DIR)]
+            seen: dict[str, str] = {}
+            for base in (LOG_DIR, state.workdir / "logs"):
+                for log_file in list_log_files(base):
+                    seen[str(log_file)] = str(log_file)
+            options = list(seen)
+
+            workdir_default = str(state.workdir / "logs" / DEFAULT_LOG_FILE.name)
+            if Path(workdir_default).is_file():
+                resolved_default = workdir_default
+            elif Path(DEFAULT_LOG_FILE).is_file():
+                resolved_default = str(DEFAULT_LOG_FILE)
+            else:
+                resolved_default = workdir_default
+
             current_path = str(log_path_input.value or state.log_path)
+            # After switching workdir, keep the user's custom path, otherwise auto-switch
+            # to an existing log file under the new workdir (or the CWD default).
+            if current_path == str(DEFAULT_LOG_FILE) and resolved_default != str(
+                DEFAULT_LOG_FILE
+            ):
+                current_path = resolved_default
+                log_path_input.value = resolved_default
             if current_path and current_path not in options:
                 options.insert(0, current_path)
             log_select.options = options
@@ -579,9 +600,11 @@ def log_block() -> Callable[[], None]:
             log_list.clear()
             if not lines:
                 with log_list:
-                    ui.label(f"未找到日志文件: {path}").classes("text-gray-500 text-sm")
+                    ui.label(
+                        f"未找到日志文件: {path}（可检查 logs/ 与 <workdir>/logs/）"
+                    ).classes("text-gray-500 text-sm")
                 log_list.update()
-                refresh_status(f"未找到日志文件: {path}")
+                refresh_status(f"未找到日志文件: {path}（logs/ 或 <workdir>/logs/）")
                 return
 
             with log_list:
