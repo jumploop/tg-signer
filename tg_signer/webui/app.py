@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import json
 import os
@@ -306,23 +307,14 @@ class SignerBlock(BaseConfigBlock):
 
     def apply_chat(self, chat: Dict[str, object]) -> None:
         content = self.editor.properties["content"].get("json")
-        if not isinstance(content, dict):
-            content = {"chats": []}
-        chats = content.get("chats")
-        if not isinstance(chats, list):
-            chats = []
-            content["chats"] = chats
+        if not isinstance(content, dict) or not isinstance(content.get("chats"), list):
+            content = copy.deepcopy(SIGNER_TEMPLATE)
+        content.setdefault("sign_at", SIGNER_TEMPLATE["sign_at"])
+        content.setdefault("random_seconds", SIGNER_TEMPLATE["random_seconds"])
+        content.setdefault("sign_interval", SIGNER_TEMPLATE["sign_interval"])
+        chats = content["chats"]
         if not chats:
-            chats.append(
-                {
-                    "chat_id": None,
-                    "message_thread_id": None,
-                    "name": "",
-                    "delete_after": None,
-                    "actions": [{"action": 1, "text": "签到"}],
-                    "action_interval": 1,
-                }
-            )
+            chats.append(copy.deepcopy(SIGNER_TEMPLATE["chats"][0]))
         chat_item = chats[0]
         chat_item["chat_id"] = chat.get("id")
         chat_item["name"] = str(chat.get("title") or chat.get("username") or "")
@@ -359,12 +351,11 @@ class MonitorBlock(BaseConfigBlock):
 
     def apply_chat(self, chat: Dict[str, object]) -> None:
         content = self.editor.properties["content"].get("json")
-        if not isinstance(content, dict):
-            content = {"match_cfgs": []}
-        match_cfgs = content.get("match_cfgs")
-        if not isinstance(match_cfgs, list):
-            match_cfgs = []
-            content["match_cfgs"] = match_cfgs
+        if not isinstance(content, dict) or not isinstance(
+            content.get("match_cfgs"), list
+        ):
+            content = copy.deepcopy(MONITOR_TEMPLATE)
+        match_cfgs = content["match_cfgs"]
         if not match_cfgs:
             match_cfgs.append(copy.deepcopy(MONITOR_TEMPLATE["match_cfgs"][0]))
         match_cfg = match_cfgs[0]
@@ -576,6 +567,7 @@ def log_block() -> Callable[[], None]:
             ):
                 current_path = resolved_default
                 log_path_input.value = resolved_default
+                log_path_input.update()
             if current_path and current_path not in options:
                 options.insert(0, current_path)
             log_select.options = options
@@ -695,23 +687,35 @@ def account_block() -> Callable[[], None]:
     container = ui.column().classes("w-full gap-2")
 
     def logout_confirm(account: str) -> None:
-        def do_logout() -> None:
-            dialog.close()
-            try:
-                message = logout_account(account, state.workdir)
-                ui.notify(message, type="positive")
-            except Exception as exc:  # noqa: BLE001
-                notify_error(exc)
-            refresh()
-
         with ui.dialog() as dialog, ui.card().classes("p-4 min-w-[320px]"):
             ui.label(f"确认登出 {account}？").classes("text-lg font-semibold")
             ui.label(
                 "将调用 Telegram 登出并删除 <account>.session / .session_string 文件。"
             ).classes("text-sm text-gray-500")
+            status = ui.label("").classes("text-sm text-gray-500")
+
+            async def do_logout() -> None:
+                ok_btn.disable()
+                cancel_btn.disable()
+                status.text = "正在登出..."
+                status.update()
+                try:
+                    message = await asyncio.to_thread(
+                        logout_account, account, state.workdir
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    status.text = str(exc)
+                    status.update()
+                    ok_btn.enable()
+                    cancel_btn.enable()
+                    return
+                dialog.close()
+                ui.notify(message, type="positive")
+                refresh()
+
             with ui.row().classes("w-full justify-end gap-2 mt-2"):
-                ui.button("取消", on_click=dialog.close).props("flat")
-                ui.button("确认登出", color="negative", on_click=do_logout)
+                cancel_btn = ui.button("取消", on_click=dialog.close).props("flat")
+                ok_btn = ui.button("确认登出", color="negative", on_click=do_logout)
         dialog.open()
 
     def open_login_dialog() -> None:
@@ -742,7 +746,7 @@ def account_block() -> Callable[[], None]:
                     cancel_login(state_cell["account"])
                 dialog.close()
 
-            def send_code() -> None:
+            async def send_code() -> None:
                 account = (account_input.value or "").strip()
                 phone = (phone_input.value or "").strip()
                 if not account or not phone:
@@ -753,7 +757,17 @@ def account_block() -> Callable[[], None]:
                 send_btn.disable()
                 status.text = "正在发送验证码..."
                 status.update()
-                result, message = send_login_code(account, phone, state.workdir)
+                result, message = await asyncio.to_thread(
+                    send_login_code, account, phone, state.workdir
+                )
+                if result == "already":
+                    cancel_login(account)
+                    status.text = message
+                    status.update()
+                    ui.notify(message, type="positive")
+                    dialog.close()
+                    refresh()
+                    return
                 if result == "ok":
                     state_cell["phase"] = "code"
                     code_input.enable()
@@ -766,7 +780,7 @@ def account_block() -> Callable[[], None]:
                     status.text = message
                 status.update()
 
-            def do_complete() -> None:
+            async def do_complete() -> None:
                 code = (code_input.value or "").strip()
                 if not code:
                     status.text = "请填写验证码"
@@ -775,7 +789,8 @@ def account_block() -> Callable[[], None]:
                 complete_btn.disable()
                 status.text = "正在登录..."
                 status.update()
-                result, message = complete_login(
+                result, message = await asyncio.to_thread(
+                    complete_login,
                     state_cell["account"],
                     code,
                     (password_input.value or "").strip() or None,

@@ -2,6 +2,13 @@
 
 ## 版本变动日志
 
+### 0.9.4
+- WebUI 登录/登出改为后台线程执行，不再阻塞界面
+- WebUI 登录前检测账号已登录，避免重复发送验证码
+- WebUI 登出时删除账号对应的 `users/<id>` 缓存与账号映射
+- WebUI 群组填入签到/监控配置基于完整模板生成，修复 `sign_at` 等必填字段校验报错
+- 升级 Docker Actions：`setup-qemu`/`setup-buildx`/`login` 到 v4，`build-push` 到 v7
+
 ### 0.9.3
 - WebUI 日志页自动识别工作目录下的日志文件，切换工作目录后可正确显示日志
 

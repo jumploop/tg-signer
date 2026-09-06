@@ -30,3 +30,16 @@ def test_list_accounts_detects_session_files(tmp_path):
 def test_list_accounts_ignores_other_files(tmp_path):
     (tmp_path / "notes.txt").write_text("x", encoding="utf-8")
     assert account.list_accounts(tmp_path) == []
+
+
+def test_save_and_remove_account_user_mapping(tmp_path):
+    account.save_account_user("acc1", "123", tmp_path)
+    assert account.load_account_users(tmp_path) == {"acc1": "123"}
+
+    user_dir = tmp_path / "users" / "123"
+    user_dir.mkdir(parents=True)
+    (user_dir / "me.json").write_text("x", encoding="utf-8")
+
+    account.remove_account_user("acc1", tmp_path)
+    assert account.load_account_users(tmp_path) == {}
+    assert not user_dir.exists()

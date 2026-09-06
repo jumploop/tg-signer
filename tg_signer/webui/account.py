@@ -3,6 +3,7 @@
 import asyncio
 import json
 import pathlib
+import shutil
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -11,6 +12,7 @@ from pyrogram import errors
 from tg_signer.core import Client, get_api_config, get_client, get_proxy
 
 LOGIN_SESSIONS: Dict[str, "_AccountLoginSession"] = {}
+_ACCOUNT_USERS_FILE = "webui_accounts.json"
 
 
 def list_accounts(workdir) -> List[Dict[str, Any]]:
@@ -37,6 +39,48 @@ def list_accounts(workdir) -> List[Dict[str, Any]]:
     return sorted(result, key=lambda item: item["account"].lower())
 
 
+def load_account_users(workdir) -> Dict[str, str]:
+    """Return the account->user_id mapping written by WebUI logins."""
+    workdir = pathlib.Path(workdir)
+    mapping_file = workdir / _ACCOUNT_USERS_FILE
+    if not mapping_file.is_file():
+        return {}
+    try:
+        data = json.loads(mapping_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(key): str(value) for key, value in data.items()}
+
+
+def save_account_user(account: str, user_id: Any, workdir) -> None:
+    """Record the WebUI-created account->user_id mapping."""
+    workdir = pathlib.Path(workdir)
+    data = load_account_users(workdir)
+    data[account] = str(user_id)
+    workdir.mkdir(parents=True, exist_ok=True)
+    mapping_file = workdir / _ACCOUNT_USERS_FILE
+    mapping_file.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def remove_account_user(account: str, workdir) -> None:
+    """Delete the cached users/<user_id> directory recorded for the account."""
+    workdir = pathlib.Path(workdir)
+    data = load_account_users(workdir)
+    user_id = data.pop(account, None)
+    if user_id is not None and str(user_id).isdigit():
+        user_dir = workdir / "users" / str(user_id)
+        if user_dir.is_dir():
+            shutil.rmtree(user_dir, ignore_errors=True)
+        mapping_file = workdir / _ACCOUNT_USERS_FILE
+        mapping_file.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+
 class _AccountLoginSession:
     def __init__(self, account: str, workdir: pathlib.Path):
         self.account = account
@@ -58,18 +102,25 @@ class _AccountLoginSession:
         future = asyncio.run_coroutine_threadsafe(coro, self.loop)
         return future.result(timeout=timeout)
 
-    async def _send_code(self, phone: str) -> None:
+    async def _send_code(self, phone: str) -> Tuple[str, str]:
         await self.client.connect()
+        try:
+            me = await self.client.get_me()
+        except Exception:  # noqa: BLE001
+            me = None
+        if me is not None:
+            name = me.first_name or me.username or me.id
+            return "already", f"该账号已登录: {name}"
         sent = await self.client.send_code(phone)
         self.phone = phone
         self.phone_code_hash = sent.phone_code_hash
+        return "ok", "验证码已发送，请查收 Telegram"
 
     def send_code(self, phone: str, timeout: float = 90.0) -> Tuple[str, str]:
         try:
-            self.run(self._send_code(phone), timeout)
+            return self.run(self._send_code(phone), timeout)
         except Exception as exc:  # noqa: BLE001
             return "error", str(exc)
-        return "ok", "验证码已发送，请查收 Telegram"
 
     async def _complete(self, code: str, password: Optional[str]) -> Tuple[str, str]:
         try:
@@ -87,6 +138,7 @@ class _AccountLoginSession:
             user_dir = self.workdir / "users" / str(me.id)
             user_dir.mkdir(parents=True, exist_ok=True)
             (user_dir / "me.json").write_text(str(me), encoding="utf-8")
+            save_account_user(self.account, me.id, self.workdir)
             try:
                 await self.client.save_session_string()
             except Exception:  # noqa: BLE001
@@ -182,10 +234,14 @@ def logout_account(account: str, workdir) -> str:
             loop.run_until_complete(client.storage.delete())
     except Exception as exc:  # noqa: BLE001
         # Best-effort: remove local session files even if the remote call fails.
-        loop.run_until_complete(client.storage.delete())
+        try:
+            loop.run_until_complete(client.storage.delete())
+        except Exception:  # noqa: BLE001
+            pass
         raise RuntimeError(f"登出失败: {exc}") from exc
     finally:
         loop.close()
+        remove_account_user(account, workdir)
         for suffix in (".session", ".session-journal", ".session_string"):
             session_file = workdir / f"{account}{suffix}"
             if session_file.is_file():
