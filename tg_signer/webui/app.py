@@ -4,16 +4,19 @@ import json
 import os
 import secrets
 from pathlib import Path
-from typing import Callable, Dict
+from typing import Callable, Dict, List, Tuple
 
 from nicegui import app, ui
 from pydantic import TypeAdapter
 
+from tg_signer.webui import runner
 from tg_signer.webui.account import (
     cancel_login,
     complete_login,
+    is_account_authorized,
     list_accounts,
     logout_account,
+    refresh_dialogs,
     send_login_code,
 )
 from tg_signer.webui.auth import (
@@ -636,8 +639,53 @@ def group_chat_block(
         label="筛选群组",
         placeholder="名称 / 用户名 / ID",
     ).classes("w-full")
+    with ui.row().classes("items-center w-full gap-3"):
+        account_select = ui.select(
+            options=[],
+            value=None,
+            label="账号",
+        ).classes("w-56")
+        refresh_btn = ui.button(
+            "刷新最近 50 个对话",
+            color="primary",
+            on_click=lambda: refresh_async(),
+        ).props("dense")
+        status_label = ui.label("").classes("text-sm text-gray-500")
+
+    def sync_accounts() -> None:
+        names = [
+            item["account"]
+            for item in list_accounts(state.workdir)
+            if "session" in item["kind"]
+        ]
+        if names != account_select.options:
+            account_select.options = names
+            if account_select.value not in names:
+                account_select.value = names[0] if names else None
+            account_select.update()
+
+    async def refresh_async() -> None:
+        account = account_select.value
+        if not account:
+            ui.notify("请先选择一个账号（需先在“账号管理”登录）", type="warning")
+            return
+        refresh_btn.disable()
+        status_label.text = "正在获取最近对话..."
+        status_label.update()
+        try:
+            ok, message = await asyncio.to_thread(
+                refresh_dialogs, str(account), state.workdir, 50
+            )
+        except Exception as exc:  # noqa: BLE001
+            ok, message = False, str(exc)
+        status_label.text = ""
+        status_label.update()
+        refresh_btn.enable()
+        ui.notify(message, type="positive" if ok else "negative")
+        refresh_with_filter()
 
     def refresh(filter_text: str = "") -> None:
+        sync_accounts()
         container.clear()
         keyword = (filter_text or "").strip().lower()
         chats = [
@@ -880,6 +928,126 @@ def _apply_paths(workdir_input, on_refresh: Callable[[], None]) -> None:
     on_refresh()
 
 
+def run_block() -> Callable[[], None]:
+    """页面底部的统一运行管理：选择账号后一键启动/停止持续运行进程。"""
+    with ui.card().classes("w-full"):
+        ui.label("统一运行（持续监控）").classes("text-lg font-semibold")
+        ui.label(
+            "以独立 CLI 进程持续运行所选类型的全部任务，日志写入 "
+            "<workdir>/logs/，可在“日志”页查看；WebUI 服务重启后进程不再受管理。"
+        ).classes("text-sm text-gray-500")
+        with ui.row().classes("items-end w-full"):
+            kind_select = ui.select(
+                options=["signer", "monitor"],
+                value="signer",
+                label="运行类型",
+            ).classes("w-44")
+            account_select = ui.select(
+                options=[],
+                value=None,
+                label="账号（session）",
+            ).classes("w-60")
+            ui.button("启动全部", color="primary", on_click=lambda: start_all())
+            ui.button("刷新状态", on_click=lambda: refresh())
+        status_list = ui.column().classes("w-full gap-1")
+        _last_snapshot = None
+
+        def notify_result(ok: bool, msg: str) -> None:
+            ui.notify(msg, type="positive" if ok else "warning")
+
+        def sync_accounts() -> None:
+            names = [
+                item["account"]
+                for item in list_accounts(state.workdir)
+                if "session" in item["kind"]
+            ]
+            if names != account_select.options:
+                account_select.options = names
+                if account_select.value not in names:
+                    account_select.value = names[0] if names else None
+                account_select.update()
+
+        def stop_one(kind: str, task: str) -> None:
+            ok, msg = runner.stop(kind, task)
+            notify_result(ok, msg)
+            refresh(force=True)
+
+        async def start_all() -> None:
+            kind = kind_select.value
+            account = account_select.value
+            if not account:
+                ui.notify("请先选择一个账号（需先在“账号管理”登录）", type="warning")
+                return
+            ok_auth, auth_msg = await asyncio.to_thread(
+                is_account_authorized, str(account), state.workdir
+            )
+            if not ok_auth:
+                ui.notify(auth_msg, type="negative")
+                return
+            tasks = list_task_names(kind, state.workdir)
+            if not tasks:
+                ui.notify(f"当前工作目录没有 {kind} 任务配置", type="warning")
+                return
+            started_keys: List[Tuple[str, str]] = []
+            started = skipped = 0
+            for task in tasks:
+                ok, _msg = runner.start(kind, task, state.workdir, str(account))
+                if ok:
+                    started += 1
+                    started_keys.append((kind, task))
+                else:
+                    skipped += 1
+            dead: List[str] = []
+            if started_keys:
+                await asyncio.sleep(1.5)
+                dead = [task for k, task in started_keys if not runner.status(k, task)]
+            msg = f"已完成：启动 {started} 个，跳过/失败 {skipped} 个"
+            if dead:
+                msg += f"；{', '.join(dead)} 启动后立即退出，请到“日志”页查看"
+                notify_result(False, msg)
+            else:
+                notify_result(started > 0, msg)
+            refresh(force=True)
+
+        def refresh(force: bool = False) -> None:
+            nonlocal _last_snapshot
+            sync_accounts()
+            entries = tuple(
+                (kind, task)
+                for kind in ("signer", "monitor")
+                for task in list_task_names(kind, state.workdir)
+            )
+            running = runner.running_tasks()
+            snapshot = (entries, frozenset(k for k, v in running.items() if v))
+            if not force and snapshot == _last_snapshot:
+                return
+            _last_snapshot = snapshot
+            status_list.clear()
+            if not entries:
+                with status_list:
+                    ui.label("当前工作目录没有签到/监控任务配置。").classes(
+                        "text-gray-500"
+                    )
+                return
+            with status_list:
+                for kind, task in entries:
+                    is_run = running.get(runner.process_key(kind, task), False)
+                    with ui.row().classes("items-center w-full gap-3"):
+                        ui.label(kind).classes("text-gray-500 w-20")
+                        ui.label(task).classes("w-64")
+                        ui.badge(
+                            "运行中" if is_run else "已停止",
+                            color="positive" if is_run else "default",
+                        ).props("outline")
+                        ui.button(
+                            "停止",
+                            on_click=lambda k=kind, t=task: stop_one(k, t),
+                        ).props("dense flat")
+
+        ui.timer(5.0, refresh, active=True)
+    return refresh
+
+
 def _build_dashboard(container) -> None:
     with container:
         ui.label("TG Signer Web 控制台").classes(
@@ -973,6 +1141,7 @@ def _build_dashboard(container) -> None:
                 ui.label("查看日志文件的最新行。").classes("text-gray-600")
                 refreshers.append(log_block())
 
+        refreshers.append(run_block())
         refresh_all()
 
 

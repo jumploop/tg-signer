@@ -205,6 +205,103 @@ def complete_login(
     return status, message
 
 
+def _new_client(account: str, workdir: pathlib.Path, loop) -> Any:
+    """Create a standalone client for an existing <account>.session file.
+
+    Uses an explicit Client instead of the cached get_client() so the client
+    is bound to the caller-provided loop (the cache may hold a client tied to
+    a closed login loop, which breaks run_until_complete calls).
+    """
+    api_id, api_hash = get_api_config()
+    return Client(
+        account,
+        api_id=api_id,
+        api_hash=api_hash,
+        proxy=get_proxy(),
+        workdir=str(workdir),
+        loop=loop,
+        key=str((workdir / account).resolve()),
+    )
+
+
+def is_account_authorized(account: str, workdir) -> Tuple[bool, str]:
+    """Check whether the account's session file can connect to Telegram."""
+    workdir = pathlib.Path(workdir)
+    loop = asyncio.new_event_loop()
+    client = _new_client(account, workdir, loop)
+    try:
+        authorized = loop.run_until_complete(client.connect())
+        if not authorized:
+            return False, f"{account} 未登录或 session 无效，请先在“账号管理”登录"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{account} 校验失败: {exc}"
+    finally:
+        try:
+            if client.is_connected:
+                loop.run_until_complete(client.disconnect())
+        except Exception:  # noqa: BLE001
+            pass
+        loop.close()
+    return True, f"{account} session 有效"
+
+
+def refresh_dialogs(account: str, workdir, limit: int = 50) -> Tuple[bool, str]:
+    """Reuse an existing session to refresh the latest dialogs cache.
+
+    Writes users/<me.id>/latest_chats.json (and me.json) inside workdir so the
+    group config page can list freshly fetched chats.
+    """
+    workdir = pathlib.Path(workdir)
+    loop = asyncio.new_event_loop()
+    client = _new_client(account, workdir, loop)
+    try:
+        authorized = loop.run_until_complete(client.connect())
+        if not authorized:
+            return False, f"{account} 未登录或 session 无效，请先在“账号管理”登录"
+        me = loop.run_until_complete(client.get_me())
+        user_dir = workdir / "users" / str(me.id)
+        user_dir.mkdir(parents=True, exist_ok=True)
+        (user_dir / "me.json").write_text(str(me), encoding="utf-8")
+        save_account_user(account, me.id, workdir)
+
+        chats: List[Dict[str, Any]] = []
+
+        async def _fetch_dialogs() -> None:
+            async for dialog in client.get_dialogs(limit=limit):
+                chats.append(
+                    {
+                        "id": dialog.chat.id,
+                        "title": dialog.chat.title,
+                        "type": dialog.chat.type,
+                        "username": dialog.chat.username,
+                        "first_name": dialog.chat.first_name,
+                        "last_name": dialog.chat.last_name,
+                    }
+                )
+
+        loop.run_until_complete(_fetch_dialogs())
+        (user_dir / "latest_chats.json").write_text(
+            json.dumps(
+                chats,
+                ensure_ascii=False,
+                indent=4,
+                default=lambda o: getattr(o, "value", str(o)),
+            ),
+            encoding="utf-8",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return False, f"刷新最近对话失败: {exc}"
+    finally:
+        try:
+            if client.is_connected:
+                loop.run_until_complete(client.disconnect())
+        except Exception:  # noqa: BLE001
+            pass
+        loop.close()
+    name = me.first_name or me.username or me.id
+    return True, f"已刷新最近 {len(chats)} 个对话: {name}"
+
+
 def cancel_login(account: str) -> None:
     session = LOGIN_SESSIONS.pop(account, None)
     if session is not None:
