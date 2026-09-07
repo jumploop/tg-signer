@@ -925,7 +925,7 @@ def _apply_paths(workdir_input, on_refresh: Callable[[], None]) -> None:
 
 
 def run_block() -> Callable[[], None]:
-    """页面底部的统一运行管理：选择账号后一键启动/停止持续运行进程。"""
+    """“统一运行”页面：选择账号后一键启动/停止持续运行进程。"""
     with ui.card().classes("w-full"):
         ui.label("统一运行（持续监控）").classes("text-lg font-semibold")
         ui.label(
@@ -1058,6 +1058,7 @@ def _build_dashboard(container) -> None:
 
         with ui.tabs().classes("w-full") as tabs:
             tab_configs = ui.tab("配置管理")
+            tab_run = ui.tab("统一运行")
             tab_accounts = ui.tab("账号管理")
             tab_groups = ui.tab("群组配置")
             tab_users = ui.tab("用户信息")
@@ -1105,6 +1106,12 @@ def _build_dashboard(container) -> None:
                         monitor_block = MonitorBlock(MONITOR_TEMPLATE)
                         refreshers.append(monitor_block)
 
+            with ui.tab_panel(tab_run):
+                ui.label(
+                    "选择账号后一键启动/停止全部签到或监控持续进程，日志写入 <workdir>/logs/。"
+                ).classes("text-gray-600")
+                refreshers.append(run_block())
+
             with ui.tab_panel(tab_accounts):
                 ui.label(
                     "登录账号以获取 session，并管理已有账号（登出会删除 session 文件）。"
@@ -1135,7 +1142,6 @@ def _build_dashboard(container) -> None:
                 ui.label("查看日志文件的最新行。").classes("text-gray-600")
                 refreshers.append(log_block())
 
-        refreshers.append(run_block())
         refresh_all()
 
 
