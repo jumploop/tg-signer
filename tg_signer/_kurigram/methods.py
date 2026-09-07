@@ -1,8 +1,9 @@
+import asyncio
 import inspect
 from typing import AsyncGenerator, Union
 
 import pyrogram
-from pyrogram import raw, types, utils
+from pyrogram import errors, raw, types, utils
 
 
 class SafeGetForumTopics:
@@ -29,15 +30,22 @@ class SafeGetForumTopics:
         seen_topic_ids = set()
 
         while True:
-            result = await self.invoke(
-                raw.functions.messages.GetForumTopics(
-                    peer=await self.resolve_peer(chat_id),
-                    offset_date=offset_date,
-                    offset_id=offset_id,
-                    offset_topic=offset_topic,
-                    limit=limit,
+            # 直接调 self.invoke 绕过了 kurigram 的 FloodWait 内置重试,
+            # 这里手动捕获并等待后重试,避免拉取论坛话题触发未处理的 FloodWait
+            try:
+                result = await self.invoke(
+                    raw.functions.messages.GetForumTopics(
+                        peer=await self.resolve_peer(chat_id),
+                        offset_date=offset_date,
+                        offset_id=offset_id,
+                        offset_topic=offset_topic,
+                        limit=limit,
+                    )
                 )
-            )
+            except errors.FloodWait as e:
+                wait_seconds = max(int(getattr(e, "value", 0) or 0), 0) + 1
+                await asyncio.sleep(wait_seconds)
+                continue
 
             users = {item.id: item for item in result.users}
             chats = {item.id: item for item in result.chats}

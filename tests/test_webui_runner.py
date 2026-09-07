@@ -119,3 +119,36 @@ def test_status_tracks_process_lifecycle(monkeypatch, tmp_path):
     while runner.status("signer", "t4") and time.time() < deadline:
         time.sleep(0.05)
     assert runner.status("signer", "t4") is False
+
+
+def test_start_detects_immediate_exit(monkeypatch, tmp_path):
+    # 子进程 0 行代码,启动后立即以 exit code 0 退出 → 启动失败
+    monkeypatch.setattr(runner, "_STARTUP_GRACE_SECONDS", 5.0)
+    monkeypatch.setattr(
+        runner, "build_command", lambda *a, **k: [sys.executable, "-c", "pass"]
+    )
+    ok, msg = runner.start("signer", "t_fail", tmp_path, "acc")
+    assert ok is False
+    assert "启动后立即退出" in msg
+    # 不应留在 _PROCESSES 里
+    assert "signer:t_fail" not in runner._PROCESSES
+
+
+def test_shutdown_all_terminates_tracked_processes(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        runner,
+        "build_command",
+        lambda *a, **k: [sys.executable, "-c", "import time; time.sleep(60)"],
+    )
+    runner.start("signer", "t_shut_a", tmp_path, "acc")
+    runner.start("signer", "t_shut_b", tmp_path, "acc")
+    assert len(runner._PROCESSES) == 2
+
+    stopped = runner.shutdown_all(timeout=3.0)
+    assert set(stopped) == {"signer:t_shut_a", "signer:t_shut_b"}
+    assert runner._PROCESSES == {}
+    assert runner.running_tasks() == {}
+
+
+def test_shutdown_all_no_op_when_empty():
+    assert runner.shutdown_all() == []

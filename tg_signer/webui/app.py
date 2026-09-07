@@ -1060,7 +1060,6 @@ def _build_dashboard(container) -> None:
             tab_configs = ui.tab("配置管理")
             tab_run = ui.tab("统一运行")
             tab_accounts = ui.tab("账号管理")
-            tab_groups = ui.tab("群组配置")
             tab_users = ui.tab("用户信息")
             tab_records = ui.tab("签到记录")
             tab_logs = ui.tab("日志")
@@ -1078,8 +1077,6 @@ def _build_dashboard(container) -> None:
                 target_panel = tab_monitor
             else:
                 return
-            tabs.value = tab_configs
-            tabs.update()
             sub_tabs.value = target_panel
             sub_tabs.update()
 
@@ -1091,20 +1088,31 @@ def _build_dashboard(container) -> None:
         with ui.tab_panels(tabs, value=tab_configs).classes("w-full"):
             with ui.tab_panel(tab_configs):
                 ui.label(
-                    "管理 signer 和 monitor 的配置文件，支持查看、编辑和删除。"
+                    "管理 signer 和 monitor 的配置文件，右侧可快速选择群组填入配置。"
                 ).classes("text-gray-600")
-                with ui.tabs().classes("mt-2") as sub_tabs:
-                    tab_signer = ui.tab("Signer")
-                    tab_monitor = ui.tab("Monitor")
-                with ui.tab_panels(sub_tabs, value=tab_signer).classes("w-full"):
-                    with ui.tab_panel(tab_signer):
-                        signer_block = SignerBlock(
-                            SIGNER_TEMPLATE, goto_records=goto_records
-                        )
-                        refreshers.append(signer_block)
-                    with ui.tab_panel(tab_monitor):
-                        monitor_block = MonitorBlock(MONITOR_TEMPLATE)
-                        refreshers.append(monitor_block)
+                with ui.row().classes("w-full items-start gap-4"):
+                    with ui.column().classes("flex-1 min-w-0"):
+                        with ui.tabs().classes("w-full") as sub_tabs:
+                            tab_signer = ui.tab("Signer")
+                            tab_monitor = ui.tab("Monitor")
+                        with ui.tab_panels(sub_tabs, value=tab_signer).classes(
+                            "w-full"
+                        ):
+                            with ui.tab_panel(tab_signer):
+                                signer_block = SignerBlock(
+                                    SIGNER_TEMPLATE, goto_records=goto_records
+                                )
+                                refreshers.append(signer_block)
+                            with ui.tab_panel(tab_monitor):
+                                monitor_block = MonitorBlock(MONITOR_TEMPLATE)
+                                refreshers.append(monitor_block)
+                    with ui.column().classes("w-96 shrink-0"):
+                        ui.label("群组 / 频道").classes("text-lg font-semibold")
+                        ui.label(
+                            "从已登录账号缓存 (users/*/latest_chats.json) 列出群组/"
+                            "频道，点击即可填入左侧配置。"
+                        ).classes("text-sm text-gray-500 mb-2")
+                        refreshers.append(group_chat_block(pick_group))
 
             with ui.tab_panel(tab_run):
                 ui.label(
@@ -1117,13 +1125,6 @@ def _build_dashboard(container) -> None:
                     "登录账号以获取 session，并管理已有账号（登出会删除 session 文件）。"
                 ).classes("text-gray-600")
                 refreshers.append(account_block())
-
-            with ui.tab_panel(tab_groups):
-                ui.label(
-                    "从已登录账号缓存 (users/*/latest_chats.json) 列出群组/频道，"
-                    "选择后可自动填入签到或监控配置。"
-                ).classes("text-gray-600")
-                refreshers.append(group_chat_block(pick_group))
 
             with ui.tab_panel(tab_users):
                 ui.label("查看当前已登录账户信息 (users/*/me.json)。").classes(
@@ -1227,6 +1228,8 @@ def build_ui(auth_code: str = None) -> None:
 
 
 def main(host: str = None, port: int = None, storage_secret: str = None) -> None:
+    # WebUI 退出时主动清理 runner 跟踪的子进程,避免孤儿进程
+    app.on_shutdown(runner.shutdown_all)
     ui.run(
         build_ui,
         title="TG Signer WebUI",

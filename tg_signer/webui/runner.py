@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 _PROCESSES: Dict[str, subprocess.Popen] = {}
+
+# 启动后等待子进程就绪的秒数,用于尽早捕获启动失败(参数错误、session 无效等)
+_STARTUP_GRACE_SECONDS = 1.5  # Windows 进程启动通常需要 0.5-1.5s
 
 
 def process_key(kind: str, task: str) -> str:
@@ -105,6 +109,13 @@ def start(
         )
     except OSError as exc:
         return False, f"{task} 启动失败: {exc}"
+
+    # 早期失败检测:短暂 wait + poll,如果子进程已退出,说明参数错误/启动异常
+    time.sleep(_STARTUP_GRACE_SECONDS)
+    rc = child.poll()
+    if rc is not None:
+        return False, f"{task} 启动后立即退出(exit code={rc}),请检查 session 与参数"
+
     _PROCESSES[key] = child
     return True, f"{task} 已启动 (PID {child.pid})"
 
@@ -123,3 +134,29 @@ def stop(kind: str, task: str) -> Tuple[bool, str]:
         proc.wait(timeout=5)
     _PROCESSES.pop(key, None)
     return True, f"{task} 已停止"
+
+
+def shutdown_all(timeout: float = 5.0) -> List[str]:
+    """Terminate all tracked child processes.
+
+    Intended to be called from a WebUI shutdown hook so that children do
+    not become orphans when the WebUI process exits. Returns the list of
+    stopped process keys.
+    """
+    stopped: List[str] = []
+    for key, proc in list(_PROCESSES.items()):
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=timeout)
+                except Exception:  # noqa: BLE001
+                    pass
+            except Exception:  # noqa: BLE001
+                pass
+        _PROCESSES.pop(key, None)
+        stopped.append(key)
+    return stopped

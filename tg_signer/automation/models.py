@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -70,7 +71,18 @@ class RuleStateStore:
             rules = self._data.get("rules", {})
             self.logger.debug("状态文件加载完成: %s (rules=%s)", self.path, len(rules))
         except (OSError, json.JSONDecodeError) as exc:
-            self.logger.warning(f"无法读取状态文件: {self.path} ({exc})")
+            # 损坏时备份原文件,避免下次 save 静默覆盖导致状态彻底丢失
+            self.logger.warning(
+                f"无法读取状态文件: {self.path} ({exc}),已备份为 .corrupt-<ts> 并以空状态继续"
+            )
+            try:
+                backup = self.path.with_name(
+                    f"{self.path.name}.corrupt-{int(datetime.now().timestamp())}"
+                )
+                self.path.replace(backup)
+            except OSError as backup_exc:  # noqa: BLE001
+                self.logger.warning(f"备份损坏状态文件失败: {backup_exc}")
+            self._data = {"rules": {}}
 
     def save(self, force: bool = False) -> None:
         # 无变更时跳过落盘，减少频繁 IO。
@@ -78,8 +90,21 @@ class RuleStateStore:
             self.logger.debug("状态未变化，跳过写入: %s", self.path)
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.path, "w", encoding="utf-8") as fp:
-            json.dump(self._data, fp, ensure_ascii=False, indent=2)
+        # 写临时文件再原子替换,避免崩溃/Ctrl-C 中途损坏状态文件
+        tmp_path = self.path.with_name(self.path.name + ".tmp")
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as fp:
+                json.dump(self._data, fp, ensure_ascii=False, indent=2)
+                fp.flush()
+                os.fsync(fp.fileno())
+            os.replace(tmp_path, self.path)
+        finally:
+            # 任何异常都清理临时文件,避免残留
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:  # noqa: BLE001
+                    pass
         self._dirty = False
         self.logger.debug("状态文件写入完成: %s", self.path)
 

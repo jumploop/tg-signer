@@ -248,3 +248,27 @@ class TestMatchConfig:
         message = make_message(chat_id=123, text=None, from_user=None)
 
         assert config.match(message) is True
+
+    # rule != "all" 时 rule_value 必填
+    @pytest.mark.parametrize("rule", ["exact", "contains", "regex"])
+    def test_match_config_rejects_missing_rule_value_for_non_all_rule(self, rule):
+        with pytest.raises(ValidationError, match="rule_value"):
+            MatchConfig(chat_id=123, rule=rule, rule_value=None)
+
+    @pytest.mark.parametrize("rule", ["exact", "contains", "regex"])
+    @pytest.mark.parametrize("empty_value", ["", "   "])
+    def test_match_config_rejects_empty_rule_value_for_non_all_rule(
+        self, rule, empty_value
+    ):
+        with pytest.raises(ValidationError, match="rule_value"):
+            MatchConfig(chat_id=123, rule=rule, rule_value=empty_value)
+
+    def test_match_config_all_rule_allows_missing_rule_value(self):
+        config = MatchConfig(chat_id=123, rule="all", rule_value=None)
+        assert config.rule_value is None
+
+    # 防御:即便绕过 validator 直接修改属性,match_text 也不应崩溃
+    def test_match_text_returns_false_when_rule_value_is_none(self):
+        config = MatchConfig(chat_id=123, rule="contains", rule_value="hello")
+        object.__setattr__(config, "rule_value", None)
+        assert config.match_text("hello world") is False

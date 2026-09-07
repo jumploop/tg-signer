@@ -1196,14 +1196,13 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 return False
             return True
 
+        self.log(f"为以下Chat添加消息回调处理函数：{chat_ids}")
+        self.app.add_handler(MessageHandler(self.on_message, filters.chat(chat_ids)))
+        self.app.add_handler(
+            EditedMessageHandler(self.on_edited_message, filters.chat(chat_ids))
+        )
+
         while True:
-            self.log(f"为以下Chat添加消息回调处理函数：{chat_ids}")
-            self.app.add_handler(
-                MessageHandler(self.on_message, filters.chat(chat_ids))
-            )
-            self.app.add_handler(
-                EditedMessageHandler(self.on_edited_message, filters.chat(chat_ids))
-            )
             try:
                 async with self.app:
                     now = get_now()

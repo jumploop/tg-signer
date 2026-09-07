@@ -30,6 +30,10 @@ class DummyWorker:
     def get_ai_tools(self):
         return self.ai_tools
 
+    async def _call_telegram_api(self, operation, call, *, retry_on_floodwait=True):
+        # 测试桩:直接调 call 并返回,不做限流/FloodWait
+        return await call()
+
 
 class DummyAITools:
     def __init__(self):

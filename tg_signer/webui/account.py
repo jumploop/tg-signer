@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pyrogram import errors
 
+from tg_signer import core as tg_core
 from tg_signer.core import Client, get_api_config, get_client, get_proxy
 
 LOGIN_SESSIONS: Dict[str, "_AccountLoginSession"] = {}
@@ -177,11 +178,29 @@ class _AccountLoginSession:
             return "error", str(exc)
 
     def close(self) -> None:
+        # 彻底停掉 client 并清 core 缓存,避免下次同账号登录时拿到绑定旧 loop 的 client
         try:
-            self.loop.call_soon_threadsafe(self.loop.stop)
-            self.thread.join(timeout=5)
+            if self.thread.is_alive():
+                try:
+                    self.run(self._close_client(), timeout=5)
+                except Exception:  # noqa: BLE001
+                    pass
         finally:
+            try:
+                tg_core._CLIENT_INSTANCES.pop(self.client.key, None)
+                tg_core._CLIENT_REFS.pop(self.client.key, None)
+                self.loop.call_soon_threadsafe(self.loop.stop)
+                self.thread.join(timeout=5)
+            except Exception:  # noqa: BLE001
+                pass
             LOGIN_SESSIONS.pop(self.account, None)
+
+    async def _close_client(self) -> None:
+        try:
+            if self.client.is_connected:
+                await self.client.stop()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def send_login_code(account: str, phone: str, workdir) -> Tuple[str, str]:

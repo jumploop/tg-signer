@@ -2,6 +2,17 @@
 
 ## 版本变动日志
 
+### 0.9.7
+- 修复 `UserSigner.normal_run` 在 `while True` 循环内重复注册消息处理器，导致 handler 累积
+- 修复 `MatchConfig` 缺少 `rule_value` 校验，运行时 `rule_value=None` 触发 `AttributeError`，`UserMonitor.on_message` 未捕获
+- 修复 WebUI 登录会话未清理 `core._CLIENT_INSTANCES` / `_CLIENT_REFS`，同一账号二次登录可能拿到绑定旧 loop 的 client
+- 修复 WebUI runner 乐观启动：子进程启动后立即失败时返回"已启动"，新增 1.5s grace + 早期失败检测
+- WebUI 退出时主动清理 runner 跟踪的子进程，避免孤儿进程
+- 修复 automation `forward` / `ai_reply.get_chat_history` 绕过 `_call_telegram_api` 限流与 FloodWait 重试
+- 修复 `SafeGetForumTopics.get_forum_topics` 直接调 `self.invoke` 绕过 FloodWait 重试
+- 修复 `RuleStateStore.save` 非原子写入，崩溃/Ctrl-C 中途会损坏 `state.json`；损坏时备份为 `.corrupt-<ts>` 并以空状态继续
+- WebUI：将"群组配置"并入"配置管理"页面右侧，点击群组直接填入签到或监控配置
+
 ### 0.9.6
 - 修复 WebUI 账号鉴权、刷新对话与登出时的“got Future attached to a different loop”跨事件循环报错
 - 修复 WebUI“刷新最近 50 个对话”缓存未真正写入、登出后 session 文件未删除的问题
@@ -130,6 +141,17 @@
 - 调用 AI 识别图片点击键盘
 
 ## Changelog
+
+### 0.9.7
+- Fix `UserSigner.normal_run` re-registering message handlers on every scheduler tick, causing handler accumulation over time
+- Fix `MatchConfig` missing `rule_value` validation, which raised `AttributeError` at runtime when `rule_value` was None (and `UserMonitor.on_message` did not catch it)
+- Fix WebUI login session not clearing `core._CLIENT_INSTANCES` / `_CLIENT_REFS`, so a second login of the same account could receive a client bound to a closed loop
+- Fix WebUI runner optimistic startup: a child process that exited immediately after start was reported as "started"; add 1.5s grace and early-exit detection
+- WebUI now actively terminates runner-tracked child processes on shutdown to avoid orphans
+- Fix automation `forward` and `ai_reply.get_chat_history` bypassing `_call_telegram_api` rate-limiting and FloodWait retry
+- Fix `SafeGetForumTopics.get_forum_topics` calling `self.invoke` directly, bypassing FloodWait retry
+- Fix `RuleStateStore.save` non-atomic write, which could corrupt `state.json` on crash/Ctrl-C; on corrupt read, back the file up as `.corrupt-<ts>` and continue with empty state
+- WebUI: move the "Groups" picker into the right pane of the "Config" tab so a group/chat can be selected and applied to the signer/monitor config directly
 
 ### 0.9.0
 - Add `list-folders` and `--from-folder` to load manually added chats from regular Telegram folders

@@ -21,6 +21,7 @@ from pydantic import (
     Field,
     ValidationError,
     field_validator,
+    model_validator,
 )
 from pyrogram.types import Chat, Message
 from typing_extensions import Self, TypeAlias
@@ -426,6 +427,16 @@ class MatchConfig(BaseJSONConfig):
             return None
         return parse_chat_id_or_username(value)
 
+    @model_validator(mode="after")
+    def _check_rule_value_required(self) -> "MatchConfig":
+        # rule != "all" 时 rule_value 必填,否则 match_text 会 AttributeError
+        # 且 UserMonitor.on_message 不会捕获 AttributeError,导致监控静默失效
+        if self.rule != "all" and not (self.rule_value and self.rule_value.strip()):
+            raise ValueError(
+                f"rule={self.rule!r} requires a non-empty rule_value, got {self.rule_value!r}"
+            )
+        return self
+
     def __str__(self):
         return (
             f"{self.__class__.__name__}(chat_id={self.chat_id}, rule={self.rule}, rule_value={self.rule_value}),"
@@ -469,6 +480,9 @@ class MatchConfig(BaseJSONConfig):
         rule_value = self.rule_value
         if self.rule == "all":
             return True
+        # 防御:即便绕过 validator 直接构造,rule_value 为空也不应崩溃
+        if not rule_value:
+            return False
         if self.rule == "exact":
             if self.ignore_case:
                 return rule_value.lower() == text.lower()
