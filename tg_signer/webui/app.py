@@ -673,9 +673,7 @@ def group_chat_block(
         status_label.text = "正在获取最近对话..."
         status_label.update()
         try:
-            ok, message = await asyncio.to_thread(
-                refresh_dialogs, str(account), state.workdir, 50
-            )
+            ok, message = await refresh_dialogs(str(account), state.workdir, 50)
         except Exception as exc:  # noqa: BLE001
             ok, message = False, str(exc)
         status_label.text = ""
@@ -748,9 +746,7 @@ def account_block() -> Callable[[], None]:
                 status.text = "正在登出..."
                 status.update()
                 try:
-                    message = await asyncio.to_thread(
-                        logout_account, account, state.workdir
-                    )
+                    message = await logout_account(account, state.workdir)
                 except Exception as exc:  # noqa: BLE001
                     status.text = str(exc)
                     status.update()
@@ -978,9 +974,7 @@ def run_block() -> Callable[[], None]:
             if not account:
                 ui.notify("请先选择一个账号（需先在“账号管理”登录）", type="warning")
                 return
-            ok_auth, auth_msg = await asyncio.to_thread(
-                is_account_authorized, str(account), state.workdir
-            )
+            ok_auth, auth_msg = await is_account_authorized(str(account), state.workdir)
             if not ok_auth:
                 ui.notify(auth_msg, type="negative")
                 return

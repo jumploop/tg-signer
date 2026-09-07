@@ -205,12 +205,12 @@ def complete_login(
     return status, message
 
 
-def _new_client(account: str, workdir: pathlib.Path, loop) -> Any:
-    """Create a standalone client for an existing <account>.session file.
+def _new_client(account: str, workdir: pathlib.Path) -> Any:
+    """Create a standalone Client for an existing <account>.session file.
 
-    Uses an explicit Client instead of the cached get_client() so the client
-    is bound to the caller-provided loop (the cache may hold a client tied to
-    a closed login loop, which breaks run_until_complete calls).
+    Does not pass loop – Pyrogram resolves the running loop via
+    asyncio.get_event_loop() automatically.  This avoids cross-loop
+    bugs when called from asyncio.to_thread or nested loops.
     """
     api_id, api_hash = get_api_config()
     return Client(
@@ -219,18 +219,16 @@ def _new_client(account: str, workdir: pathlib.Path, loop) -> Any:
         api_hash=api_hash,
         proxy=get_proxy(),
         workdir=str(workdir),
-        loop=loop,
         key=str((workdir / account).resolve()),
     )
 
 
-def is_account_authorized(account: str, workdir) -> Tuple[bool, str]:
+async def is_account_authorized(account: str, workdir) -> Tuple[bool, str]:
     """Check whether the account's session file can connect to Telegram."""
     workdir = pathlib.Path(workdir)
-    loop = asyncio.new_event_loop()
-    client = _new_client(account, workdir, loop)
+    client = _new_client(account, workdir)
     try:
-        authorized = loop.run_until_complete(client.connect())
+        authorized = await client.connect()
         if not authorized:
             return False, f"{account} 未登录或 session 无效，请先在“账号管理”登录"
     except Exception as exc:  # noqa: BLE001
@@ -238,27 +236,25 @@ def is_account_authorized(account: str, workdir) -> Tuple[bool, str]:
     finally:
         try:
             if client.is_connected:
-                loop.run_until_complete(client.disconnect())
+                await client.disconnect()
         except Exception:  # noqa: BLE001
             pass
-        loop.close()
     return True, f"{account} session 有效"
 
 
-def refresh_dialogs(account: str, workdir, limit: int = 50) -> Tuple[bool, str]:
+async def refresh_dialogs(account: str, workdir, limit: int = 50) -> Tuple[bool, str]:
     """Reuse an existing session to refresh the latest dialogs cache.
 
     Writes users/<me.id>/latest_chats.json (and me.json) inside workdir so the
     group config page can list freshly fetched chats.
     """
     workdir = pathlib.Path(workdir)
-    loop = asyncio.new_event_loop()
-    client = _new_client(account, workdir, loop)
+    client = _new_client(account, workdir)
     try:
-        authorized = loop.run_until_complete(client.connect())
+        authorized = await client.connect()
         if not authorized:
             return False, f"{account} 未登录或 session 无效，请先在“账号管理”登录"
-        me = loop.run_until_complete(client.get_me())
+        me = await client.get_me()
         user_dir = workdir / "users" / str(me.id)
         user_dir.mkdir(parents=True, exist_ok=True)
         (user_dir / "me.json").write_text(str(me), encoding="utf-8")
@@ -279,7 +275,7 @@ def refresh_dialogs(account: str, workdir, limit: int = 50) -> Tuple[bool, str]:
                     }
                 )
 
-        loop.run_until_complete(_fetch_dialogs())
+        await _fetch_dialogs()
         (user_dir / "latest_chats.json").write_text(
             json.dumps(
                 chats,
@@ -294,10 +290,9 @@ def refresh_dialogs(account: str, workdir, limit: int = 50) -> Tuple[bool, str]:
     finally:
         try:
             if client.is_connected:
-                loop.run_until_complete(client.disconnect())
+                await client.disconnect()
         except Exception:  # noqa: BLE001
             pass
-        loop.close()
     name = me.first_name or me.username or me.id
     return True, f"已刷新最近 {len(chats)} 个对话: {name}"
 
@@ -308,36 +303,28 @@ def cancel_login(account: str) -> None:
         session.close()
 
 
-def logout_account(account: str, workdir) -> str:
+async def logout_account(account: str, workdir) -> str:
     """Log out from Telegram and delete local session files."""
     workdir = pathlib.Path(workdir)
-    loop = asyncio.new_event_loop()
-    proxy = get_proxy()
-    api_id, api_hash = get_api_config()
-    client = Client(
-        account,
-        api_id=api_id,
-        api_hash=api_hash,
-        proxy=proxy,
-        workdir=str(workdir),
-        loop=loop,
-        key=str((workdir / account).resolve()),
-    )
+    client = _new_client(account, workdir)
     try:
-        is_authorized = loop.run_until_complete(client.connect())
+        is_authorized = await client.connect()
         if is_authorized:
-            loop.run_until_complete(client.log_out())
+            await client.log_out()
         else:
-            loop.run_until_complete(client.storage.delete())
+            await client.storage.delete()
     except Exception as exc:  # noqa: BLE001
-        # Best-effort: remove local session files even if the remote call fails.
         try:
-            loop.run_until_complete(client.storage.delete())
+            await client.storage.delete()
         except Exception:  # noqa: BLE001
             pass
         raise RuntimeError(f"登出失败: {exc}") from exc
     finally:
-        loop.close()
+        try:
+            if client.is_connected:
+                await client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
         remove_account_user(account, workdir)
         for suffix in (".session", ".session-journal", ".session_string"):
             session_file = workdir / f"{account}{suffix}"
