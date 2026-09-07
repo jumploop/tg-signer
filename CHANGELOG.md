@@ -3,6 +3,9 @@
 ## 版本变动日志
 
 ### 0.9.7
+- WebUI“统一运行”独立为顶级页面，与“配置管理”“日志”等并列，方便一键启动/停止全部签到或监控进程
+
+### 0.9.7
 - 修复 `UserSigner.normal_run` 在 `while True` 循环内重复注册消息处理器，导致 handler 累积
 - 修复 `MatchConfig` 缺少 `rule_value` 校验，运行时 `rule_value=None` 触发 `AttributeError`，`UserMonitor.on_message` 未捕获
 - 修复 WebUI 登录会话未清理 `core._CLIENT_INSTANCES` / `_CLIENT_REFS`，同一账号二次登录可能拿到绑定旧 loop 的 client
