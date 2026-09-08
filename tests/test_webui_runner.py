@@ -20,10 +20,22 @@ def _cleanup_processes():
         runner._PROCESSES.pop(key, None)
 
 
-def test_process_key_and_log_path(tmp_path):
+def test_default_log_file_name_is_unified():
+    # 主日志文件名固定,所有日志聚合到同一个文件
+    assert runner.DEFAULT_LOG_FILE_NAME == "tg-signer.log"
+
+
+def test_process_key():
     assert runner.process_key("signer", "my_sign") == "signer:my_sign"
+
+
+def test_log_path_returns_unified_main_log(tmp_path):
+    # 0.9.9 起所有日志统一到主日志文件,<kind>_<task>.log 命名不再使用
     assert runner.log_path(tmp_path, "signer", "my_sign") == (
-        tmp_path / "logs" / "signer_my_sign.log"
+        tmp_path / "logs" / runner.DEFAULT_LOG_FILE_NAME
+    )
+    assert runner.log_path(tmp_path, "monitor", "m1") == (
+        tmp_path / "logs" / runner.DEFAULT_LOG_FILE_NAME
     )
 
 
@@ -37,8 +49,8 @@ def test_build_command_signer(monkeypatch, tmp_path):
     assert "--account" in cmd
     assert "--session_dir" in cmd
     assert "--log-dir" in cmd
-    log_file = cmd[cmd.index("--log-file") + 1]
-    assert Path(log_file) == tmp_path / "logs" / "signer_my_sign.log"
+    # 不再为每个任务单独传 --log-file,统一到主日志
+    assert "--log-file" not in cmd
     assert cmd[-2:] == ["run", "my_sign"]
 
 
@@ -67,7 +79,7 @@ def test_start_then_stop(monkeypatch, tmp_path):
         lambda *a, **k: [sys.executable, "-c", "import time; time.sleep(60)"],
     )
     ok, msg = runner.start("signer", "t1", tmp_path, "acc")
-    assert ok
+    assert ok, msg
     key = runner.process_key("signer", "t1")
     assert runner.running_tasks().get(key) is True
 
@@ -152,3 +164,81 @@ def test_shutdown_all_terminates_tracked_processes(monkeypatch, tmp_path):
 
 def test_shutdown_all_no_op_when_empty():
     assert runner.shutdown_all() == []
+
+
+def test_start_redirects_stdout_stderr_to_main_log(monkeypatch, tmp_path):
+    """子进程 stdout/stderr 应被重定向到 <workdir>/logs/<main_log>,而非 DEVNULL。"""
+    main_log = tmp_path / "logs" / runner.DEFAULT_LOG_FILE_NAME
+    marker = "RUNNER_REDIRECT_MARKER_42"
+    # grace 调到 0.3s:子进程先 flush marker 再 sleep 60,grace 期内仍存活
+    monkeypatch.setattr(runner, "_STARTUP_GRACE_SECONDS", 0.3)
+    # 子进程脚本:先 flush marker,再长睡,避免被 grace 早退检测捕获
+    child_script = (
+        "import sys, time; "
+        "sys.stdout.write('" + marker + "' + chr(10)); "
+        "sys.stdout.flush(); time.sleep(60)"
+    )
+    monkeypatch.setattr(
+        runner,
+        "build_command",
+        lambda *a, **k: [sys.executable, "-c", child_script],
+    )
+    ok, msg = runner.start("signer", "t_redir", tmp_path, "acc")
+    assert ok, msg
+    try:
+        # 等 marker 真正落盘(子进程 flush 后写到 main_log,文件 I/O 略有延迟)
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if main_log.is_file() and marker in main_log.read_text(
+                encoding="utf-8", errors="ignore"
+            ):
+                break
+            time.sleep(0.05)
+    finally:
+        runner.stop("signer", "t_redir")
+
+    # 主日志文件应存在并包含 marker
+    assert main_log.is_file(), f"expected main log at {main_log}"
+    content = main_log.read_text(encoding="utf-8", errors="ignore")
+    assert marker in content, (
+        f"stdout was not redirected to main log; content was:\n{content!r}"
+    )
+
+
+def test_start_creates_log_dir(tmp_path):
+    """start() 启动前应自动创建 <workdir>/logs 目录。"""
+    workdir = tmp_path / "wd"
+    workdir.mkdir()
+    assert not (workdir / "logs").exists()
+    # 用一个会立即退出的子进程(避免与时间竞争)
+    import sys as _sys
+
+    import tg_signer.webui.runner as _runner
+
+    orig_build = _runner.build_command
+    _runner.build_command = lambda *a, **k: [_sys.executable, "-c", "pass"]
+    try:
+        _runner.start("signer", "t_mkdir", workdir, "acc")
+    finally:
+        _runner.build_command = orig_build
+    assert (workdir / "logs").is_dir()
+    assert (workdir / "logs" / runner.DEFAULT_LOG_FILE_NAME).is_file()
+
+
+def test_start_propagates_file_handle_error(monkeypatch, tmp_path):
+    """若打开主日志失败,start() 应返回失败而非静默丢日志。"""
+    log_path = tmp_path / "logs" / runner.DEFAULT_LOG_FILE_NAME
+    # 让目录创建后,open() 失败:把 logs/ 弄成文件
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.parent.rmdir()
+    log_path.parent.write_text("not a dir", encoding="utf-8")
+
+    monkeypatch.setattr(
+        runner,
+        "build_command",
+        lambda *a, **k: [sys.executable, "-c", "import time; time.sleep(60)"],
+    )
+    ok, msg = runner.start("signer", "t_handle_err", tmp_path, "acc")
+    assert ok is False
+    assert "启动失败" in msg
+    assert "signer:t_handle_err" not in runner._PROCESSES

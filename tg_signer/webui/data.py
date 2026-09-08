@@ -18,6 +18,8 @@ CONFIG_META: dict[ConfigKind, Tuple[str, type[BaseJSONConfig]]] = {
 DEFAULT_WORKDIR = Path(os.environ.get("TG_SIGNER_WORKDIR", ".signer"))
 LOG_DIR = Path("logs")
 DEFAULT_LOG_FILE = LOG_DIR / "tg-signer.log"
+# 与 tg_signer.webui.runner.DEFAULT_LOG_FILE_NAME 保持一致,统一主日志文件名
+LOG_FILE_NAME = DEFAULT_LOG_FILE.name
 
 
 @dataclass

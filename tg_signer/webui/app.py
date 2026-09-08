@@ -31,6 +31,7 @@ from tg_signer.webui.data import (
     DEFAULT_LOG_FILE,
     DEFAULT_WORKDIR,
     LOG_DIR,
+    LOG_FILE_NAME,
     ConfigKind,
     delete_config,
     get_workdir,
@@ -93,7 +94,8 @@ AUTH_STORAGE_KEY = "tg_signer_gui_auth_code"
 class UIState:
     def __init__(self) -> None:
         self.workdir: Path = get_workdir(DEFAULT_WORKDIR)
-        self.log_path: Path = DEFAULT_LOG_FILE
+        # 统一主日志:<workdir>/logs/<LOG_FILE_NAME>,与子进程共享同一份
+        self.log_path: Path = self.workdir / "logs" / LOG_FILE_NAME
         self.log_limit: int = 200
         self.record_filter: str = ""
 
@@ -549,7 +551,10 @@ def log_block() -> Callable[[], None]:
 
         def refresh_log_options() -> None:
             seen: dict[str, str] = {}
-            for base in (LOG_DIR, state.workdir / "logs"):
+            # 优先扫 workdir/logs,统一的主日志;再 fallback 到旧 LOG_DIR 兼容旧部署
+            for base in (state.workdir / "logs", LOG_DIR):
+                if not base.is_dir():
+                    continue
                 for log_file in list_log_files(base):
                     seen[str(log_file)] = str(log_file)
             options = list(seen)
@@ -1227,7 +1232,22 @@ def build_ui(auth_code: str = None) -> None:
     _auth_gate(root, auth_code, render_dashboard)
 
 
+def _setup_webui_logger(workdir: Path) -> None:
+    """Configure file logging for the WebUI process itself.
+
+    WebUI runs in-process for account login/listing operations; without this
+    the WebUI process writes only to stderr and reboots wipe the audit trail.
+    """
+    from tg_signer.logger import configure_logger
+
+    log_dir = workdir / "logs"
+    log_file = log_dir / runner.DEFAULT_LOG_FILE_NAME
+    configure_logger(log_level="INFO", log_dir=log_dir, log_file=log_file)
+
+
 def main(host: str = None, port: int = None, storage_secret: str = None) -> None:
+    # WebUI 自身也写文件日志,与子进程共享 <workdir>/logs/tg-signer.log
+    _setup_webui_logger(DEFAULT_WORKDIR)
     # WebUI 退出时主动清理 runner 跟踪的子进程,避免孤儿进程
     app.on_shutdown(runner.shutdown_all)
     ui.run(

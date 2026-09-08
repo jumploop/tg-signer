@@ -1,7 +1,8 @@
 """WebUI 后台运行进程管理。
 
-以独立 CLI 子进程持续运行签到/监控任务，避免阻塞 WebUI 事件循环，
-子进程日志通过 CLI 的 --log-file 写入 <workdir>/logs/<kind>_<task>.log。
+以独立 CLI 子进程持续运行签到/监控任务，避免阻塞 WebUI 事件循环。
+所有子进程与 WebUI 主进程统一写入 <workdir>/logs/<DEFAULT_LOG_FILE>，
+子进程 stdout/stderr 也追加到同一文件，避免日志被 DEVNULL 吞掉。
 """
 
 from __future__ import annotations
@@ -11,6 +12,9 @@ import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+# 与 webui.data.DEFAULT_LOG_FILE.name 保持一致,统一主日志文件名
+DEFAULT_LOG_FILE_NAME = "tg-signer.log"
 
 _PROCESSES: Dict[str, subprocess.Popen] = {}
 
@@ -23,7 +27,13 @@ def process_key(kind: str, task: str) -> str:
 
 
 def log_path(workdir: Path | str, kind: str, task: str) -> Path:
-    return Path(workdir) / "logs" / f"{kind}_{task}.log"
+    """Return the per-task log file path.
+
+    .. deprecated::
+        0.9.9 起所有日志统一到 <workdir>/logs/<DEFAULT_LOG_FILE_NAME>,
+        本函数仅保留兼容旧调用方,返回主日志文件路径。
+    """
+    return Path(workdir) / "logs" / DEFAULT_LOG_FILE_NAME
 
 
 def build_command(
@@ -35,6 +45,7 @@ def build_command(
 ) -> List[str]:
     """Construct the CLI command that keeps running <kind> task <task>."""
     workdir = Path(workdir)
+    # 统一写到 <workdir>/logs/tg-signer.log(WebUI 主进程也写同一份),便于日志页聚合
     cmd = [
         sys.executable,
         "-m",
@@ -47,8 +58,6 @@ def build_command(
         str(workdir),
         "--log-dir",
         str(workdir / "logs"),
-        "--log-file",
-        str(log_path(workdir, kind, task)),
     ]
     if proxy:
         cmd += ["--proxy", proxy]
@@ -99,15 +108,21 @@ def start(
     if proc is not None and proc.poll() is None:
         return False, f"{task} 已在运行"
     workdir = Path(workdir)
+    log_dir = workdir / "logs"
     try:
         workdir.mkdir(parents=True, exist_ok=True)
+        log_dir.mkdir(parents=True, exist_ok=True)
         cmd = build_command(kind, task, workdir, account, proxy)
-        child = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        # 把 stdout/stderr 也追加到同一份主日志,作为 file handler 的双保险
+        # (多进程并发写同一文件在 logging 层是线程安全的;跨进程这里仅作 fallback)
+        main_log = log_dir / DEFAULT_LOG_FILE_NAME
+        log_fp = open(main_log, "a", encoding="utf-8")
     except OSError as exc:
+        return False, f"{task} 启动失败: {exc}"
+    try:
+        child = subprocess.Popen(cmd, stdout=log_fp, stderr=log_fp)
+    except OSError as exc:
+        log_fp.close()
         return False, f"{task} 启动失败: {exc}"
 
     # 早期失败检测:短暂 wait + poll,如果子进程已退出,说明参数错误/启动异常
