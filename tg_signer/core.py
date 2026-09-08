@@ -31,7 +31,7 @@ from pyrogram.enums import ChatMembersFilter, ChatType
 from pyrogram.handlers import EditedMessageHandler, MessageHandler
 from pyrogram.methods.utilities.idle import idle
 from pyrogram.session import Session
-from pyrogram.storage import SQLiteStorage
+from pyrogram.storage.sqlite_storage import SQLiteStorage
 from pyrogram.types import (
     Chat,
     Folder,
