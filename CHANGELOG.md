@@ -2,6 +2,9 @@
 
 ## 版本变动日志
 
+### 0.9.8
+- 修复 `tg_signer/__main__.py` 缺少 `if __name__ == "__main__"` 入口块,导致 WebUI「统一运行」页面用 `python -m tg_signer` 拉起子进程时立即退出、启动全部失败
+
 ### 0.9.7
 - WebUI"统一运行"独立为顶级页面,与"配置管理""日志"等并列,方便一键启动/停止全部签到或监控进程
 - 修复 `UserSigner.normal_run` 在 `while True` 循环内重复注册消息处理器,导致 handler 累积
@@ -142,6 +145,9 @@
 - 调用 AI 识别图片点击键盘
 
 ## Changelog
+
+### 0.9.8
+- Fix `tg_signer/__main__.py` missing the `if __name__ == "__main__"` entry block, which made the WebUI "Unified Run" page spawn child processes via `python -m tg_signer` that exited immediately, failing every start
 
 ### 0.9.7
 - WebUI: split "Unified Run" out as a top-level tab alongside "Config" and "Logs" for one-click start/stop of all signer/monitor processes
