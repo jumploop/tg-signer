@@ -122,7 +122,14 @@ def test_webui_all_lists_eager_and_lazy_symbols():
 
 def test_lazy_attr_works_when_nicegui_present():
     """When NiceGUI is actually importable, lazy attrs resolve correctly
-    and are cached on the module after first access."""
+    and are cached on the module after first access.
+
+    Only runs in environments that have the optional ``[gui]`` extra
+    installed; on slim CI images / default installs the test is skipped
+    (the no-nicegui paths are already covered by the prior tests).
+    """
+    pytest.importorskip("nicegui")
+
     import tg_signer.webui
 
     # Ensure fresh import state for the assertion below.
