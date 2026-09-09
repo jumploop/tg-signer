@@ -2,6 +2,13 @@
 
 ## 版本变动日志
 
+### 0.9.11
+- 修复 WebUI 统一运行反复启停累计 fd 泄漏:`runner.start` 在 `Popen` 后立即关闭父进程日志文件对象,长会话不再累积 fd 到系统上限(Windows 下同时避免日志文件无法轮转/重命名);早退路径 `child.wait()` 收割已退出子进程,避免 POSIX 僵尸进程
+- 修复 `MatchConfig.match_text` 对图片/语音/贴纸/dice 等无文本消息崩溃:非 `all` 规则下文本为 `None` 时返回不匹配,不再触发 `AttributeError`
+- 修复 WebUI「统一运行」一键启动同步阻塞:`start_all` 改用 `asyncio.to_thread` 调用 `runner.start`,避免 1.5s×任务数的同步启动冻结 NiceGUI 事件循环
+- 将 `UIState` / `_setup_webui_logger` 从 `app` 下沉到 `data`,日志相关测试不再依赖 `nicegui`,无 GUI 依赖环境可跑完整测试
+- 新增 6 个回归测试(fd 泄漏、僵尸进程收割、`match_text(None)` 参数化);无 `nicegui` 环境下跳过懒加载正向测试
+
 ### 0.9.10
 - 修复无 `nicegui` 依赖环境下 `import tg_signer.webui` 失败的问题:`webui/__init__.py` 改用 PEP 562 模块级懒加载,`data` / `runner` / `account` / `auth` / `schema_utils` 等轻量子模块在未安装 `tg-signer[gui]` 时也可正常导入,`AUTH_CODE_ENV` / `build_ui` / `main` 保持按需懒加载,向后兼容
 - 新增 6 个测试覆盖无 `nicegui` 环境下的懒加载导入行为(CI 默认 runner 不再需要额外安装 GUI 依赖即可跑完整测试)
@@ -159,6 +166,13 @@
 - 调用 AI 识别图片点击键盘
 
 ## Changelog
+
+### 0.9.11
+- Fix fd leak in the WebUI unified runner: `runner.start` closes the parent-side log file object right after `Popen`, so repeated start/stop cycles no longer accumulate FDs up to the OS limit (and no longer block log rotation/rename on Windows); the early-exit path now uses `child.wait()` to reap exited children, avoiding zombie processes on POSIX
+- Fix `MatchConfig.match_text` crashing on text-less messages (images, voice, stickers, dice): non-`all` rules now return `False` when text is `None` instead of raising `AttributeError`
+- Fix the WebUI "start all" button blocking the event loop: `start_all` now calls `runner.start` via `asyncio.to_thread` so the sequential 1.5s×N startup no longer freezes the NiceGUI UI
+- Move `UIState` / `_setup_webui_logger` from `app` into `data` so logging tests no longer require `nicegui` and the full suite runs without the GUI extra
+- Add 6 regression tests (fd leak, zombie reaping, parametrized `match_text(None)`); skip the positive lazy-loading test in environments without NiceGUI
 
 ### 0.9.10
 - WebUI package no longer requires NiceGUI at import time: `tg_signer/webui/__init__.py` uses a PEP 562 lazy module-level `__getattr__`, so the lightweight submodules (`data`, `runner`, `account`, `auth`, `schema_utils`) import cleanly without the `tg-signer[gui]` extra, while `AUTH_CODE_ENV` / `build_ui` / `main` remain lazily loaded for backward compatibility
