@@ -61,6 +61,9 @@ def _webui_process_state():
             except subprocess.TimeoutExpired:
                 proc.kill()
         webui_runner._PROCESSES.pop(key, None)
+        lock = webui_runner._LOCKS.pop(key, None)
+        if lock is not None:
+            lock.release()
 
 
 def test_setup_webui_logger_creates_main_log(tmp_path, restored_logger):
@@ -126,7 +129,7 @@ def test_child_process_stdout_visible_in_load_logs(
             f"load_logs did not surface child stdout; lines were:\n{lines!r}"
         )
     finally:
-        webui_runner.stop("signer", "t_e2e")
+        webui_runner.stop("signer", "acc")
 
 
 def test_ui_state_log_path_defaults_to_workdir_main_log():

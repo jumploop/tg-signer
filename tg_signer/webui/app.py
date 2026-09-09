@@ -914,11 +914,17 @@ def _apply_paths(workdir_input, on_refresh: Callable[[], None]) -> None:
 
 
 def run_block() -> Callable[[], None]:
-    """“统一运行”页面：选择账号后一键启动/停止持续运行进程。"""
+    """ "统一运行"页面：选择账号后一键启动/停止持续运行进程。
+
+    一个账号同 kind 的多个任务共享一个子进程(共享 pyrogram Client),
+    避免多进程抢 SQLite session 文件触发 ``database is locked``;
+    跨 WebUI 实例的并发启动由账号级文件锁兜底拒绝。
+    """
     with ui.card().classes("w-full"):
         ui.label("统一运行（持续监控）").classes("text-lg font-semibold")
         ui.label(
-            "以独立 CLI 进程持续运行所选类型的全部任务，日志写入 "
+            "以独立 CLI 进程持续运行所选类型/账号的全部任务，多个任务共享同一进程与 "
+            "Client（避免 SQLite session 文件锁冲突）。日志写入 "
             "<workdir>/logs/，可在“日志”页查看；WebUI 服务重启后进程不再受管理。"
         ).classes("text-sm text-gray-500")
         with ui.row().classes("items-end w-full"):
@@ -952,8 +958,8 @@ def run_block() -> Callable[[], None]:
                     account_select.value = names[0] if names else None
                 account_select.update()
 
-        def stop_one(kind: str, task: str) -> None:
-            ok, msg = runner.stop(kind, task)
+        def stop_process(kind: str, account: str) -> None:
+            ok, msg = runner.stop(kind, account)
             notify_result(ok, msg)
             refresh(force=True)
 
@@ -971,65 +977,70 @@ def run_block() -> Callable[[], None]:
             if not tasks:
                 ui.notify(f"当前工作目录没有 {kind} 任务配置", type="warning")
                 return
-            started_keys: List[Tuple[str, str]] = []
-            started = skipped = 0
-            for task in tasks:
-                # runner.start 内部有 time.sleep(_STARTUP_GRACE_SECONDS),同步调用会
-                # 冻结 nicegui 事件循环;丢进线程池避免 UI 卡死(仍串行启动,保持原语义)
-                ok, _msg = await asyncio.to_thread(
-                    runner.start, kind, task, state.workdir, str(account)
+            # 关键改动: 多个任务合并到一个子进程,共享 pyrogram Client / 同一份
+            # SQLite session 文件,避免多进程抢锁导致 "database is locked"。
+            # runner.start 内部 time.sleep 1.5s,仍丢线程池避免冻结事件循环。
+            ok, msg = await asyncio.to_thread(
+                runner.start, kind, tasks, state.workdir, str(account)
+            )
+            notify_result(ok, msg)
+            if not ok:
+                refresh(force=True)
+                return
+            # 早期失败探测: 子进程启动后立即退出会被这里捕获
+            await asyncio.sleep(1.5)
+            if not runner.status(kind, str(account)):
+                notify_result(
+                    False,
+                    f"账号 {account} 的 {kind} 任务启动后立即退出,请到“日志”页查看",
                 )
-                if ok:
-                    started += 1
-                    started_keys.append((kind, task))
-                else:
-                    skipped += 1
-            dead: List[str] = []
-            if started_keys:
-                await asyncio.sleep(1.5)
-                dead = [task for k, task in started_keys if not runner.status(k, task)]
-            msg = f"已完成：启动 {started} 个，跳过/失败 {skipped} 个"
-            if dead:
-                msg += f"；{', '.join(dead)} 启动后立即退出，请到“日志”页查看"
-                notify_result(False, msg)
-            else:
-                notify_result(started > 0, msg)
             refresh(force=True)
 
         def refresh(force: bool = False) -> None:
             nonlocal _last_snapshot
             sync_accounts()
-            entries = tuple(
-                (kind, task)
-                for kind in ("signer", "monitor")
-                for task in list_task_names(kind, state.workdir)
-            )
+            # 行维度从 (kind, task) 改为 (kind, account): 一个进程跑同 kind/account
+            # 的所有任务,UI 上展示「正在运行哪些账号的哪些类型任务」,以及任务数。
+            entries: List[Tuple[str, str, int]] = []
+            for kind in ("signer", "monitor"):
+                tasks = list_task_names(kind, state.workdir)
+                accounts = {
+                    item["account"]
+                    for item in list_accounts(state.workdir)
+                    if "session" in item["kind"]
+                }
+                for account in sorted(accounts):
+                    entries.append((kind, account, len(tasks)))
             running = runner.running_tasks()
-            snapshot = (entries, frozenset(k for k, v in running.items() if v))
+            snapshot = (
+                tuple(entries),
+                frozenset(k for k, v in running.items() if v),
+            )
             if not force and snapshot == _last_snapshot:
                 return
             _last_snapshot = snapshot
             status_list.clear()
             if not entries:
                 with status_list:
-                    ui.label("当前工作目录没有签到/监控任务配置。").classes(
-                        "text-gray-500"
-                    )
+                    ui.label(
+                        "当前工作目录没有签到/监控任务配置,或没有已登录的账号。"
+                    ).classes("text-gray-500")
                 return
             with status_list:
-                for kind, task in entries:
-                    is_run = running.get(runner.process_key(kind, task), False)
+                for kind, account, task_count in entries:
+                    is_run = running.get(runner.process_key(kind, account), False)
+                    label = f"{kind} · {account} ({task_count} 个任务)"
                     with ui.row().classes("items-center w-full gap-3"):
-                        ui.label(kind).classes("text-gray-500 w-20")
-                        ui.label(task).classes("w-64")
+                        ui.label(label).classes("w-80")
                         ui.badge(
                             "运行中" if is_run else "已停止",
                             color="positive" if is_run else "default",
                         ).props("outline")
-                        ui.button(
-                            "停止",
-                            on_click=lambda k=kind, t=task: stop_one(k, t),
-                        ).props("dense flat")
+                        if is_run:
+                            ui.button(
+                                "停止",
+                                on_click=lambda k=kind, a=account: stop_process(k, a),
+                            ).props("dense flat")
 
         ui.timer(5.0, refresh, active=True)
     return refresh
