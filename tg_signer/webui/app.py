@@ -31,10 +31,10 @@ from tg_signer.webui.data import (
     DEFAULT_LOG_FILE,
     DEFAULT_WORKDIR,
     LOG_DIR,
-    LOG_FILE_NAME,
     ConfigKind,
+    UIState,
+    _setup_webui_logger,
     delete_config,
-    get_workdir,
     list_log_files,
     list_task_names,
     load_config,
@@ -89,22 +89,6 @@ MONITOR_TEMPLATE: Dict[str, object] = {
 
 AUTH_CODE_ENV = "TG_SIGNER_GUI_AUTHCODE"
 AUTH_STORAGE_KEY = "tg_signer_gui_auth_code"
-
-
-class UIState:
-    def __init__(self) -> None:
-        self.workdir: Path = get_workdir(DEFAULT_WORKDIR)
-        # 统一主日志:<workdir>/logs/<LOG_FILE_NAME>,与子进程共享同一份
-        self.log_path: Path = self.workdir / "logs" / LOG_FILE_NAME
-        self.log_limit: int = 200
-        self.record_filter: str = ""
-
-    def set_workdir(self, path_str: str) -> None:
-        self.workdir = get_workdir(Path(path_str).expanduser())
-        self.log_path = self.workdir / "logs" / DEFAULT_LOG_FILE.name
-
-    def set_log_path(self, path_str: str) -> None:
-        self.log_path = Path(path_str).expanduser()
 
 
 state = UIState()
@@ -990,7 +974,11 @@ def run_block() -> Callable[[], None]:
             started_keys: List[Tuple[str, str]] = []
             started = skipped = 0
             for task in tasks:
-                ok, _msg = runner.start(kind, task, state.workdir, str(account))
+                # runner.start 内部有 time.sleep(_STARTUP_GRACE_SECONDS),同步调用会
+                # 冻结 nicegui 事件循环;丢进线程池避免 UI 卡死(仍串行启动,保持原语义)
+                ok, _msg = await asyncio.to_thread(
+                    runner.start, kind, task, state.workdir, str(account)
+                )
                 if ok:
                     started += 1
                     started_keys.append((kind, task))
@@ -1230,19 +1218,6 @@ def build_ui(auth_code: str = None) -> None:
 
     root.clear()
     _auth_gate(root, auth_code, render_dashboard)
-
-
-def _setup_webui_logger(workdir: Path) -> None:
-    """Configure file logging for the WebUI process itself.
-
-    WebUI runs in-process for account login/listing operations; without this
-    the WebUI process writes only to stderr and reboots wipe the audit trail.
-    """
-    from tg_signer.logger import configure_logger
-
-    log_dir = workdir / "logs"
-    log_file = log_dir / runner.DEFAULT_LOG_FILE_NAME
-    configure_logger(log_level="INFO", log_dir=log_dir, log_file=log_file)
 
 
 def main(host: str = None, port: int = None, storage_secret: str = None) -> None:

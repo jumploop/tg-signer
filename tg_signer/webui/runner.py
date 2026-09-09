@@ -125,10 +125,17 @@ def start(
         log_fp.close()
         return False, f"{task} 启动失败: {exc}"
 
+    # 子进程通过句柄继承拿到了自己的写入端,父进程应立即释放这个 Python 文件
+    # 对象,否则每次 start() 泄漏一个 fd:长会话反复启停会累积到系统上限,且在
+    # Windows 下父进程残留的句柄会让日志文件无法被轮转/重命名(PermissionError)。
+    log_fp.close()
+
     # 早期失败检测:短暂 wait + poll,如果子进程已退出,说明参数错误/启动异常
     time.sleep(_STARTUP_GRACE_SECONDS)
     rc = child.poll()
     if rc is not None:
+        # 收割已退出的子进程,避免 POSIX 下残留僵尸进程
+        child.wait()
         return False, f"{task} 启动后立即退出(exit code={rc}),请检查 session 与参数"
 
     _PROCESSES[key] = child

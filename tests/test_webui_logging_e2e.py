@@ -2,7 +2,7 @@
 
 Exercises the full path that real WebUI traffic takes:
 
-1. ``webui.app._setup_webui_logger`` configures file logging for the WebUI
+1. ``webui.data._setup_webui_logger`` configures file logging for the WebUI
    process itself.
 2. ``webui.runner.start`` spawns a child process whose stdout/stderr is
    appended to the same ``<workdir>/logs/tg-signer.log``.
@@ -25,7 +25,7 @@ import pytest
 
 from tg_signer.webui import data as webui_data
 from tg_signer.webui import runner as webui_runner
-from tg_signer.webui.app import _setup_webui_logger
+from tg_signer.webui.data import _setup_webui_logger
 
 
 @pytest.fixture
@@ -134,7 +134,7 @@ def test_ui_state_log_path_defaults_to_workdir_main_log():
 
     直接实例化 UIState(无 nicegui 渲染),验证默认 workdir 化的主日志路径。
     """
-    from tg_signer.webui.app import UIState
+    from tg_signer.webui.data import UIState
 
     state = UIState()
     assert state.log_path == state.workdir / "logs" / webui_data.LOG_FILE_NAME

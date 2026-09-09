@@ -272,3 +272,14 @@ class TestMatchConfig:
         config = MatchConfig(chat_id=123, rule="contains", rule_value="hello")
         object.__setattr__(config, "rule_value", None)
         assert config.match_text("hello world") is False
+
+    # 图片/语音/贴纸/dice 等消息没有 text 字段(None),不应崩溃
+    @pytest.mark.parametrize("rule", ["exact", "contains", "regex"])
+    def test_match_text_returns_false_when_text_is_none(self, rule):
+        config = MatchConfig(chat_id=123, rule=rule, rule_value="hello")
+        assert config.match_text(None) is False
+
+    def test_match_text_all_rule_matches_none_text(self):
+        # "all" 规则匹配所有消息,包括无文本的消息(如图片),不应被 None 短路
+        config = MatchConfig(chat_id=123, rule="all", rule_value=None)
+        assert config.match_text(None) is True

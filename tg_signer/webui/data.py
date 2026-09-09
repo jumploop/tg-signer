@@ -304,3 +304,34 @@ def load_group_chats(workdir: Optional[Path | str] = None) -> List[Dict[str, Any
         seen.values(),
         key=lambda c: str(c.get("title") or c.get("username") or "").lower(),
     )
+
+
+class UIState:
+    """WebUI 共享 UI 状态(不依赖 NiceGUI,便于无 GUI 环境测试)。"""
+
+    def __init__(self) -> None:
+        self.workdir: Path = get_workdir(DEFAULT_WORKDIR)
+        # 统一主日志:<workdir>/logs/<LOG_FILE_NAME>,与子进程共享同一份
+        self.log_path: Path = self.workdir / "logs" / LOG_FILE_NAME
+        self.log_limit: int = 200
+        self.record_filter: str = ""
+
+    def set_workdir(self, path_str: str) -> None:
+        self.workdir = get_workdir(Path(path_str).expanduser())
+        self.log_path = self.workdir / "logs" / DEFAULT_LOG_FILE.name
+
+    def set_log_path(self, path_str: str) -> None:
+        self.log_path = Path(path_str).expanduser()
+
+
+def _setup_webui_logger(workdir: Path) -> None:
+    """Configure file logging for the WebUI process itself.
+
+    WebUI runs in-process for account login/listing operations; without this
+    the WebUI process writes only to stderr and reboots wipe the audit trail.
+    """
+    from tg_signer.logger import configure_logger
+
+    log_dir = workdir / "logs"
+    log_file = log_dir / LOG_FILE_NAME
+    configure_logger(log_level="INFO", log_dir=log_dir, log_file=log_file)

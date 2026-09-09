@@ -242,3 +242,59 @@ def test_start_propagates_file_handle_error(monkeypatch, tmp_path):
     assert ok is False
     assert "启动失败" in msg
     assert "signer:t_handle_err" not in runner._PROCESSES
+
+
+def test_start_closes_log_fp_after_popen(monkeypatch, tmp_path):
+    """start() 在 Popen 之后应立即关闭父进程的日志文件对象,避免 fd 泄漏。"""
+    captured = {}
+
+    class _FakeChild:
+        pid = 12345
+
+        def poll(self):
+            return None  # 子进程仍在运行(成功路径)
+
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_popen(cmd, stdout=None, stderr=None):
+        captured["stdout"] = stdout
+        captured["stderr"] = stderr
+        return _FakeChild()
+
+    monkeypatch.setattr(runner.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(runner, "_STARTUP_GRACE_SECONDS", 0.0)
+
+    ok, msg = runner.start("signer", "t_fd", tmp_path, "acc")
+    assert ok, msg
+    # 传给子进程的就是那个日志文件对象,父进程必须在 Popen 后关闭它
+    assert captured["stdout"] is not None
+    assert captured["stdout"] is captured["stderr"]
+    assert captured["stdout"].closed, "父进程日志文件对象未在 Popen 后关闭(fd 泄漏)"
+    runner._PROCESSES.pop("signer:t_fd", None)
+
+
+def test_start_reaps_child_on_early_exit(monkeypatch, tmp_path):
+    """启动后立即退出的子进程应被 wait() 收割,避免 POSIX 僵尸进程。"""
+    waited = {"called": False}
+
+    class _FakeChild:
+        def poll(self):
+            return 1  # 已退出,exit code 1
+
+        def wait(self, timeout=None):
+            waited["called"] = True
+            return 1
+
+    def fake_popen(cmd, stdout=None, stderr=None):
+        return _FakeChild()
+
+    monkeypatch.setattr(runner.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(runner, "_STARTUP_GRACE_SECONDS", 0.0)
+
+    ok, msg = runner.start("signer", "t_zombie", tmp_path, "acc")
+    assert ok is False
+    assert "启动后立即退出" in msg
+    assert waited["called"], "早退子进程未被 wait() 收割"
+    # 不应留在 _PROCESSES 里
+    assert "signer:t_zombie" not in runner._PROCESSES

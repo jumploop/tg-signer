@@ -480,6 +480,9 @@ class MatchConfig(BaseJSONConfig):
         rule_value = self.rule_value
         if self.rule == "all":
             return True
+        # 图片/语音/贴纸/dice 等消息没有文本字段(text=None),非 "all" 规则下不匹配
+        if text is None:
+            return False
         # 防御:即便绕过 validator 直接构造,rule_value 为空也不应崩溃
         if not rule_value:
             return False
