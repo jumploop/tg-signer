@@ -117,3 +117,54 @@ def test_generate_random_name_no_collision_under_saturation(tmp_path):
         for _ in range(1000)
     }
     assert len(names) == 1000  # 全部互不相同
+
+
+# ---------------------------------------------------------------------------
+# resolve_chat_id_for_selector (配置 ↔ 群组/频道 反向联动)
+# ---------------------------------------------------------------------------
+
+
+_CHATS_FIXTURE = {
+    "123": {"id": 123, "username": "chan_a", "title": "频道A", "type": "channel"},
+    "456": {"id": 456, "username": "grp_b", "title": "群B", "type": "group"},
+}
+
+
+@pytest.mark.parametrize(
+    "requested,expected",
+    [
+        (123, "123"),  # int 值直接命中
+        ("456", "456"),  # 字符串数字
+        ("@chan_a", "123"),  # @username
+        ("GRP_B", "456"),  # 裸 username,大小写不敏感
+        ("@GRP_B", "456"),  # @ 前缀 + 大小写不敏感
+    ],
+)
+def test_resolve_chat_id_for_selector_hits(requested, expected):
+    assert data.resolve_chat_id_for_selector(requested, _CHATS_FIXTURE) == expected
+
+
+@pytest.mark.parametrize(
+    "requested",
+    [None, True, 999, "999", "@nope", "", " ", "@", {}, 0],
+)
+def test_resolve_chat_id_for_selector_misses(requested):
+    assert data.resolve_chat_id_for_selector(requested, _CHATS_FIXTURE) is None
+
+
+def test_resolve_chat_id_for_selector_empty_dict():
+    assert data.resolve_chat_id_for_selector(123, {}) is None
+    assert data.resolve_chat_id_for_selector("@chan_a", {}) is None
+
+
+def test_ui_state_has_selected_chat_id_default_none():
+    state = data.UIState()
+    assert state.selected_chat_id is None
+
+
+def test_ui_state_selected_chat_id_roundtrip():
+    state = data.UIState()
+    state.selected_chat_id = 123
+    assert state.selected_chat_id == 123
+    state.selected_chat_id = "@chan_a"
+    assert state.selected_chat_id == "@chan_a"

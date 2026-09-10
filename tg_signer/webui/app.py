@@ -43,6 +43,7 @@ from tg_signer.webui.data import (
     load_logs,
     load_sign_records,
     load_user_infos,
+    resolve_chat_id_for_selector,
     save_config,
 )
 from tg_signer.webui.interactive import InteractiveSignerConfig
@@ -101,6 +102,31 @@ def pretty_json(data: Dict[str, object]) -> str:
 
 def notify_error(exc: Exception) -> None:
     ui.notify(f"{exc}", type="negative")
+
+
+def _first_chat_id_from_payload(
+    kind: ConfigKind, payload: object
+) -> "int | str | None":
+    """从 Signer/Monitor 配置 payload 中提取第一项的 chat_id。
+
+    - signer:  payload["chats"][0]["chat_id"]
+    - monitor: payload["match_cfgs"][0]["chat_id"]
+
+    返回 int/str 原值,缺失或类型不符返回 None。
+    """
+    if not isinstance(payload, dict):
+        return None
+    bucket_key = "chats" if kind == "signer" else "match_cfgs"
+    bucket = payload.get(bucket_key)
+    if not isinstance(bucket, list) or not bucket:
+        return None
+    item = bucket[0]
+    if not isinstance(item, dict):
+        return None
+    cid = item.get("chat_id")
+    if isinstance(cid, (int, str)) and cid:
+        return cid
+    return None
 
 
 class BaseConfigBlock:
@@ -190,6 +216,11 @@ class BaseConfigBlock:
             self.name_input.update()
             self.editor.run_editor_method(":expand", "[]", "path => true")
             self.selected_name["value"] = target
+            # 反向联动:把当前配置的 chat_id 写入 state.selected_chat_id,
+            # 触发 group_chat_block 高亮对应群组/频道下拉项。
+            state.selected_chat_id = _first_chat_id_from_payload(
+                self.kind, entry.payload
+            )
             self.on_loaded(target)
         except Exception as exc:  # noqa: BLE001
             notify_error(exc)
@@ -717,7 +748,12 @@ def group_chat_block(
             )
             chats_by_id[cid] = chat
         chat_select.options = options
-        if chat_select.value not in chats_by_id:
+        # 反向联动:从 state.selected_chat_id(由加载配置或 pick_group 写入)
+        # 解析回 chat_select 的 value,让群组下拉框始终与当前选中配置/已应用聊天保持一致。
+        resolved = resolve_chat_id_for_selector(state.selected_chat_id, chats_by_id)
+        if resolved is not None:
+            chat_select.value = resolved
+        elif chat_select.value not in chats_by_id:
             chat_select.value = None
         chat_select.update()
         if not options:
@@ -726,7 +762,8 @@ def group_chat_block(
                 "users/*/latest_chats.json"
             )
         else:
-            status_label.text = f"共 {len(options)} 个群组/频道"
+            extra = " - 已同步当前配置" if resolved is not None else ""
+            status_label.text = f"共 {len(options)} 个群组/频道{extra}"
         status_label.update()
 
     def _apply_chat(kind: str) -> None:
@@ -1093,6 +1130,9 @@ def _build_dashboard(container) -> None:
         sub_tabs = None
         signer_block = None
         monitor_block = None
+        # group_chat_block 的 refresh 回调,在 group_chat_block() 构造后绑定,
+        # 供 pick_group 在填入聊天后即时刷新右侧下拉框(反向联动高亮)。
+        chat_block_refresh: "Callable[[], None] | None" = None
 
         def pick_group(chat: Dict[str, object], kind: str) -> None:
             if kind == "signer" and signer_block is not None:
@@ -1103,6 +1143,11 @@ def _build_dashboard(container) -> None:
                 target_panel = tab_monitor
             else:
                 return
+            # 记录本次应用的 chat_id,随后刷新右侧群组/频道下拉框,
+            # 让 chat_select.value 立即落到刚填入的群组上。
+            state.selected_chat_id = chat.get("id")
+            if chat_block_refresh is not None:
+                chat_block_refresh()
             sub_tabs.value = target_panel
             sub_tabs.update()
 
@@ -1139,6 +1184,8 @@ def _build_dashboard(container) -> None:
                             "频道，在下拉框中搜索并选择后填入左侧配置。"
                         ).classes("text-sm text-gray-500 mb-2")
                         refreshers.append(group_chat_block(pick_group))
+                        # 绑定 refresh 回调,供 pick_group/refresh_all 触发右侧下拉框刷新
+                        chat_block_refresh = refreshers[-1]
 
             with ui.tab_panel(tab_run):
                 ui.label(

@@ -7,6 +7,7 @@
 - 填入配置时自动生成未占用的随机配置名(如 `sign_<chat>_<hex>`),写入「保存为/新建名称」输入框,不再误覆盖当前选中的已有配置;名称冲突时循环重试,极端情况下使用更长随机后缀
 - 新增 `data.generate_random_config_name` 并补充 6 个测试(前缀、slug、冲突、饱和)
 - 修复早退测试 flaky,确保子进程退出后被收割
+- 配置 ↔ 群组/频道双向联动:在「选择配置」下拉框加载某一配置后,右侧群组/频道下拉框自动高亮该配置已绑定的聊天(`chats[0].chat_id` / `match_cfgs[0].chat_id`);点击「填入签到/监控配置」后下拉框同样即时同步。支持按 int chat.id 或 `@username` 匹配,缺失时不干预用户手动选择
 
 ### 0.9.12
 - 修复 WebUI「统一运行」一键启动同一账号下全部任务时的 `sqlite3.OperationalError: database is locked`:`runner.start` 改为按 `(kind, account)` 单进程多任务模型,同一账号的所有任务共享一个 `pyrogram.Client` 实例与同一份 SQLite session 连接,根除多子进程争抢 `<workdir>/<account>.session` 写锁
