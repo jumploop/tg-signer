@@ -7,6 +7,21 @@ import pytest
 from tg_signer.webui import data
 
 
+@pytest.fixture(autouse=True)
+def _reset_module_cache():
+    """每个测试前清空模块级缓存,保证测试隔离。
+
+    generate_random_config_name 会把已生成过的名字缓存在模块级
+    _RECENTLY_GENERATED 与 _DISK_NAMES_CACHE 中,跨测试累积会让
+    "不冲突" 断言依赖于不相关的历史状态,污染测试。
+    """
+    data._RECENTLY_GENERATED.clear()
+    data._DISK_NAMES_CACHE.clear()
+    yield
+    data._RECENTLY_GENERATED.clear()
+    data._DISK_NAMES_CACHE.clear()
+
+
 def test_log_file_name_matches_runner():
     # 与 tg_signer.webui.runner.DEFAULT_LOG_FILE_NAME 一致
     assert data.LOG_FILE_NAME == "tg-signer.log"

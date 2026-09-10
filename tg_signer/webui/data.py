@@ -83,6 +83,32 @@ def _slugify(value: str, limit: int = 24) -> str:
     return slug[:limit]
 
 
+# 模块级缓存: 本进程本次会话内已经生成过的配置名。
+# 与磁盘已有配置一起参与避让,避免连续点击「填入签到/监控配置」产生重复名;
+# 也避免 set comprehension 形式批量调用时撞生日悖论(1000 次/65536 空间约 7-8 次重复)。
+# 进程重启后自动失效,与磁盘实际占用无关——磁盘上仍然有 N 个真实配置存在。
+_RECENTLY_GENERATED: set[str] = set()
+
+
+# 磁盘扫描结果缓存: (kind, str(workdir)) -> frozenset。
+# 避免每次 generate 调用都重新 listdir —— 在 1000 个配置目录下
+# 一次 listdir 大约 0.28s,连续生成会让调用 O(N) 拖到分钟级。
+# 缓存过期风险: webui 运行中用户手动新建/删除配置时,缓存看到的"已有"
+# 与实际磁盘有偏差——但生成的名字仍是 ~65536 空间随机,碰撞实际不可能。
+_DISK_NAMES_CACHE: dict[tuple[str, Optional[str]], frozenset[str]] = {}
+
+
+def _existing_names(kind: ConfigKind, workdir: Optional[Path | str]) -> frozenset[str]:
+    """读取磁盘上已有配置名(模块级缓存,首次 listdir 后复用)。"""
+    key = (kind, str(workdir) if workdir is not None else None)
+    cached = _DISK_NAMES_CACHE.get(key)
+    if cached is not None:
+        return cached
+    names = frozenset(list_task_names(kind, workdir))
+    _DISK_NAMES_CACHE[key] = names
+    return names
+
+
 def generate_random_config_name(
     kind: ConfigKind,
     chat: Optional[Dict[str, Any]] = None,
@@ -94,6 +120,7 @@ def generate_random_config_name(
     - kind="monitor" → ``monitor_<slug>_<hex>``
     - 末尾 ``<hex>`` 来自 ``secrets.token_hex``,保证多次调用大概率不重复;
       函数本身也会循环重试直到名称不在已有配置列表里,确保不与已有配置冲突。
+    - 同时把本次会话内已生成过的名称一并避让,避免连续/批量调用产生重复。
     """
     prefix = "sign" if kind == "signer" else "monitor"
     seed = ""
@@ -106,15 +133,20 @@ def generate_random_config_name(
             or ""
         )
     slug = _slugify(seed) or "chat"
-    existing = set(list_task_names(kind, workdir))
+    # taken = 磁盘上已有(缓存) ∪ 本进程本次会话已生成过
+    taken = set(_existing_names(kind, workdir))
+    taken.update(_RECENTLY_GENERATED)
     # 先用短后缀(4 hex)循环若干次,极端命名空间用尽时退回更长后缀。
     for _ in range(32):
         suffix = secrets.token_hex(2)
         name = f"{prefix}_{slug}_{suffix}"
-        if name not in existing:
+        if name not in taken:
+            _RECENTLY_GENERATED.add(name)
             return name
     suffix = secrets.token_hex(8)
-    return f"{prefix}_{slug}_{suffix}"
+    name = f"{prefix}_{slug}_{suffix}"
+    _RECENTLY_GENERATED.add(name)
+    return name
 
 
 def load_config(
