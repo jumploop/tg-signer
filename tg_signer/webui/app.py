@@ -623,23 +623,40 @@ def log_block() -> Callable[[], None]:
 def group_chat_block(
     on_pick: Callable[[Dict[str, object], str], None],
 ) -> Callable[[], None]:
-    container = ui.column().classes("w-full gap-2")
-    filter_input = ui.input(
-        label="筛选群组",
-        placeholder="名称 / 用户名 / ID",
-    ).classes("w-full")
-    with ui.row().classes("items-center w-full gap-3"):
-        account_select = ui.select(
+    """群组/频道选择器:一个框内提供账号下拉 + 可搜索的群组/频道下拉,选中后填入配置。"""
+    with ui.card().classes("w-full gap-3 p-4"):
+        with ui.row().classes("items-center w-full gap-3"):
+            account_select = ui.select(
+                options=[],
+                value=None,
+                label="账号",
+            ).classes("w-44")
+            refresh_btn = ui.button(
+                "刷新最近 50 个对话",
+                color="primary",
+                on_click=lambda: refresh_async(),
+            ).props("dense")
+        status_label = ui.label("").classes("text-sm text-gray-500")
+
+        chat_select = ui.select(
             options=[],
             value=None,
-            label="账号",
-        ).classes("w-56")
-        refresh_btn = ui.button(
-            "刷新最近 50 个对话",
-            color="primary",
-            on_click=lambda: refresh_async(),
-        ).props("dense")
-        status_label = ui.label("").classes("text-sm text-gray-500")
+            label="群组 / 频道",
+            with_input=True,
+            clearable=True,
+        ).classes("w-full")
+
+        with ui.row().classes("w-full gap-2"):
+            ui.button(
+                "填入签到配置",
+                on_click=lambda: _apply_chat("signer"),
+            ).props("outline dense")
+            ui.button(
+                "填入监控配置",
+                on_click=lambda: _apply_chat("monitor"),
+            ).props("outline dense")
+
+    chats_by_id: Dict[str, Dict[str, object]] = {}
 
     def sync_accounts() -> None:
         names = [
@@ -665,57 +682,48 @@ def group_chat_block(
             ok, message = await refresh_dialogs(str(account), state.workdir, 50)
         except Exception as exc:  # noqa: BLE001
             ok, message = False, str(exc)
-        status_label.text = ""
-        status_label.update()
         refresh_btn.enable()
         ui.notify(message, type="positive" if ok else "negative")
-        refresh_with_filter()
+        refresh()
 
-    def refresh(filter_text: str = "") -> None:
+    def refresh() -> None:
         sync_accounts()
-        container.clear()
-        keyword = (filter_text or "").strip().lower()
-        chats = [
-            chat
-            for chat in load_group_chats(state.workdir)
-            if not keyword
-            or keyword in str(chat.get("title") or "").lower()
-            or keyword in str(chat.get("username") or "").lower()
-            or keyword in str(chat.get("id") or "")
-        ]
-        with container:
-            if not chats:
-                ui.label(
-                    "未找到群组/频道信息，请先运行 tg-signer login 或 run 生成 "
-                    "users/*/latest_chats.json"
-                ).classes("text-gray-500")
-                return
-            for chat in chats:
-                title = chat.get("title") or chat.get("first_name") or "未命名"
-                username = f"@{chat['username']}" if chat.get("username") else "-"
-                with ui.card().classes("w-full p-3"):
-                    with ui.row().classes("w-full items-center gap-3"):
-                        with ui.column().classes("flex-grow gap-0"):
-                            ui.label(str(title)).classes("font-medium")
-                            ui.label(
-                                f"{chat.get('type')} | {username} "
-                                f"| ID: {chat.get('id')} | 账号: {chat.get('account') or '-'}"
-                            ).classes("text-sm text-gray-500")
-                        ui.button(
-                            "填入签到配置",
-                            on_click=lambda c=chat: on_pick(c, "signer"),
-                        ).props("outline dense")
-                        ui.button(
-                            "填入监控配置",
-                            on_click=lambda c=chat: on_pick(c, "monitor"),
-                        ).props("outline dense")
+        chats = load_group_chats(state.workdir)
+        chats_by_id.clear()
+        options = []
+        for chat in chats:
+            cid = str(chat.get("id"))
+            title = chat.get("title") or chat.get("first_name") or "未命名"
+            username = f"@{chat['username']}" if chat.get("username") else "-"
+            options.append(
+                {
+                    "label": f"{title} | {chat.get('type')} | {username} | ID:{cid}",
+                    "value": cid,
+                }
+            )
+            chats_by_id[cid] = chat
+        chat_select.options = options
+        if chat_select.value not in chats_by_id:
+            chat_select.value = None
+        chat_select.update()
+        if not options:
+            status_label.text = (
+                "未找到群组/频道信息，请先运行 tg-signer login 或 run 生成 "
+                "users/*/latest_chats.json"
+            )
+        else:
+            status_label.text = f"共 {len(options)} 个群组/频道"
+        status_label.update()
 
-    def refresh_with_filter() -> None:
-        refresh(filter_input.value)
+    def _apply_chat(kind: str) -> None:
+        chat = chats_by_id.get(str(chat_select.value or ""))
+        if chat is None:
+            ui.notify("请先在下拉框中选择一个群组或频道", type="warning")
+            return
+        on_pick(chat, kind)
 
-    filter_input.on_value_change(lambda _e: refresh_with_filter())
     refresh()
-    return refresh_with_filter
+    return refresh
 
 
 def account_block() -> Callable[[], None]:
@@ -1092,7 +1100,7 @@ def _build_dashboard(container) -> None:
         with ui.tab_panels(tabs, value=tab_configs).classes("w-full"):
             with ui.tab_panel(tab_configs):
                 ui.label(
-                    "管理 signer 和 monitor 的配置文件，右侧可快速选择群组填入配置。"
+                    "管理 signer 和 monitor 的配置文件，右侧可通过下拉框选择群组/频道填入配置。"
                 ).classes("text-gray-600")
                 with ui.row().classes("w-full items-start gap-4"):
                     with ui.column().classes("flex-1 min-w-0"):
@@ -1114,7 +1122,7 @@ def _build_dashboard(container) -> None:
                         ui.label("群组 / 频道").classes("text-lg font-semibold")
                         ui.label(
                             "从已登录账号缓存 (users/*/latest_chats.json) 列出群组/"
-                            "频道，点击即可填入左侧配置。"
+                            "频道，在下拉框中搜索并选择后填入左侧配置。"
                         ).classes("text-sm text-gray-500 mb-2")
                         refreshers.append(group_chat_block(pick_group))
 
