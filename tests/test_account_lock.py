@@ -24,11 +24,21 @@ _spec.loader.exec_module(runner)
 
 @pytest.fixture(autouse=True)
 def _cleanup_state():
-    """每个测试后清理 _PROCESSES / _LOCKS。"""
+    """每个测试后清理 _PROCESSES / _LOCKS。
+
+    ``terminate()`` 后必须 ``wait()`` 收割子进程,否则 Windows 上被强杀的
+    子进程异步退出,会与下一个测试的 ``Popen``/``poll`` 产生时序竞态
+    (flaky 的 "启动后立即退出" 误判为运行中)。
+    """
     yield
     for key, proc in list(runner._PROCESSES.items()):
         if proc.poll() is None:
             proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001
+                proc.kill()
+                proc.wait(timeout=5)
         runner._PROCESSES.pop(key, None)
         lock = runner._LOCKS.pop(key, None)
         if lock is not None:
@@ -109,11 +119,31 @@ def test_start_rejects_when_lock_held_by_orphan_handle(monkeypatch, tmp_path):
 
 
 def test_lock_released_after_immediate_exit(monkeypatch, tmp_path):
-    """子进程早退路径必须释放锁,否则下次 start 永远拿不到。"""
-    monkeypatch.setattr(runner, "_STARTUP_GRACE_SECONDS", 5.0)
-    monkeypatch.setattr(
-        runner, "build_command", lambda *a, **k: [sys.executable, "-c", "pass"]
-    )
+    """子进程早退路径必须释放锁,否则下次 start 永远拿不到。
+
+    用 fake Popen 模拟「立即退出」与「正常运行」两种子进程,不依赖真实
+    子进程的启动/退出耗时(本机 Python 因注入 shim 启动极慢,真实 `pass`
+    子进程退出时间波动大,会与 grace 秒数竞态导致 flaky)。
+    """
+    state = {"running": False}
+
+    class _FakeChild:
+        pid = 4242
+
+        def poll(self):
+            return None if state["running"] else 1
+
+        def wait(self, timeout=None):
+            return 1
+
+        def terminate(self):
+            state["running"] = False
+
+        def kill(self):
+            state["running"] = False
+
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *a, **k: _FakeChild())
+    monkeypatch.setattr(runner, "_STARTUP_GRACE_SECONDS", 0.0)
 
     ok, msg = runner.start("signer", "t_fail", tmp_path, "alice")
     assert ok is False
@@ -121,11 +151,7 @@ def test_lock_released_after_immediate_exit(monkeypatch, tmp_path):
     assert "alice" not in runner._LOCKS
 
     # 锁已释放 → 下次可成功 start
-    monkeypatch.setattr(
-        runner,
-        "build_command",
-        lambda *a, **k: [sys.executable, "-c", "import time; time.sleep(60)"],
-    )
+    state["running"] = True
     ok2, _ = runner.start("signer", "t_ok", tmp_path, "alice")
     assert ok2, "上次早退后锁未释放,新进程被拒"
 
