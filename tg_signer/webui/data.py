@@ -1,5 +1,7 @@
 import json
 import os
+import re
+import secrets
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -70,6 +72,49 @@ def list_task_names(
     if not root.is_dir():
         return []
     return sorted([p.name for p in root.iterdir() if p.is_dir()])
+
+
+_SLUG_RE = re.compile(r"[^\w\u4e00-\u9fff]+")
+
+
+def _slugify(value: str, limit: int = 24) -> str:
+    """把 chat 标题/用户名简化成 ASCII / 汉字 / 数字 / 下划线 形式,截断到 limit。"""
+    slug = _SLUG_RE.sub("_", value or "").strip("_")
+    return slug[:limit]
+
+
+def generate_random_config_name(
+    kind: ConfigKind,
+    chat: Optional[Dict[str, Any]] = None,
+    workdir: Optional[Path | str] = None,
+) -> str:
+    """生成一个未被占用的随机配置名,作为新建配置时的默认名称。
+
+    - kind="signer" → ``sign_<slug>_<hex>``
+    - kind="monitor" → ``monitor_<slug>_<hex>``
+    - 末尾 ``<hex>`` 来自 ``secrets.token_hex``,保证多次调用大概率不重复;
+      函数本身也会循环重试直到名称不在已有配置列表里,确保不与已有配置冲突。
+    """
+    prefix = "sign" if kind == "signer" else "monitor"
+    seed = ""
+    if chat:
+        seed = str(
+            chat.get("title")
+            or chat.get("username")
+            or chat.get("first_name")
+            or chat.get("id")
+            or ""
+        )
+    slug = _slugify(seed) or "chat"
+    existing = set(list_task_names(kind, workdir))
+    # 先用短后缀(4 hex)循环若干次,极端命名空间用尽时退回更长后缀。
+    for _ in range(32):
+        suffix = secrets.token_hex(2)
+        name = f"{prefix}_{slug}_{suffix}"
+        if name not in existing:
+            return name
+    suffix = secrets.token_hex(8)
+    return f"{prefix}_{slug}_{suffix}"
 
 
 def load_config(

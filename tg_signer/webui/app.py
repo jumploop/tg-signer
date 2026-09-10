@@ -35,6 +35,7 @@ from tg_signer.webui.data import (
     UIState,
     _setup_webui_logger,
     delete_config,
+    generate_random_config_name,
     list_log_files,
     list_task_names,
     load_config,
@@ -310,8 +311,13 @@ class SignerBlock(BaseConfigBlock):
         self.editor.properties["content"]["json"] = content
         self.editor.update()
         self.editor.run_editor_method(":expand", "[]", "path => true")
+        # 随机生成一个未占用的新配置名,避免误覆盖当前 select 选中的已有配置
+        new_name = generate_random_config_name(self.kind, chat, workdir=state.workdir)
+        self.name_input.value = new_name
+        self.name_input.update()
         ui.notify(
-            f"已填入签到配置: {chat_item['name'] or chat.get('id')}",
+            f"已填入签到配置: {chat_item['name'] or chat.get('id')}\n"
+            f"新配置名: {new_name}（不会覆盖已有配置）",
             type="positive",
         )
 
@@ -352,7 +358,15 @@ class MonitorBlock(BaseConfigBlock):
         self.editor.properties["content"]["json"] = content
         self.editor.update()
         self.editor.run_editor_method(":expand", "[]", "path => true")
-        ui.notify(f"已填入监控配置: {chat.get('id')}", type="positive")
+        # 随机生成一个未占用的新配置名,避免误覆盖当前 select 选中的已有配置
+        new_name = generate_random_config_name(self.kind, chat, workdir=state.workdir)
+        self.name_input.value = new_name
+        self.name_input.update()
+        ui.notify(
+            f"已填入监控配置: {chat.get('id')}\n"
+            f"新配置名: {new_name}（不会覆盖已有配置）",
+            type="positive",
+        )
 
 
 def user_info_block() -> Callable[[], None]:
