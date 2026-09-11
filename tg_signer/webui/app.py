@@ -735,17 +735,16 @@ def group_chat_block(
         sync_accounts()
         chats = load_group_chats(state.workdir)
         chats_by_id.clear()
-        options = []
+        # NiceGUI ui.select 的 options 只支持:
+        #   1. list 纯值列表 2. dict 映射 {value: label}
+        # 不能使用 Quasar 原生 [{"label","value"}] dict 列表 —— 那样 label
+        # 会被序列化成 dict,前端显示 [object Object]。
+        options: dict[str, str] = {}
         for chat in chats:
             cid = str(chat.get("id"))
             title = chat.get("title") or chat.get("first_name") or "未命名"
             username = f"@{chat['username']}" if chat.get("username") else "-"
-            options.append(
-                {
-                    "label": f"{title} | {chat.get('type')} | {username} | ID:{cid}",
-                    "value": cid,
-                }
-            )
+            options[cid] = f"{title} | {chat.get('type')} | {username} | ID:{cid}"
             chats_by_id[cid] = chat
         chat_select.options = options
         # 反向联动:从 state.selected_chat_id(由加载配置或 pick_group 写入)
