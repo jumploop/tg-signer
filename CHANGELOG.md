@@ -2,6 +2,11 @@
 
 ## 版本变动日志
 
+### 0.9.14
+- WebUI 配置管理:「选择配置」与群组/频道下拉双向联动 —— 加载某配置后右侧自动高亮其绑定的聊天(`chats[0].chat_id` / `match_cfgs[0].chat_id`),支持按 int chat.id 或 `@username` 匹配;填入聊天后下拉框即时同步到该群组,目标聊天不在缓存时保持用户选择
+- 优化 `generate_random_config_name`:新增本会话去重缓存与磁盘配置名缓存,连续/批量生成不再撞生日悖论(1000 次调用从分钟级降到约 0.5s),并补充缓存清理 fixture 与测试
+- 新增 `resolve_chat_id_for_selector` 与相关参数化测试(18 个断言场景)
+
 ### 0.9.13
 - WebUI 配置管理页:群组/频道从「筛选框+卡片列表」改为单个可搜索下拉框(支持按标题/类型/用户名/ID 过滤),账号下拉、刷新按钮与「填入签到/监控配置」按钮合并到一个卡片内
 - 填入配置时自动生成未占用的随机配置名(如 `sign_<chat>_<hex>`),写入「保存为/新建名称」输入框,不再误覆盖当前选中的已有配置;名称冲突时循环重试,极端情况下使用更长随机后缀
@@ -182,6 +187,11 @@
 - 调用 AI 识别图片点击键盘
 
 ## Changelog
+
+### 0.9.14
+- WebUI config page: two-way sync between the "select config" dropdown and the group/channel picker — loading a config auto-highlights its bound chat (`chats[0].chat_id` / `match_cfgs[0].chat_id`), matching by int chat.id or `@username`; picking a group immediately syncs the picker, and an unknown chat keeps the user's selection
+- Optimize `generate_random_config_name` with an in-session dedup cache and a disk-name cache: bulk generation no longer hits the birthday paradox (1000 calls dropped from minutes to ~0.5s), plus cache-reset fixtures and tests
+- Add `resolve_chat_id_for_selector` with parametrized tests (18 assertion scenarios)
 
 ### 0.9.13
 - WebUI config page: the group/channel picker is now a single searchable dropdown (filter by title/type/username/ID) instead of a filter box plus a card list; the account dropdown, refresh button and the "fill signer/monitor config" buttons are merged into one card
