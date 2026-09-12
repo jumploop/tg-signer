@@ -2,6 +2,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,7 +72,10 @@ def list_task_names(
     root = _config_root(kind, workdir)
     if not root.is_dir():
         return []
-    return sorted([p.name for p in root.iterdir() if p.is_dir()])
+    # 只列出真正存在 config.json 的配置;已删除配置残留的目录不算配置。
+    return sorted(
+        p.name for p in root.iterdir() if p.is_dir() and (p / "config.json").is_file()
+    )
 
 
 def resolve_chat_id_for_selector(
@@ -198,13 +202,9 @@ def delete_config(
     config_file = _config_path(kind, name, workdir)
     if not config_file.exists():
         raise FileNotFoundError(f"配置不存在: {config_file}")
-    config_file.unlink()
-    parent = config_file.parent
-    # remove empty directories only; keep records if present
-    try:
-        next(parent.iterdir())
-    except StopIteration:
-        parent.rmdir()
+    # 删除整个配置目录(连同遗留 sign_record.json 等),保证删除后不再残留。
+    # 签到记录主存储是 SQLite(data.sqlite3),不受影响。
+    shutil.rmtree(config_file.parent, ignore_errors=True)
     return config_file
 
 

@@ -95,6 +95,29 @@ def test_generate_random_name_no_collision_under_saturation(tmp_path):
         assert re.fullmatch(r"sign_测试_[0-9a-f]{16}", name)
 
 
+def test_list_task_names_ignores_dirs_without_config(tmp_path):
+    workdir = tmp_path
+    real_dir = workdir / "signs" / "real_task"
+    real_dir.mkdir(parents=True)
+    (real_dir / "config.json").write_text("{}", encoding="utf-8")
+    # 删除配置后残留的目录(无 config.json)不应再出现在配置列表
+    (workdir / "signs" / "ghost_task" / "legacy").mkdir(parents=True)
+    assert data.list_task_names("signer", workdir) == ["real_task"]
+
+
+def test_delete_config_removes_whole_dir_and_records(tmp_path):
+    workdir = tmp_path
+    task_dir = workdir / "signs" / "my_task"
+    task_dir.mkdir(parents=True)
+    (task_dir / "config.json").write_text("{}", encoding="utf-8")
+    (task_dir / "1001" / "sign_record.json").mkdir(parents=True)
+    (task_dir / "sign_record.json").write_text("[]", encoding="utf-8")
+    deleted = data.delete_config("signer", "my_task", workdir=workdir)
+    assert deleted == task_dir / "config.json"
+    assert not task_dir.exists()
+    assert data.list_task_names("signer", workdir) == []
+
+
 # ---------------------------------------------------------------------------
 # resolve_chat_id_for_selector (配置 ↔ 群组/频道 反向联动)
 # ---------------------------------------------------------------------------

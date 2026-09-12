@@ -2,6 +2,9 @@
 
 ## 版本变动日志
 
+### 0.9.17
+- 修复 WebUI「删除配置」后配置仍残留的问题:原实现只删除 `config.json` 与空目录,配置目录内遗留的旧版签到记录(按用户 ID 的子目录 / `sign_record.json`)会让目录保留,且 `list_task_names` 只按目录存在与否列配置,导致删除后配置名仍出现在下拉列表。现在 `list_task_names` 只列出真正含 `config.json` 的配置,`delete_config` 删除整个配置目录(遗留记录一并清除,签到记录主存储 SQLite 不受影响)
+
 ### 0.9.16
 - WebUI 新增主题与暗色模式:Telegram 风格品牌色(`#3390ec` 主色 + 青色点缀)、卡片圆角/阴影统一、暗色模式开关(浏览器记忆偏好),Dashboard 与 Auth 页共用统一的品牌 Header;`ui.dark()` 弃用 API 改为标准 `ui.dark_mode()`
 - 代码清理(ponytail 审计):`generate_random_config_name` 移除本会话去重缓存与磁盘名缓存(`_RECENTLY_GENERATED` / `_DISK_NAMES_CACHE` / `_existing_names`),改为一次性磁盘检查 + `token_hex(8)` 随机后缀(碰撞时回退 16 hex),逻辑更简单且不再依赖模块级缓存;相关测试同步删除缓存清理 fixture 并简化饱和测试
