@@ -275,7 +275,7 @@ def list_sign_records(obj, task_name: str | None, limit: int, user_id: str | Non
 @click.pass_obj
 def login(obj, num_of_dialogs, folder):
     signer = get_signer(None, obj)
-    run_worker(signer, signer.login(num_of_dialogs, folder=folder))
+    run_worker(signer, signer.login(num_of_dialogs, folder=folder, interactive=True))
 
 
 @tg_signer.command(help="登出账号并删除session文件")

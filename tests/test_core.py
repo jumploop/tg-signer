@@ -55,7 +55,16 @@ def patch_client_methods(
     get_dialogs=None,
     get_folders=None,
     save_session_string=None,
+    connect=None,
+    disconnect=None,
 ):
+    async def fake_connect(self):
+        await asyncio.sleep(0)
+        return True  # session 已授权
+
+    async def fake_disconnect(self):
+        await asyncio.sleep(0)
+
     async def fake_start(self):
         await asyncio.sleep(0)
 
@@ -87,6 +96,8 @@ def patch_client_methods(
         "save_session_string",
         save_session_string or fake_save_session_string,
     )
+    monkeypatch.setattr(core.Client, "connect", connect or fake_connect)
+    monkeypatch.setattr(core.Client, "disconnect", disconnect or fake_disconnect)
 
 
 def setup_login_test(monkeypatch, core, dialogs):
@@ -448,6 +459,51 @@ async def test_login_rejects_folder_with_dynamic_rules(monkeypatch, signer_facto
 
     with pytest.raises(core.ChatFolderError, match="仅支持手动添加对话"):
         await signer.login(folder="Personal")
+
+
+@pytest.mark.asyncio
+async def test_login_non_interactive_rejects_missing_session(
+    monkeypatch, signer_factory
+):
+    import tg_signer.core as core
+
+    start_called = []
+
+    async def fake_start(self):
+        del self
+        start_called.append(True)
+
+    async def fake_connect(self):
+        return False
+
+    async def fake_disconnect(self):
+        pass
+
+    monkeypatch.setattr(core.Client, "start", fake_start)
+    signer = signer_factory()
+    monkeypatch.setattr(core.Client, "connect", fake_connect)
+    monkeypatch.setattr(core.Client, "disconnect", fake_disconnect)
+
+    with pytest.raises(core.errors.Unauthorized, match="请先登录"):
+        await signer.login(print_chat=False)
+
+    # 未触发 pyrogram 交互式登录提示
+    assert start_called == []
+
+
+@pytest.mark.asyncio
+async def test_login_reuses_existing_session_without_prompt(
+    monkeypatch, signer_factory
+):
+    import tg_signer.core as core
+
+    patch_client_methods(monkeypatch, core)
+    signer = signer_factory()
+
+    await signer.login(print_chat=False)
+
+    # 有效 session 被直接复用,登录成功且未走交互式提示
+    assert signer.user is not None
 
 
 @pytest.mark.asyncio

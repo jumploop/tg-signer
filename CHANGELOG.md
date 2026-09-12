@@ -2,6 +2,10 @@
 
 ## 版本变动日志
 
+### 0.9.19
+- 运行任务（`run` / `run-once` / `multi-run` / `monitor run` / `automation run` / `send-text` 等）时自动复用已有 session:存在有效 session 文件就直接使用,无需重复登录;仅 `tg-signer login` 保留交互式登录
+- session 缺失或失效时快速抛出明确错误（提示先用 CLI `login` 或 WebUI「账号管理」登录）,不再触发 pyrogram 交互式登录提示,避免子进程/脚本在 stdin 非终端时挂起
+
 ### 0.9.18
 - WebUI「配置管理」页新增「大模型」子页签:可配置 OpenAI 兼容大模型 API（API Key / Base URL / Model），保存到 `<workdir>/.openai_config.json`，与 CLI `llm-config` 共用 `OpenAIConfigManager`，运行时以环境变量优先
 - `clean_schema` 改为就地修改（删除 `schema.copy()`），跟随 ponytail 审计精简

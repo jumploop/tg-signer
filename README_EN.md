@@ -166,6 +166,11 @@ Follow the prompts to enter your phone number and verification code. The command
 will print your recent chats, so make sure the chat you want to use for
 check-ins is included.
 
+Running tasks (`run` / `run-once` / `multi-run` / `monitor run` / `automation
+run`) reuses an existing valid session file directly, so no re-login is required.
+You only need to log in (via `tg-signer login` or the WebUI "Account" page) when
+the session is missing or invalid.
+
 Signer `chat_id` also supports integer IDs and `@`-prefixed usernames such as
 `@neo`.
 

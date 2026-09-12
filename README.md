@@ -166,6 +166,7 @@ tg-signer login
 ```
 
 根据提示输入手机号码和验证码进行登录并获取最近的聊天列表，确保你想要签到的聊天在列表内。
+运行任务（`run` / `run-once` / `multi-run` / `monitor run` / `automation run`）时，若已存在有效 session 文件会直接复用，无需重复登录；仅当 session 缺失或失效时才需要先执行 `tg-signer login` 或到 WebUI「账号管理」页登录。
 签到任务里的`chat_id`同时支持整数ID和以`@`开头的username，例如`@neo`。
 对于论坛群组，登录输出中会额外打印每个话题的 `message_thread_id`，可直接用于 `--message-thread-id`。
 
