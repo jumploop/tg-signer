@@ -36,7 +36,7 @@ pip install "tg-signer[gui]"
 
 ![webgui](./assets/webui.jpeg)
 
-The WebUI includes account management (login/logout), config management, group selection, user info, sign records and log pages. The account page can log in to obtain a session and log out to delete session files; the group selection page lists cached groups/channels and can quickly fill them into signer or monitor configs.
+The WebUI includes account management (login/logout), config management (including LLM API config), group selection, user info, sign records and log pages. The account page can log in to obtain a session and log out to delete session files; the group selection page lists cached groups/channels and can quickly fill them into signer or monitor configs.
 
 ### Docker
 

@@ -2,6 +2,11 @@
 
 ## 版本变动日志
 
+### 0.9.18
+- WebUI「配置管理」页新增「大模型」子页签:可配置 OpenAI 兼容大模型 API（API Key / Base URL / Model），保存到 `<workdir>/.openai_config.json`，与 CLI `llm-config` 共用 `OpenAIConfigManager`，运行时以环境变量优先
+- `clean_schema` 改为就地修改（删除 `schema.copy()`），跟随 ponytail 审计精简
+- 新增 `OpenAIConfigManager` 测试（保存/加载往返、环境变量优先、未配置返回 None）
+
 ### 0.9.17
 - 修复 WebUI「删除配置」后配置仍残留的问题:原实现只删除 `config.json` 与空目录,配置目录内遗留的旧版签到记录(按用户 ID 的子目录 / `sign_record.json`)会让目录保留,且 `list_task_names` 只按目录存在与否列配置,导致删除后配置名仍出现在下拉列表。现在 `list_task_names` 只列出真正含 `config.json` 的配置,`delete_config` 删除整个配置目录(遗留记录一并清除,签到记录主存储 SQLite 不受影响)
 

@@ -9,6 +9,7 @@ from typing import Callable, Dict, List, Tuple
 from nicegui import app, ui
 from pydantic import TypeAdapter
 
+from tg_signer.ai_tools import DEFAULT_MODEL, OpenAIConfigManager
 from tg_signer.webui import runner
 from tg_signer.webui.account import (
     cancel_login,
@@ -556,6 +557,72 @@ def user_info_block() -> Callable[[], None]:
                             "text-gray-500 text-sm mt-2"
                         )
 
+    return refresh
+
+
+def llm_config_block() -> Callable[[], None]:
+    """大模型（OpenAI 兼容）API 配置块，读写 <workdir>/.openai_config.json。"""
+
+    def refresh() -> None:
+        manager = OpenAIConfigManager(state.workdir)
+        cfg = manager.load_config()
+        if cfg:
+            api_key_input.value = cfg.get("api_key", "")
+            base_url_input.value = cfg.get("base_url") or ""
+            model_input.value = cfg.get("model") or ""
+            status.set_text(
+                "当前运行时优先使用环境变量配置，保存将更新本地文件"
+                if manager.has_env_config()
+                else "已加载本地配置"
+            )
+        else:
+            api_key_input.value = ""
+            base_url_input.value = ""
+            model_input.value = ""
+            status.set_text("未配置（当前 workdir 下无 .openai_config.json）")
+
+    def save() -> None:
+        api_key = (api_key_input.value or "").strip()
+        if not api_key:
+            ui.notify("API Key 不能为空", type="warning")
+            return
+        try:
+            OpenAIConfigManager(state.workdir).save_config(
+                api_key,
+                base_url=(base_url_input.value or "").strip() or None,
+                model=(model_input.value or "").strip() or None,
+            )
+            refresh()
+            ui.notify("大模型配置已保存", type="positive")
+        except Exception as exc:  # noqa: BLE001
+            notify_error(exc)
+
+    with ui.card().classes("w-full shadow-md"):
+        ui.label("大模型 API").classes("text-lg font-semibold")
+        ui.label(
+            "OpenAI 兼容接口配置，保存到 <workdir>/.openai_config.json；"
+            "若设置了 OPENAI_API_KEY 环境变量，运行时以环境变量优先。"
+        ).classes("text-sm text-gray-500")
+        with ui.column().classes("w-full gap-1 mt-3"):
+            api_key_input = ui.input(
+                label="OPENAI_API_KEY",
+                placeholder="sk-...",
+                password=True,
+                password_toggle_button=True,
+            ).classes("w-full")
+            base_url_input = ui.input(
+                label="OPENAI_BASE_URL（可选）",
+                placeholder="例如 https://api.openai.com/v1，留空使用默认地址",
+            ).classes("w-full")
+            model_input = ui.input(
+                label="OPENAI_MODEL（可选）",
+                placeholder=f"默认模型: {DEFAULT_MODEL}",
+            ).classes("w-full")
+            with ui.row().classes("items-center gap-2 mt-1"):
+                ui.button("保存", color="primary", on_click=save)
+                status = ui.label("").classes("text-sm text-gray-500")
+
+    refresh()
     return refresh
 
 
@@ -1248,6 +1315,7 @@ def _build_dashboard(container) -> None:
                         with ui.tabs().classes("w-full") as sub_tabs:
                             tab_signer = ui.tab("Signer")
                             tab_monitor = ui.tab("Monitor")
+                            tab_llm = ui.tab("大模型")
                         with ui.tab_panels(sub_tabs, value=tab_signer).classes(
                             "w-full"
                         ):
@@ -1259,6 +1327,8 @@ def _build_dashboard(container) -> None:
                             with ui.tab_panel(tab_monitor):
                                 monitor_block = MonitorBlock(MONITOR_TEMPLATE)
                                 refreshers.append(monitor_block)
+                            with ui.tab_panel(tab_llm):
+                                refreshers.append(llm_config_block())
                     with ui.column().classes("w-96 shrink-0"):
                         ui.label("群组 / 频道").classes("text-lg font-semibold")
                         ui.label(
