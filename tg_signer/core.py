@@ -132,6 +132,18 @@ def readable_chat(chat: Chat):
     return f"id: {chat.id}, username: {none_or_dash(chat.username)}, title: {none_or_dash(chat.title)}, type: {type_}, name: {none_or_dash(chat.first_name)}"
 
 
+def chat_to_dict(chat: Chat) -> dict:
+    """把 Chat 转成可 JSON 序列化的 dict,供登录缓存/WebUI 复用。"""
+    return {
+        "id": chat.id,
+        "title": chat.title,
+        "type": chat.type,
+        "username": chat.username,
+        "first_name": chat.first_name,
+        "last_name": chat.last_name,
+    }
+
+
 def _folder_dynamic_rules(folder: Folder) -> list[str]:
     return [
         label
@@ -587,17 +599,7 @@ class BaseUserWorker(Generic[ConfigT]):
                             selected_folder = _select_chat_folder(folders, folder)
                             chats = _explicit_folder_chats(selected_folder)
 
-                        latest_chats = [
-                            {
-                                "id": chat.id,
-                                "title": chat.title,
-                                "type": chat.type,
-                                "username": chat.username,
-                                "first_name": chat.first_name,
-                                "last_name": chat.last_name,
-                            }
-                            for chat in chats
-                        ]
+                        latest_chats = [chat_to_dict(chat) for chat in chats]
                         return chats, latest_chats, selected_folder
 
                     (

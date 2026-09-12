@@ -68,6 +68,20 @@ def from_folder_option(command):
     )(command)
 
 
+def dialogs_option(command=None, *, default: int = 50):
+    def wrap(cmd):
+        return click.option(
+            "--num-of-dialogs",
+            "-n",
+            default=default,
+            show_default=True,
+            type=int,
+            help="未指定 --from-folder 时获取最近N个对话",
+        )(cmd)
+
+    return wrap(command) if command is not None else wrap
+
+
 def run_worker(worker, coroutine):
     try:
         worker.app_run(coroutine)
@@ -256,14 +270,7 @@ def list_sign_records(obj, task_name: str | None, limit: int, user_id: str | Non
 
 
 @tg_signer.command(help="登录账号（用于获取session）")
-@click.option(
-    "--num-of-dialogs",
-    "-n",
-    default=50,
-    show_default=True,
-    type=int,
-    help="未指定 --from-folder 时获取最近N个对话",
-)
+@dialogs_option
 @from_folder_option
 @click.pass_obj
 def login(obj, num_of_dialogs, folder):
@@ -280,14 +287,7 @@ def logout(obj):
 
 @tg_signer.command(help="根据任务配置运行签到")
 @click.argument("task_names", nargs=-1)
-@click.option(
-    "--num-of-dialogs",
-    "-n",
-    default=50,
-    show_default=True,
-    type=int,
-    help="未指定 --from-folder 时获取最近N个对话",
-)
+@dialogs_option
 @from_folder_option
 @click.pass_obj
 def run(obj, task_names, num_of_dialogs, folder):
@@ -304,15 +304,7 @@ def run(obj, task_names, num_of_dialogs, folder):
 
 @tg_signer.command(help="运行一次签到任务，即使该签到任务今日已执行过")
 @click.argument("task_name", default="my_sign")
-@click.option(
-    "--num-of-dialogs",
-    "-n",
-    "num_of_dialogs",
-    default=50,
-    show_default=True,
-    type=int,
-    help="未指定 --from-folder 时获取最近N个对话",
-)
+@dialogs_option
 @from_folder_option
 @click.pass_obj
 def run_once(obj, task_name, num_of_dialogs, folder):
@@ -572,14 +564,7 @@ def list_schedule_messages(obj, chat_id):
     multiple=True,
     help="多个account，每个account是一个自定义账号名称，对应session文件名为<account>.session",
 )
-@click.option(
-    "--num-of-dialogs",
-    "-n",
-    default=50,
-    show_default=True,
-    type=int,
-    help="未指定 --from-folder 时获取最近N个对话",
-)
+@dialogs_option
 @from_folder_option
 @click.pass_obj
 def multi_run(obj, accounts, task_name, num_of_dialogs, folder):

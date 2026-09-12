@@ -7,7 +7,7 @@ from click import Group
 
 from tg_signer.core import UserMonitor
 
-from .signer import from_folder_option, run_coroutines, tg_signer
+from .signer import dialogs_option, from_folder_option, run_coroutines, tg_signer
 
 
 def get_monitor(
@@ -52,14 +52,7 @@ def list_(obj):
 
 @tg_monitor.command(help="根据配置运行监控(可指定多个任务共享同一 Client)")
 @click.argument("task_names", nargs=-1)
-@click.option(
-    "--num-of-dialogs",
-    "-n",
-    default=20,
-    show_default=True,
-    type=int,
-    help="未指定 --from-folder 时获取最近N个对话",
-)
+@dialogs_option(default=20)
 @from_folder_option
 @click.pass_obj
 def run(obj, task_names, num_of_dialogs, folder):

@@ -2,6 +2,13 @@
 
 ## 版本变动日志
 
+### 0.9.16
+- WebUI 新增主题与暗色模式:Telegram 风格品牌色(`#3390ec` 主色 + 青色点缀)、卡片圆角/阴影统一、暗色模式开关(浏览器记忆偏好),Dashboard 与 Auth 页共用统一的品牌 Header;`ui.dark()` 弃用 API 改为标准 `ui.dark_mode()`
+- 代码清理(ponytail 审计):`generate_random_config_name` 移除本会话去重缓存与磁盘名缓存(`_RECENTLY_GENERATED` / `_DISK_NAMES_CACHE` / `_existing_names`),改为一次性磁盘检查 + `token_hex(8)` 随机后缀(碰撞时回退 16 hex),逻辑更简单且不再依赖模块级缓存;相关测试同步删除缓存清理 fixture 并简化饱和测试
+- 数据序列化去重:新增 `core.chat_to_dict`,CLI `login`、WebUI 账号登录 `_complete`、`refresh_dialogs` 三处重复的 chat 序列化字典统一复用
+- CLI 选项去重:`--num-of-dialogs` 在 `signer` / `automation` / `monitor` 中的 6 处重复 `@click.option` 收敛为 `dialogs_option` 装饰器(signer 默认 50,automation/monitor 默认 20)
+- `utils.py` 的 `TypeAlias` 从 `typing_extensions` 改为标准库 `typing`,移除一处第三方依赖
+
 ### 0.9.15
 - 修复群组/频道下拉显示 `[object Object]` 的问题:root cause 是 NiceGUI `ui.select` 不支持 Quasar 原生 `[{"label","value"}]` dict 列表格式,改用 `{value: label}` dict 映射后正常显示群组名称
 

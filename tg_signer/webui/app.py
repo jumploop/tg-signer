@@ -104,6 +104,91 @@ def notify_error(exc: Exception) -> None:
     ui.notify(f"{exc}", type="negative")
 
 
+# ---------------------------------------------------------------------------
+# 主题与暗色模式
+# ---------------------------------------------------------------------------
+
+# 品牌色: Telegram 风格的深蓝作为主色,点缀青色。
+_BRAND_PRIMARY = "#3390ec"
+_BRAND_SECONDARY = "#8ab4f8"
+_BRAND_ACCENT = "#00c8a0"
+
+_THEME_CSS = """
+<style>
+/* 全局圆角与卡片层次 */
+body { font-family: "Segoe UI", system-ui, -apple-system, sans-serif; }
+.q-card { border-radius: 12px; transition: box-shadow .2s ease; }
+.q-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,.08); }
+
+/* 统一选中色跟随品牌 */
+.text-primary { color: var(--q-primary) !important; }
+
+/* Header 品牌区 */
+.tg-header { display:flex; align-items:center; gap:10px; }
+.tg-header .tg-logo { font-size: 1.6rem; line-height: 1; }
+
+/* 状态圆点 */
+.tg-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+
+/* 暗色模式变量覆盖(Quasar dark class 生效时) */
+body.dark { }
+body.dark .q-card { background: #1e2632; color: #dce6f0; }
+body.dark .text-gray-500 { color: #9aa7b5 !important; }
+body.dark .text-gray-600 { color: #aab6c2 !important; }
+body.dark .text-gray-700 { color: #b8c4d0 !important; }
+body.dark .q-field__label { color: #93a1b0; }
+body.dark .q-field__native, body.dark .q-field__input { color: #e4ecf4; }
+</style>
+"""
+
+
+def apply_theme() -> None:
+    """应用品牌色与全局样式(卡片圆角/阴影/暗色变量)。幂等,可多次调用。"""
+    ui.colors(
+        primary=_BRAND_PRIMARY,
+        secondary=_BRAND_SECONDARY,
+        accent=_BRAND_ACCENT,
+    )
+    ui.add_head_html(_THEME_CSS)
+
+
+def dark_mode_toggle(initial: bool = False) -> "ui.switch":
+    """暗色模式开关:绑定到 ui.dark_mode(),并用浏览器存储记忆偏好。"""
+    dark = ui.dark_mode()
+    # 初始化(不再依赖 ui.dark(),使用标准 API)
+    if initial:
+        dark.enable()
+    else:
+        dark.disable()
+    toggle = ui.switch("暗色模式")
+    toggle.bind_value(dark)
+
+    def on_change(e) -> None:
+        app.storage.user["tg_dark"] = dark.value
+
+    toggle.on_value_change(on_change)
+    return toggle
+
+
+def apply_dark_from_storage() -> bool:
+    """从浏览器 localStorage(session storage)恢复暗色偏好,返回是否暗色。"""
+    return bool(app.storage.user.get("tg_dark", False))
+
+
+def render_header(subtitle: str = "") -> None:
+    """统一 Header 区:品牌 Logo + 标题 + 副标题 + 暗色模式开关。"""
+    with ui.row().classes("w-full items-center justify-between gap-3"):
+        with ui.row().classes("tg-header items-center gap-3"):
+            ui.label("⚙️").classes("tg-logo")
+            with ui.column().classes("gap-0"):
+                ui.label("TG Signer Web 控制台").classes(
+                    "text-2xl font-semibold tracking-wide"
+                )
+                if subtitle:
+                    ui.label(subtitle).classes("text-sm text-gray-500")
+        dark_mode_toggle(apply_dark_from_storage())
+
+
 def _first_chat_id_from_payload(
     kind: ConfigKind, payload: object
 ) -> "int | str | None":
@@ -1106,9 +1191,7 @@ def run_block() -> Callable[[], None]:
 
 def _build_dashboard(container) -> None:
     with container:
-        ui.label("TG Signer Web 控制台").classes(
-            "text-2xl font-semibold tracking-wide mb-2"
-        )
+        render_header("签到 / 监控 / 账号一站式管理")
         refreshers: list[Callable[[], None]] = []
         refresh_records: "SignRecordBlock"
 
@@ -1220,14 +1303,10 @@ def _build_dashboard(container) -> None:
 
 def _auth_gate(container, auth_code: str, on_success: Callable[[], None]) -> None:
     with container:
-        ui.label("TG Signer Web 控制台").classes(
-            "text-2xl font-semibold tracking-wide mb-2"
-        )
-        ui.label("已启用访问控制，请输入 Auth Code 继续使用 Web 控制台。").classes(
-            "text-gray-600"
-        )
+        render_header("已启用访问控制")
+        ui.label("请输入 Auth Code 继续使用 Web 控制台。").classes("text-gray-600")
         with ui.column().classes("w-full items-center"):
-            with ui.card().classes("w-full max-w-xl shadow-md"):
+            with ui.card().classes("w-full max-w-xl shadow-sm"):
                 ui.label("Auth Code 验证").classes("text-lg font-semibold")
                 ui.label("检测到auth_code环境变量已配置，首次访问需验证。").classes(
                     "text-sm text-gray-500"
@@ -1280,6 +1359,7 @@ def _auth_gate(container, auth_code: str, on_success: Callable[[], None]) -> Non
 
 def build_ui(auth_code: str = None) -> None:
     ui.page_title("TG Signer Web 控制台")
+    apply_theme()
     root = ui.column().classes("w-full gap-3")
 
     def render_dashboard() -> None:

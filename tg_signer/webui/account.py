@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from pyrogram import errors
 
 from tg_signer import core as tg_core
-from tg_signer.core import Client, get_api_config, get_client, get_proxy
+from tg_signer.core import Client, chat_to_dict, get_api_config, get_client, get_proxy
 
 LOGIN_SESSIONS: Dict[str, "_AccountLoginSession"] = {}
 _ACCOUNT_USERS_FILE = "webui_accounts.json"
@@ -147,16 +147,7 @@ class _AccountLoginSession:
             try:
                 latest_chats = []
                 async for dialog in self.client.get_dialogs(limit=20):
-                    latest_chats.append(
-                        {
-                            "id": dialog.chat.id,
-                            "title": dialog.chat.title,
-                            "type": dialog.chat.type,
-                            "username": dialog.chat.username,
-                            "first_name": dialog.chat.first_name,
-                            "last_name": dialog.chat.last_name,
-                        }
-                    )
+                    latest_chats.append(chat_to_dict(dialog.chat))
                 with open(user_dir / "latest_chats.json", "w", encoding="utf-8") as fp:
                     json.dump(
                         latest_chats,
@@ -283,16 +274,7 @@ async def refresh_dialogs(account: str, workdir, limit: int = 50) -> Tuple[bool,
 
         async def _fetch_dialogs() -> None:
             async for dialog in client.get_dialogs(limit=limit):
-                chats.append(
-                    {
-                        "id": dialog.chat.id,
-                        "title": dialog.chat.title,
-                        "type": dialog.chat.type,
-                        "username": dialog.chat.username,
-                        "first_name": dialog.chat.first_name,
-                        "last_name": dialog.chat.last_name,
-                    }
-                )
+                chats.append(chat_to_dict(dialog.chat))
 
         await _fetch_dialogs()
         (user_dir / "latest_chats.json").write_text(

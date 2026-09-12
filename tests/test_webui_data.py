@@ -7,21 +7,6 @@ import pytest
 from tg_signer.webui import data
 
 
-@pytest.fixture(autouse=True)
-def _reset_module_cache():
-    """每个测试前清空模块级缓存,保证测试隔离。
-
-    generate_random_config_name 会把已生成过的名字缓存在模块级
-    _RECENTLY_GENERATED 与 _DISK_NAMES_CACHE 中,跨测试累积会让
-    "不冲突" 断言依赖于不相关的历史状态,污染测试。
-    """
-    data._RECENTLY_GENERATED.clear()
-    data._DISK_NAMES_CACHE.clear()
-    yield
-    data._RECENTLY_GENERATED.clear()
-    data._DISK_NAMES_CACHE.clear()
-
-
 def test_log_file_name_matches_runner():
     # 与 tg_signer.webui.runner.DEFAULT_LOG_FILE_NAME 一致
     assert data.LOG_FILE_NAME == "tg-signer.log"
@@ -99,24 +84,15 @@ def test_generate_random_name_avoids_existing(tmp_path):
 
 
 def test_generate_random_name_no_collision_under_saturation(tmp_path):
-    """即便短后缀被全部预占,函数也能退回到更长 hex 后缀生成未占用名。"""
+    """批量生成时名称仍能保持互相不重复。"""
     workdir = tmp_path
-    signs_root = workdir / "signs"
-    signs_root.mkdir(parents=True)
-    # 模拟“slug 完全相同 + 全部 4 位 hex 后缀都被占用”的极端情况:
-    # 先占满一个具体 slug 下可能的 65536 个 4 位 hex 后缀是不现实的,
-    # 这里只预占前 1000 个,验证函数不会无限重试短后缀。
-    for i in range(1000):
-        suffix = f"{i:04x}"
-        (signs_root / f"sign_测试_{suffix}" / "config.json").mkdir(parents=True)
-    # 但要让 list_task_names 返回的这 1000 个名字干扰 generator:
-    # 由于我们的 slug 不是 “测试_xxxxx”,这 1000 个预置项不会影响生成的 slug,
-    # 所以下面这步主要校验 1000 次生成全部不重复。
-    names = {
+    names = [
         data.generate_random_config_name("signer", {"title": "测试"}, workdir=workdir)
-        for _ in range(1000)
-    }
-    assert len(names) == 1000  # 全部互不相同
+        for _ in range(100)
+    ]
+    assert len(set(names)) == len(names)  # 全部互不相同
+    for name in names:
+        assert re.fullmatch(r"sign_测试_[0-9a-f]{16}", name)
 
 
 # ---------------------------------------------------------------------------
