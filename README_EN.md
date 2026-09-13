@@ -36,6 +36,8 @@ pip install "tg-signer[gui]"
 
 ![webgui](./assets/webui.jpeg)
 
+The WebUI includes account management (login/logout), config management (including LLM API config), group selection, user info, sign records and log pages. The account page can log in to obtain a session and log out to delete session files; the group selection page lists cached groups/channels and can quickly fill them into signer or monitor configs.
+
 ### Docker
 
 #### GitHub Container Registry
@@ -141,6 +143,8 @@ tg-signer multi-run -a account_a -a account_b same_task  # Run 'account_a' and '
 tg-signer webgui --auth-code averycomplexcode  # Start the WebGUI
 ```
 
+When `--auth-code` is set, 5 consecutive wrong attempts lock the login for 60 seconds.
+
 ### Configure a Proxy (Optional)
 
 `tg-signer` does not read the system proxy. Use the `TG_PROXY` environment
@@ -161,6 +165,11 @@ tg-signer login
 Follow the prompts to enter your phone number and verification code. The command
 will print your recent chats, so make sure the chat you want to use for
 check-ins is included.
+
+Running tasks (`run` / `run-once` / `multi-run` / `monitor run` / `automation
+run`) reuses an existing valid session file directly, so no re-login is required.
+You only need to log in (via `tg-signer login` or the WebUI "Account" page) when
+the session is missing or invalid.
 
 Signer `chat_id` also supports integer IDs and `@`-prefixed usernames such as
 `@neo`.

@@ -1,10 +1,8 @@
 import os
 import pathlib
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Literal
+from typing import Dict, Literal, TypeAlias
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
-from typing_extensions import TypeAlias
 
 NumberingLangT: TypeAlias = Literal[
     "arabic",

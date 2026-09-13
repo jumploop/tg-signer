@@ -20,12 +20,13 @@ class DummyWorker:
     async def list_folders(self):
         self.calls.append({"method": "list_folders"})
 
-    async def login(self, num_of_dialogs, folder=None):
+    async def login(self, num_of_dialogs, folder=None, interactive: bool = False):
         self.calls.append(
             {
                 "method": "login",
                 "num_of_dialogs": num_of_dialogs,
                 "folder": folder,
+                "interactive": interactive,
             }
         )
 
@@ -122,8 +123,8 @@ def test_subsystem_run_commands_forward_folder(
 
 def test_folder_errors_are_reported_as_click_errors(monkeypatch, runner):
     class ErrorWorker(DummyWorker):
-        async def login(self, num_of_dialogs, folder=None):
-            del num_of_dialogs, folder
+        async def login(self, num_of_dialogs, folder=None, interactive: bool = False):
+            del num_of_dialogs, folder, interactive
             raise ChatFolderError("folder error")
 
     worker = ErrorWorker()

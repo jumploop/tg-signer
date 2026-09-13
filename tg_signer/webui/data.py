@@ -1,5 +1,8 @@
 import json
 import os
+import re
+import secrets
+import shutil
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +21,8 @@ CONFIG_META: dict[ConfigKind, Tuple[str, type[BaseJSONConfig]]] = {
 DEFAULT_WORKDIR = Path(os.environ.get("TG_SIGNER_WORKDIR", ".signer"))
 LOG_DIR = Path("logs")
 DEFAULT_LOG_FILE = LOG_DIR / "tg-signer.log"
+# 与 tg_signer.webui.runner.DEFAULT_LOG_FILE_NAME 保持一致,统一主日志文件名
+LOG_FILE_NAME = DEFAULT_LOG_FILE.name
 
 
 @dataclass
@@ -67,7 +72,84 @@ def list_task_names(
     root = _config_root(kind, workdir)
     if not root.is_dir():
         return []
-    return sorted([p.name for p in root.iterdir() if p.is_dir()])
+    # 只列出真正存在 config.json 的配置;已删除配置残留的目录不算配置。
+    return sorted(
+        p.name for p in root.iterdir() if p.is_dir() and (p / "config.json").is_file()
+    )
+
+
+def resolve_chat_id_for_selector(
+    requested: "int | str | None",
+    chats_by_id: Dict[str, Dict[str, Any]],
+) -> Optional[str]:
+    """把任意形式的 chat_id(int / str / "@username" / "username")解析成
+    chats_by_id 中存在的 key(str 化的 chat.id)。
+
+    匹配规则:
+    1. ``int`` → 直接 str(value) 命中 chat.id;
+    2. ``str`` 去掉前导 ``@``,先按 chat.id 字符串命中,再按 chat.username 匹配(忽略大小写);
+
+    未命中返回 None。
+    """
+    if requested is None or not chats_by_id:
+        return None
+    stripped: Any
+    if isinstance(requested, bool):
+        # bool 是 int 子类,但不应被视为 chat_id
+        return None
+    if isinstance(requested, int):
+        stripped = str(requested)
+        return stripped if stripped in chats_by_id else None
+    if isinstance(requested, str):
+        s = requested.strip().lstrip("@")
+        if not s:
+            return None
+        if s in chats_by_id:
+            return s
+        for cid, chat in chats_by_id.items():
+            username = chat.get("username")
+            if isinstance(username, str) and username.lower() == s.lower():
+                return cid
+    return None
+
+
+_SLUG_RE = re.compile(r"[^\w\u4e00-\u9fff]+")
+
+
+def _slugify(value: str, limit: int = 24) -> str:
+    """把 chat 标题/用户名简化成 ASCII / 汉字 / 数字 / 下划线 形式,截断到 limit。"""
+    slug = _SLUG_RE.sub("_", value or "").strip("_")
+    return slug[:limit]
+
+
+def generate_random_config_name(
+    kind: ConfigKind,
+    chat: Optional[Dict[str, Any]] = None,
+    workdir: Optional[Path | str] = None,
+) -> str:
+    """生成一个未被占用的随机配置名,作为新建配置时的默认名称。
+
+    - kind="signer" → ``sign_<slug>_<hex>``
+    - kind="monitor" → ``monitor_<slug>_<hex>``
+    - 末尾 ``<hex>`` 来自 ``secrets.token_hex``;16 位 hex 命名空间足够大,
+      与已有配置冲突的概率可忽略。
+    """
+    prefix = "sign" if kind == "signer" else "monitor"
+    seed = ""
+    if chat:
+        seed = str(
+            chat.get("title")
+            or chat.get("username")
+            or chat.get("first_name")
+            or chat.get("id")
+            or ""
+        )
+    slug = _slugify(seed) or "chat"
+    existing = set(list_task_names(kind, workdir))
+    name = f"{prefix}_{slug}_{secrets.token_hex(8)}"
+    if name not in existing:
+        return name
+    return f"{prefix}_{slug}_{secrets.token_hex(16)}"
 
 
 def load_config(
@@ -120,13 +202,9 @@ def delete_config(
     config_file = _config_path(kind, name, workdir)
     if not config_file.exists():
         raise FileNotFoundError(f"配置不存在: {config_file}")
-    config_file.unlink()
-    parent = config_file.parent
-    # remove empty directories only; keep records if present
-    try:
-        next(parent.iterdir())
-    except StopIteration:
-        parent.rmdir()
+    # 删除整个配置目录(连同遗留 sign_record.json 等),保证删除后不再残留。
+    # 签到记录主存储是 SQLite(data.sqlite3),不受影响。
+    shutil.rmtree(config_file.parent, ignore_errors=True)
     return config_file
 
 
@@ -278,3 +356,63 @@ def load_logs(
 ) -> Tuple[Path, List[str]]:
     path = _resolve_log_path(log_path)
     return path, tail_file(path, limit=limit)
+
+
+GROUP_CHAT_TYPES = {"basic", "group", "supergroup", "channel", "bot"}
+
+
+def load_group_chats(workdir: Optional[Path | str] = None) -> List[Dict[str, Any]]:
+    """Aggregate group/channel info from all users' latest_chats.json, deduplicated by id."""
+    seen: Dict[Any, Dict[str, Any]] = {}
+    for info in load_user_infos(workdir):
+        account = (
+            info.data.get("first_name") or info.data.get("username") or info.user_id
+        )
+        for chat in info.latest_chats or []:
+            chat_type = str(chat.get("type") or "").lower()
+            if chat_type not in GROUP_CHAT_TYPES:
+                continue
+            chat_id = chat.get("id")
+            if chat_id is None:
+                continue
+            seen.setdefault(chat_id, {**chat, "account": str(account)})
+    return sorted(
+        seen.values(),
+        key=lambda c: str(c.get("title") or c.get("username") or "").lower(),
+    )
+
+
+class UIState:
+    """WebUI 共享 UI 状态(不依赖 NiceGUI,便于无 GUI 环境测试)。"""
+
+    def __init__(self) -> None:
+        self.workdir: Path = get_workdir(DEFAULT_WORKDIR)
+        # 统一主日志:<workdir>/logs/<LOG_FILE_NAME>,与子进程共享同一份
+        self.log_path: Path = self.workdir / "logs" / LOG_FILE_NAME
+        self.log_limit: int = 200
+        self.record_filter: str = ""
+        # 联动状态: 配置 select / group_chat_block 间的当前 chat id。
+        # 取值可以是 int(chat.id 数字) 或 str(@username);None 表示未选择。
+        # 写入端: SignerBlock/MonitorBlock.load_current、pick_group;
+        # 读取端: group_chat_block.refresh() 反向高亮。
+        self.selected_chat_id: "int | str | None" = None
+
+    def set_workdir(self, path_str: str) -> None:
+        self.workdir = get_workdir(Path(path_str).expanduser())
+        self.log_path = self.workdir / "logs" / DEFAULT_LOG_FILE.name
+
+    def set_log_path(self, path_str: str) -> None:
+        self.log_path = Path(path_str).expanduser()
+
+
+def _setup_webui_logger(workdir: Path) -> None:
+    """Configure file logging for the WebUI process itself.
+
+    WebUI runs in-process for account login/listing operations; without this
+    the WebUI process writes only to stderr and reboots wipe the audit trail.
+    """
+    from tg_signer.logger import configure_logger
+
+    log_dir = workdir / "logs"
+    log_file = log_dir / LOG_FILE_NAME
+    configure_logger(log_level="INFO", log_dir=log_dir, log_file=log_file)

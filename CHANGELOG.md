@@ -2,6 +2,16 @@
 
 ## 版本变动日志
 
+### 0.9.2
+- WebUI 新增账号管理：支持账号登录/登出、会话可用性检查、`.session`/`.session_string` 会话识别、登录验证码与二次登录流程
+- WebUI 监控新增基于正则去重的对话选择与配置生成，新增 `resolve_chat_id_for_selector` 与 `generate_random_config_name` 辅助
+- `ai_reply` 统一走 worker 侧限流与 FloodWait 重试，`forward` 与历史消息解析不再逐条裸调用
+- 兼容 Kurigram 同步与异步论坛话题解析，修复 markup-only 动画图片与计算题 `caption` 识别
+- 修复连续动作处理中已消费消息占位导致 `wait_for` 崩溃的问题
+- `根据图片选择选项` 动作支持图片与 InlineKeyboard 按钮分离的验证码场景
+- 修复 WebUI 登录日志文件滚动、账号数据持久化、Schema 校验与初始化等若干问题
+- 测试覆盖 WebUI 账号、鉴权、数据、日志与自动化动作
+
 ### 0.9.0
 - 新增 `list-folders` 和 `--from-folder`，支持从 Telegram 普通对话 Folder 加载手动添加的对话
 - 兼容 Kurigram 同步与异步论坛话题解析接口
@@ -101,6 +111,16 @@
 - 调用 AI 识别图片点击键盘
 
 ## Changelog
+
+### 0.9.2
+- WebUI account management: login/logout, session availability checks, `.session`/`.session_string` session detection, login verification codes, and re-login flows
+- WebUI monitor: chat selection with regex-based deduplication and config generation, with `resolve_chat_id_for_selector` and `generate_random_config_name` helpers
+- `ai_reply` now goes through worker-side throttling and FloodWait retries; `forward` and history message parsing no longer make bare per-item calls
+- Compatible with both synchronous and asynchronous Kurigram forum topic parsers; fix recognition of markup-only animated images and calculation question `caption`
+- Fix `wait_for` crashes caused by consumed message placeholders during multi-action flows
+- Support captcha flows where the image and InlineKeyboard buttons are sent as separate messages for `ChooseOptionByImageAction`
+- Fix several WebUI issues including login log file rotation, account data persistence, schema validation, and initialization
+- Add/update unit tests covering WebUI accounts, auth, data, logs, and automation actions
 
 ### 0.9.0
 - Add `list-folders` and `--from-folder` to load manually added chats from regular Telegram folders

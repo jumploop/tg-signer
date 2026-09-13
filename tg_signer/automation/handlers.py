@@ -118,18 +118,30 @@ async def resolve_ai_input(
         return message_text(event.message)
 
     lines: list[str] = []
-    try:
-        # get_chat_history 通常返回新->旧，后续 reverse 成旧->新。
+
+    async def _fetch_history():
+        msgs = []
+        # get_chat_history 通常返回新->旧,这里先按新->旧收集,reverse 后成旧->新
         async for msg in ctx.client.get_chat_history(
             history_chat_id, limit=recent_limit
         ):
-            text = message_text(msg).strip()
-            if not text:
-                continue
-            lines.append(f"[{message_sender(msg)}] {text}")
+            msgs.append(msg)
+        return msgs
+
+    try:
+        # 走 worker 的统一限流 + FloodWait 重试
+        messages = await ctx.worker._call_telegram_api(
+            "ai_reply.get_chat_history", _fetch_history
+        )
     except Exception as exc:  # noqa: BLE001
         ctx.log(f"ai_reply: 读取历史消息失败 ({exc})", level="WARNING")
         return message_text(event.message)
+
+    for msg in messages:
+        text = message_text(msg).strip()
+        if not text:
+            continue
+        lines.append(f"[{message_sender(msg)}] {text}")
 
     lines.reverse()
     if as_bool(params.get("include_current", False)):
@@ -407,10 +419,13 @@ async def forward(
         f"forward: from={from_chat_id}, to={to_chat_id}, message_id={message_id}",
         level="DEBUG",
     )
-    await ctx.client.forward_messages(
-        to_chat_id,
-        from_chat_id,
-        message_id,
+    await ctx.worker._call_telegram_api(
+        "forward",
+        lambda: ctx.client.forward_messages(
+            to_chat_id,
+            from_chat_id,
+            message_id,
+        ),
     )
     return "continue"
 

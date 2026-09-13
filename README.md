@@ -40,6 +40,7 @@ pip install "tg-signer[gui]"
 
 ![webgui](./assets/webui.jpeg)
 
+WebUI 包含账号管理（登录/登出）、配置管理（含大模型 API 配置）、群组配置、用户信息、签到记录和日志页面；账号管理页可登录账号获取 session 并登出删除 session 文件，群组配置页可列出账号缓存的群组/频道并快速填入签到或监控配置。
 
 ### Docker
 
@@ -134,6 +135,8 @@ tg-signer multi-run -a account_a -a account_b same_task  # 使用'same_task'的�
 tg-signer webgui --auth-code averycomplexcode  # 启动一个WebGUI
 ```
 
+启用 `--auth-code` 后，连续输错 5 次授权码会锁定 60 秒。
+
 ### 自动化规则（automation）
 
 推荐使用 `tg-signer automation` 统一管理自动化规则（覆盖 monitor 能力）。
@@ -163,6 +166,7 @@ tg-signer login
 ```
 
 根据提示输入手机号码和验证码进行登录并获取最近的聊天列表，确保你想要签到的聊天在列表内。
+运行任务（`run` / `run-once` / `multi-run` / `monitor run` / `automation run`）时，若已存在有效 session 文件会直接复用，无需重复登录；仅当 session 缺失或失效时才需要先执行 `tg-signer login` 或到 WebUI「账号管理」页登录。
 签到任务里的`chat_id`同时支持整数ID和以`@`开头的username，例如`@neo`。
 对于论坛群组，登录输出中会额外打印每个话题的 `message_thread_id`，可直接用于 `--message-thread-id`。
 

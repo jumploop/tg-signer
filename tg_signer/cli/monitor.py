@@ -7,7 +7,7 @@ from click import Group
 
 from tg_signer.core import UserMonitor
 
-from .signer import from_folder_option, run_worker, tg_signer
+from .signer import dialogs_option, from_folder_option, run_coroutines, tg_signer
 
 
 def get_monitor(
@@ -50,21 +50,21 @@ def list_(obj):
     return UserMonitor(workdir=obj["workdir"]).list_()
 
 
-@tg_monitor.command(help="根据配置运行监控")
-@click.argument("task_name", nargs=1, default="my_monitor")
-@click.option(
-    "--num-of-dialogs",
-    "-n",
-    default=20,
-    show_default=True,
-    type=int,
-    help="未指定 --from-folder 时获取最近N个对话",
-)
+@tg_monitor.command(help="根据配置运行监控(可指定多个任务共享同一 Client)")
+@click.argument("task_names", nargs=-1)
+@dialogs_option(default=20)
 @from_folder_option
 @click.pass_obj
-def run(obj, task_name, num_of_dialogs, folder):
-    monitor = get_monitor(task_name, obj)
-    run_worker(monitor, monitor.run(num_of_dialogs, folder=folder))
+def run(obj, task_names, num_of_dialogs, folder):
+    if not task_names:
+        raise click.UsageError("At least one task name is required")
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    coros = [
+        get_monitor(name, obj, loop=loop).run(num_of_dialogs, folder=folder)
+        for name in task_names
+    ]
+    run_coroutines(loop, coros)
 
 
 @tg_monitor.command(help="重新配置")

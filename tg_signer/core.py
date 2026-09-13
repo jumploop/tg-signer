@@ -31,7 +31,7 @@ from pyrogram.enums import ChatMembersFilter, ChatType
 from pyrogram.handlers import EditedMessageHandler, MessageHandler
 from pyrogram.methods.utilities.idle import idle
 from pyrogram.session import Session
-from pyrogram.storage import SQLiteStorage
+from pyrogram.storage.sqlite_storage import SQLiteStorage
 from pyrogram.types import (
     Chat,
     Folder,
@@ -130,6 +130,18 @@ def readable_chat(chat: Chat):
     none_or_dash = lambda x: x or "-"  # noqa: E731
 
     return f"id: {chat.id}, username: {none_or_dash(chat.username)}, title: {none_or_dash(chat.title)}, type: {type_}, name: {none_or_dash(chat.first_name)}"
+
+
+def chat_to_dict(chat: Chat) -> dict:
+    """把 Chat 转成可 JSON 序列化的 dict,供登录缓存/WebUI 复用。"""
+    return {
+        "id": chat.id,
+        "title": chat.title,
+        "type": chat.type,
+        "username": chat.username,
+        "first_name": chat.first_name,
+        "last_name": chat.last_name,
+    }
 
 
 def _folder_dynamic_rules(folder: Folder) -> list[str]:
@@ -556,11 +568,34 @@ class BaseUserWorker(Generic[ConfigT]):
         ) as fp:
             fp.write(str(user))
 
+    async def _ensure_session_usable(self) -> None:
+        """非交互式检查当前账号 session 是否可用。
+
+        session 存在且已授权时直接复用（不会触发登录）；缺失或失效时抛出
+        ``errors.Unauthorized``，避免运行/脚本路径落入 pyrogram 的交互式
+        登录提示（stdin 非终端时会挂起）。
+        """
+        app = self.app
+        if app.is_connected:
+            return
+        try:
+            authorized = await app.connect()
+            if not authorized:
+                raise errors.Unauthorized(
+                    "账号未登录或 session 文件缺失/失效,请先登录"
+                    "(CLI: tg-signer login / WebUI: 账号管理)"
+                )
+        finally:
+            if app.is_connected:
+                await app.disconnect()
+
     async def login(
         self,
         num_of_dialogs=20,
         print_chat=True,
         folder: Optional[str] = None,
+        *,
+        interactive: bool = False,
     ):
         self.log("开始登录...")
         app = self.app
@@ -573,6 +608,10 @@ class BaseUserWorker(Generic[ConfigT]):
         async with lock:
             me = _LOGIN_USERS.get(key)
             if me is None:
+                if not interactive:
+                    # 运行/其他命令路径先确认 session 有效;缺失或失效直接报错,
+                    # 避免触发 pyrogram 交互式登录提示。
+                    await self._ensure_session_usable()
                 async with app:
                     me = await self._call_telegram_api("users.GetFullUser", app.get_me)
 
@@ -587,17 +626,7 @@ class BaseUserWorker(Generic[ConfigT]):
                             selected_folder = _select_chat_folder(folders, folder)
                             chats = _explicit_folder_chats(selected_folder)
 
-                        latest_chats = [
-                            {
-                                "id": chat.id,
-                                "title": chat.title,
-                                "type": chat.type,
-                                "username": chat.username,
-                                "first_name": chat.first_name,
-                                "last_name": chat.last_name,
-                            }
-                            for chat in chats
-                        ]
+                        latest_chats = [chat_to_dict(chat) for chat in chats]
                         return chats, latest_chats, selected_folder
 
                     (
@@ -1196,14 +1225,13 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 return False
             return True
 
+        self.log(f"为以下Chat添加消息回调处理函数：{chat_ids}")
+        self.app.add_handler(MessageHandler(self.on_message, filters.chat(chat_ids)))
+        self.app.add_handler(
+            EditedMessageHandler(self.on_edited_message, filters.chat(chat_ids))
+        )
+
         while True:
-            self.log(f"为以下Chat添加消息回调处理函数：{chat_ids}")
-            self.app.add_handler(
-                MessageHandler(self.on_message, filters.chat(chat_ids))
-            )
-            self.app.add_handler(
-                EditedMessageHandler(self.on_edited_message, filters.chat(chat_ids))
-            )
             try:
                 async with self.app:
                     now = get_now()
