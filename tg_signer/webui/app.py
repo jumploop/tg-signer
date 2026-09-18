@@ -9,15 +9,19 @@ from typing import Callable, Dict, List, Tuple
 from nicegui import app, ui
 from pydantic import TypeAdapter
 
-from tg_signer.ai_tools import DEFAULT_MODEL, OpenAIConfigManager
+from tg_signer.ai_tools import (
+    DEFAULT_MODEL,
+    OpenAIConfigManager,
+    test_openai_connection,
+)
 from tg_signer.webui import runner
 from tg_signer.webui.account import (
     cancel_login,
     complete_login,
+    fetch_dialogs,
     is_account_authorized,
     list_accounts,
     logout_account,
-    refresh_dialogs,
     send_login_code,
 )
 from tg_signer.webui.auth import (
@@ -40,7 +44,6 @@ from tg_signer.webui.data import (
     list_log_files,
     list_task_names,
     load_config,
-    load_group_chats,
     load_logs,
     load_sign_records,
     load_user_infos,
@@ -597,6 +600,28 @@ def llm_config_block() -> Callable[[], None]:
         except Exception as exc:  # noqa: BLE001
             notify_error(exc)
 
+    async def test_connection() -> None:
+        api_key = (api_key_input.value or "").strip()
+        if not api_key:
+            ui.notify("API Key 不能为空", type="warning")
+            return
+        test_btn.disable()
+        status.set_text("正在测试连通性...")
+        status.update()
+        try:
+            ok, message = await test_openai_connection(
+                api_key,
+                base_url=(base_url_input.value or "").strip() or None,
+                model=(model_input.value or "").strip() or None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            ok, message = False, f"连接失败：{exc}"
+        finally:
+            test_btn.enable()
+        status.set_text(message)
+        status.update()
+        ui.notify(message, type="positive" if ok else "negative")
+
     with ui.card().classes("w-full shadow-md"):
         ui.label("大模型 API").classes("text-lg font-semibold")
         ui.label(
@@ -620,6 +645,9 @@ def llm_config_block() -> Callable[[], None]:
             ).classes("w-full")
             with ui.row().classes("items-center gap-2 mt-1"):
                 ui.button("保存", color="primary", on_click=save)
+                test_btn = ui.button("测试连通性", on_click=test_connection).props(
+                    "outline"
+                )
                 status = ui.label("").classes("text-sm text-gray-500")
 
     refresh()
@@ -829,7 +857,7 @@ def group_chat_block(
                 label="账号",
             ).classes("w-44")
             refresh_btn = ui.button(
-                "刷新最近 50 个对话",
+                "实时获取最近 50 个对话",
                 color="primary",
                 on_click=lambda: refresh_async(),
             ).props("dense")
@@ -876,16 +904,18 @@ def group_chat_block(
         status_label.text = "正在获取最近对话..."
         status_label.update()
         try:
-            ok, message = await refresh_dialogs(str(account), state.workdir, 50)
+            ok, message, chats = await fetch_dialogs(str(account), state.workdir, 50)
         except Exception as exc:  # noqa: BLE001
-            ok, message = False, str(exc)
+            ok, message, chats = False, str(exc), []
         refresh_btn.enable()
         ui.notify(message, type="positive" if ok else "negative")
-        refresh()
+        if ok:
+            refresh(chats)
 
-    def refresh() -> None:
+    def refresh(chats: List[Dict[str, object]] | None = None) -> None:
         sync_accounts()
-        chats = load_group_chats(state.workdir)
+        if chats is None:
+            chats = list(chats_by_id.values())
         chats_by_id.clear()
         # NiceGUI ui.select 的 options 只支持:
         #   1. list 纯值列表 2. dict 映射 {value: label}
@@ -909,8 +939,7 @@ def group_chat_block(
         chat_select.update()
         if not options:
             status_label.text = (
-                "未找到群组/频道信息，请先运行 tg-signer login 或 run 生成 "
-                "users/*/latest_chats.json"
+                "请点击“实时获取最近 50 个对话”以加载群组/频道信息"
             )
         else:
             extra = " - 已同步当前配置" if resolved is not None else ""
@@ -1332,8 +1361,8 @@ def _build_dashboard(container) -> None:
                     with ui.column().classes("w-96 shrink-0"):
                         ui.label("群组 / 频道").classes("text-lg font-semibold")
                         ui.label(
-                            "从已登录账号缓存 (users/*/latest_chats.json) 列出群组/"
-                            "频道，在下拉框中搜索并选择后填入左侧配置。"
+                            "从选中已登录账号实时获取最近 50 个对话，筛选群组/频道后，"
+                            "可在下拉框中搜索并填入左侧配置。"
                         ).classes("text-sm text-gray-500 mb-2")
                         refreshers.append(group_chat_block(pick_group))
                         # 绑定 refresh 回调,供 pick_group/refresh_all 触发右侧下拉框刷新

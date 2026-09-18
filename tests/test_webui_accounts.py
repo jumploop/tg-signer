@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -58,6 +59,54 @@ async def test_is_account_authorized_checks_local_session_files(tmp_path):
     ok, msg = await account.is_account_authorized("acc", tmp_path)
     assert ok
     assert "session 有效" in msg
+
+
+@pytest.mark.asyncio
+async def test_fetch_dialogs_returns_live_dialogs_without_writing_cache(
+    monkeypatch, tmp_path
+):
+    class FakeClient:
+        is_connected = True
+
+        async def connect(self):
+            return True
+
+        async def get_me(self):
+            return SimpleNamespace(id=123, first_name="测试账号", username=None)
+
+        async def get_dialogs(self, limit):
+            assert limit == 50
+            yield SimpleNamespace(
+                chat=SimpleNamespace(
+                    id=-1001,
+                    title="测试频道",
+                    type="channel",
+                    username="test_channel",
+                    first_name=None,
+                    last_name=None,
+                )
+            )
+
+        async def disconnect(self):
+            self.is_connected = False
+
+    monkeypatch.setattr(account, "_new_client", lambda *_args: FakeClient())
+
+    ok, message, chats = await account.fetch_dialogs("acc", tmp_path)
+
+    assert ok
+    assert "已获取最近 1 个对话" in message
+    assert chats == [
+        {
+            "id": -1001,
+            "title": "测试频道",
+            "type": "channel",
+            "username": "test_channel",
+            "first_name": None,
+            "last_name": None,
+        }
+    ]
+    assert not (tmp_path / "users" / "123" / "latest_chats.json").exists()
 
 
 def test_save_and_remove_account_user_mapping(tmp_path):

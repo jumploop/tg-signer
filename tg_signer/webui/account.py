@@ -266,6 +266,36 @@ async def is_account_authorized(account: str, workdir) -> Tuple[bool, str]:
     return False, f"{account} 未登录或 session 无效，请先在“账号管理”登录"
 
 
+async def fetch_dialogs(
+    account: str, workdir, limit: int = 50
+) -> Tuple[bool, str, List[Dict[str, Any]]]:
+    """通过指定账号实时获取最近对话，不写入本地缓存。"""
+    workdir = pathlib.Path(workdir)
+    client = _new_client(account, workdir)
+    chats: List[Dict[str, Any]] = []
+    try:
+        authorized = await client.connect()
+        if not authorized:
+            return (
+                False,
+                f"{account} 未登录或 session 无效，请先在“账号管理”登录",
+                chats,
+            )
+        me = await client.get_me()
+        async for dialog in client.get_dialogs(limit=limit):
+            chats.append(chat_to_dict(dialog.chat))
+    except Exception as exc:  # noqa: BLE001
+        return False, f"获取最近对话失败: {exc}", chats
+    finally:
+        try:
+            if client.is_connected:
+                await client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+    name = me.first_name or me.username or me.id
+    return True, f"已获取最近 {len(chats)} 个对话: {name}", chats
+
+
 async def refresh_dialogs(account: str, workdir, limit: int = 50) -> Tuple[bool, str]:
     """Reuse an existing session to refresh the latest dialogs cache.
 

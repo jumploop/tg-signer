@@ -101,6 +101,29 @@ def get_openai_client(
         return None
 
 
+async def test_openai_connection(
+    api_key: str, base_url: str | None = None, model: str | None = None
+) -> tuple[bool, str]:
+    """调用模型列表接口测试 OpenAI 兼容 API 的连通性。"""
+    if not api_key.strip():
+        return False, "API Key 不能为空"
+    client = get_openai_client(api_key=api_key.strip(), base_url=base_url)
+    if client is None:
+        return False, "无法创建 OpenAI 客户端，请检查 API 配置"
+    try:
+        await client.models.list()
+        suffix = f"，模型：{model}" if model else ""
+        return True, f"连接成功{suffix}"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"连接失败：{exc}"
+    finally:
+        close = getattr(client, "close", None)
+        if close is not None:
+            result = close()
+            if hasattr(result, "__await__"):
+                await result
+
+
 class AITools:
     def __init__(self, cfg: OpenAIConfig):
         self.client = get_openai_client(

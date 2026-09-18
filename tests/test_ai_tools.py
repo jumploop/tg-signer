@@ -1,5 +1,8 @@
 """Tests for tg_signer.ai_tools.OpenAIConfigManager."""
 
+import pytest
+
+from tg_signer import ai_tools
 from tg_signer.ai_tools import OpenAIConfigManager
 
 
@@ -30,3 +33,28 @@ def test_load_config_prefers_env_vars(tmp_path, monkeypatch):
 def test_load_config_none_when_missing(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     assert OpenAIConfigManager(tmp_path).load_config() is None
+
+
+@pytest.mark.asyncio
+async def test_test_openai_connection_calls_models_list(monkeypatch):
+    class FakeModels:
+        async def list(self):
+            return []
+
+    class FakeClient:
+        models = FakeModels()
+        closed = False
+
+        async def close(self):
+            self.closed = True
+
+    client = FakeClient()
+    monkeypatch.setattr(ai_tools, "get_openai_client", lambda **_kwargs: client)
+
+    ok, message = await ai_tools.test_openai_connection(
+        "sk-test", "https://example.com/v1", "gpt-test"
+    )
+
+    assert ok
+    assert message == "连接成功，模型：gpt-test"
+    assert client.closed
