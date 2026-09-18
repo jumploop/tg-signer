@@ -938,9 +938,7 @@ def group_chat_block(
             chat_select.value = None
         chat_select.update()
         if not options:
-            status_label.text = (
-                "请点击“实时获取最近 50 个对话”以加载群组/频道信息"
-            )
+            status_label.text = "请点击“实时获取最近 50 个对话”以加载群组/频道信息"
         else:
             extra = " - 已同步当前配置" if resolved is not None else ""
             status_label.text = f"共 {len(options)} 个群组/频道{extra}"
