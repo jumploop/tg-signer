@@ -887,7 +887,7 @@ def group_chat_block(
         names = [
             item["account"]
             for item in list_accounts(state.workdir)
-            if "session" in item["kind"]
+            if "session" in item["kind"] or "session_string" in item["kind"]
         ]
         if names != account_select.options:
             account_select.options = names

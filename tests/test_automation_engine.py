@@ -121,6 +121,14 @@ def test_match_message_trigger_and_user(tmp_path):
     trigger = MessageTriggerConfig(type="message", params={"from_user_ids": ["me"]})
     assert not worker._match_message_trigger(trigger, msg)
 
+    # 无发送者的消息（频道帖/服务消息）不应命中任何 from_user_ids 过滤。
+    anonymous = DummyMessage(text="post", chat=chat, from_user=None)
+    trigger = MessageTriggerConfig(
+        type="message", params={"from_user_ids": ["neo", "me"]}
+    )
+    assert not worker._match_user(anonymous, ["neo", "me"])
+    assert not worker._match_message_trigger(trigger, anonymous)
+
 
 def test_match_chat_ids_and_username(tmp_path):
     worker = make_worker(tmp_path)

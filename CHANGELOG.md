@@ -1,6 +1,13 @@
 # Changelog / 版本变动日志
 
 ## 版本变动日志
+### 0.9.4
+- 修复 `OpenAIConfigManager.has_config()` 判定逻辑，改为环境变量与本地配置任一存在即视为已配置
+- 修复 `AITools.calculate_problem()` 在模型返回 `content=None` 时崩溃的问题
+- 修复自动化 `_match_user` 过滤漏洞，无发送者（频道帖、服务消息）的消息不再命中 `from_user_ids` 过滤
+- WebUI 支持纯 `.session_string` 账号的实时获取对话与登出流程，`_new_client` 自动切换内存会话，下拉框一并纳入该类账号
+
+
 ### 0.9.3
 - WebUI 账号管理新增 LLM 连通性测试，调用 OpenAI 兼容接口的模型列表接口验证 API 配置（含 base_url / model）
 - WebUI 新增实时获取对话列表，可选择账号实时拉取最近对话，不写入本地缓存

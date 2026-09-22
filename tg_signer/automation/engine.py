@@ -433,8 +433,9 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
     def _match_user(
         self, message: Message, from_user_ids: Iterable[Union[int, str]]
     ) -> bool:
+        # 无发送者（频道帖、服务消息等）无法判定是否来自指定用户，不应放行。
         if not message.from_user:
-            return True
+            return False
         normalized = {
             self._normalize_user_id(item) for item in from_user_ids if item is not None
         }

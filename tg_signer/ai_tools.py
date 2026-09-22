@@ -37,7 +37,7 @@ class OpenAIConfigManager:
         return bool(os.environ.get("OPENAI_API_KEY"))
 
     def has_config(self) -> bool:
-        return self.has_env_config() and bool(self.load_file_config())
+        return self.has_env_config() or bool(self.load_file_config())
 
     def load_file_config(self) -> Optional[dict]:
         config_file = self.get_config_file()
@@ -199,7 +199,8 @@ class AITools:
             stream=False,
             temperature=temperature,
         )
-        return completion.choices[0].message.content.strip()
+        content = completion.choices[0].message.content
+        return (content or "").strip()
 
     async def get_reply(
         self,

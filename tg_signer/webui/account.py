@@ -216,19 +216,28 @@ def complete_login(
 
 
 def _new_client(account: str, workdir: pathlib.Path) -> Any:
-    """Create a standalone Client for an existing <account>.session file.
+    """Create a standalone Client for an existing account session.
+
+    Prefers a file-backed ``<account>.session`` when present; falls back to an
+    in-memory client backed by ``<account>.session_string`` so that
+    session_string-only accounts also work in the WebUI flows.
 
     Does not pass loop – Pyrogram resolves the running loop via
     asyncio.get_event_loop() automatically.  This avoids cross-loop
     bugs when called from asyncio.to_thread or nested loops.
     """
+    workdir = pathlib.Path(workdir)
     api_id, api_hash = get_api_config()
+    session_file = workdir / f"{account}.session"
+    session_string_file = workdir / f"{account}.session_string"
+    in_memory = not session_file.is_file() and session_string_file.is_file()
     return Client(
         account,
         api_id=api_id,
         api_hash=api_hash,
         proxy=get_proxy(),
         workdir=str(workdir),
+        in_memory=in_memory,
         key=str((workdir / account).resolve()),
     )
 

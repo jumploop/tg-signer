@@ -109,6 +109,49 @@ async def test_fetch_dialogs_returns_live_dialogs_without_writing_cache(
     assert not (tmp_path / "users" / "123" / "latest_chats.json").exists()
 
 
+def test_new_client_uses_in_memory_for_session_string_only(tmp_path):
+    (tmp_path / "acc.session_string").write_text("dummy-string", encoding="utf-8")
+    client = account._new_client("acc", tmp_path)
+    assert client.in_memory is True
+    assert client.session_string == "dummy-string"
+
+
+def test_new_client_prefers_session_file(tmp_path):
+    (tmp_path / "acc.session").write_bytes(b"x")
+    (tmp_path / "acc.session_string").write_text("dummy", encoding="utf-8")
+    client = account._new_client("acc", tmp_path)
+    assert client.in_memory is False
+
+
+@pytest.mark.asyncio
+async def test_logout_account_removes_files_for_session_string_only(
+    monkeypatch, tmp_path
+):
+    class FakeStorage:
+        async def delete(self):
+            return None
+
+    class FakeClient:
+        is_connected = False
+        storage = FakeStorage()
+
+        async def connect(self):
+            return False
+
+        async def disconnect(self):
+            self.is_connected = False
+
+        async def log_out(self):
+            return None
+
+    monkeypatch.setattr(account, "_new_client", lambda *_args: FakeClient())
+    (tmp_path / "acc.session_string").write_text("x", encoding="utf-8")
+
+    msg = await account.logout_account("acc", tmp_path)
+
+    assert "已登出" in msg
+    assert not (tmp_path / "acc.session_string").exists()
+
 def test_save_and_remove_account_user_mapping(tmp_path):
     account.save_account_user("acc1", "123", tmp_path)
     assert account.load_account_users(tmp_path) == {"acc1": "123"}
