@@ -20,6 +20,9 @@
           <el-button size="small" @click="showChats(row)">查看对话</el-button>
         </template>
       </el-table-column>
+      <template #empty>
+        <el-empty description="暂无用户信息（读取 users/*/me.json）" :image-size="60" />
+      </template>
     </el-table>
 
     <el-dialog
@@ -58,4 +61,3 @@ function showChats(row) {
 
 onMounted(refresh)
 </script>
-

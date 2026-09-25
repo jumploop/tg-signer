@@ -11,7 +11,12 @@
         placeholder="授权码"
         @keyup.enter="submit"
       />
-      <el-button type="primary" style="margin-top: 12px; width: 100%" @click="submit">
+      <el-button
+        type="primary"
+        style="margin-top: 12px; width: 100%"
+        :loading="loading"
+        @click="submit"
+      >
         登录
       </el-button>
     </el-card>
@@ -19,19 +24,22 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { login } from '../api'
+import { login, checkAuth } from '../api'
 
 const router = useRouter()
 const code = ref('')
+const loading = ref(false)
 
 async function submit() {
+  if (loading.value) return
   if (!code.value) {
     ElMessage.warning('请输入授权码')
     return
   }
+  loading.value = true
   try {
     const data = await login(code.value)
     if (data.ok) {
@@ -43,8 +51,22 @@ async function submit() {
   } catch (error) {
     const detail = error.response && error.response.data && error.response.data.detail
     ElMessage.error(detail || '登录失败')
+  } finally {
+    loading.value = false
   }
 }
+
+onMounted(async () => {
+  try {
+    const status = await checkAuth()
+    if (!status.required) {
+      ElMessage.info('本服务未启用授权码，无需登录')
+      router.push('/')
+    }
+  } catch (error) {
+    /* 忽略瞬时错误 */
+  }
+})
 </script>
 
 <style scoped>
@@ -63,4 +85,3 @@ async function submit() {
   color: #666;
 }
 </style>
-

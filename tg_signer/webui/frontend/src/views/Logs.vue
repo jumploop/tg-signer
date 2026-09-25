@@ -6,6 +6,7 @@
       </el-select>
       <el-input-number v-model="limit" :min="50" :max="2000" :step="50" />
       <el-switch v-model="autoRefresh" active-text="自动刷新(5s)" />
+      <el-button @click="copyLog">复制日志</el-button>
       <el-button @click="refresh">刷新</el-button>
     </div>
     <el-input
@@ -20,6 +21,7 @@
 
 <script setup>
 import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { ElMessage } from 'element-plus'
 import api from '../api'
 
 const files = ref([])
@@ -44,6 +46,15 @@ async function refresh() {
   content.value = data.lines.join('\n')
 }
 
+async function copyLog() {
+  try {
+    await navigator.clipboard.writeText(content.value)
+    ElMessage.success('已复制日志')
+  } catch (error) {
+    ElMessage.warning('复制失败，请手动选择复制')
+  }
+}
+
 watch([selected, limit], refresh)
 watch(autoRefresh, (value) => {
   clearInterval(timer)
@@ -55,4 +66,3 @@ onMounted(() => {
 })
 onUnmounted(() => clearInterval(timer))
 </script>
-

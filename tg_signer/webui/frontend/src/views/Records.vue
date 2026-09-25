@@ -1,6 +1,8 @@
 <template>
   <el-card shadow="never">
     <div class="row">
+      <span class="hint">共 {{ records.length }} 个任务 / {{ totalRecords }} 条记录</span>
+      <span style="flex: 1"></span>
       <el-input
         v-model="filterText"
         placeholder="按任务名过滤"
@@ -31,6 +33,9 @@
           </div>
         </template>
       </el-table-column>
+      <template #empty>
+        <el-empty description="暂无签到记录，运行签到任务后在此查看" :image-size="60" />
+      </template>
     </el-table>
   </el-card>
 </template>
@@ -44,6 +49,9 @@ const filterText = ref('')
 const filtered = computed(() =>
   records.value.filter((record) => !filterText.value || record.task.includes(filterText.value))
 )
+const totalRecords = computed(() =>
+  records.value.reduce((sum, record) => sum + record.records.length, 0)
+)
 
 async function refresh() {
   const { data } = await api.get('/api/records')
@@ -52,4 +60,3 @@ async function refresh() {
 
 onMounted(refresh)
 </script>
-

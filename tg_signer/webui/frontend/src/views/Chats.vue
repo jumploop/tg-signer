@@ -20,6 +20,12 @@
           <el-button size="small" @click="copyId(row.id)">复制ID</el-button>
         </template>
       </el-table-column>
+      <template #empty>
+        <el-empty
+          description="暂无对话数据：选择账号后「实时获取」，或先「读取缓存」"
+          :image-size="60"
+        />
+      </template>
     </el-table>
   </el-card>
 </template>
@@ -89,4 +95,3 @@ onMounted(() => {
   refreshCache()
 })
 </script>
-
