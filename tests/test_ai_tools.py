@@ -102,4 +102,3 @@ async def test_calculate_problem_handles_none_content(monkeypatch):
     monkeypatch.setattr(ai_tools, "get_openai_client", lambda **_kwargs: FakeClient())
     tools = AITools({"api_key": "sk-test"})
     assert await tools.calculate_problem("1+1=?") == ""
-

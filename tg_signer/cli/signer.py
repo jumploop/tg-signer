@@ -637,7 +637,7 @@ def migrate_sign_records(obj, legacy_user_id: str | None, delete_json: bool):
     "storage_secret",
     default=None,
     show_default=True,
-    help="存储密钥，若不输入则每次启动会使用随机字符串",
+    help="（已废弃，兼容保留）旧版 NiceGUI 存储密钥参数，现已无实际作用",
 )
 @click.option(
     "--auth-code",

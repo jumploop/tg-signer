@@ -152,6 +152,7 @@ async def test_logout_account_removes_files_for_session_string_only(
     assert "已登出" in msg
     assert not (tmp_path / "acc.session_string").exists()
 
+
 def test_save_and_remove_account_user_mapping(tmp_path):
     account.save_account_user("acc1", "123", tmp_path)
     assert account.load_account_users(tmp_path) == {"acc1": "123"}

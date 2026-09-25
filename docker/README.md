@@ -21,7 +21,7 @@ sleep infinity
 - `ghcr.io/amchii/tg-signer:<tag>-webui`
 - `ghcr.io/amchii/tg-signer:latest-webui`（当推送合法 Docker tag 格式的 Git tag，例如 `v0.0.0`、`0.0.0`、`v0.0.0-beta` 时更新）
 
-其中基础镜像默认包含 `speedup` 所需的 `tgcrypto`，`-webui` 变体会额外安装 `gui` 额外依赖（当前包含 `nicegui`）并默认监听 `8080` 端口。
+其中基础镜像默认包含 `speedup` 所需的 `tgcrypto`，`-webui` 变体会额外安装 `gui` 额外依赖（包含 `fastapi` / `uvicorn`，前端为 Vue 构建产物）并默认监听 `8080` 端口。
 如果你需要使用国内镜像源或调整构建参数，仍然可以继续按下文方式在本地构建。
 
 ### 手动测试推送

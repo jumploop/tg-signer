@@ -37,6 +37,7 @@ pip install "tg-signer[gui]"
 ![webgui](./assets/webui.jpeg)
 
 The WebUI includes account management (login/logout), config management (including LLM API config), group selection, user info, sign records and log pages. The account page can log in to obtain a session and log out to delete session files; the group selection page lists cached groups/channels and can quickly fill them into signer or monitor configs.
+The WebUI uses a front-end/back-end separated architecture: the backend is FastAPI (REST API + static file hosting) and the frontend is Vue 3 (source in `webui_frontend/`). You do not need to build the frontend yourself - the package installed via `pip install "tg-signer[gui]"` already contains the built assets. To modify the frontend, run `npm install && npm run build` inside `webui_frontend/`; the output goes to `tg_signer/webui/static/`.
 
 ### Docker
 
