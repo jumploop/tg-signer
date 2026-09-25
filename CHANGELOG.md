@@ -5,6 +5,7 @@
 - WebUI 改为前后端分离架构：后端 FastAPI 提供 REST API 并托管静态产物，前端基于 Vue 3 + Vite（源码在 `tg_signer/webui/frontend/`，构建产物随包发布到 `tg_signer/webui/static/`）
 - 移除 NiceGUI 依赖与旧单体页面，`tg-signer[gui]` 现在只依赖 `fastapi` / `uvicorn`
 - 新增后端 REST API 冒烟测试与 FastAPI 懒加载测试
+- WebUI 新增「交互式配置向导」：分步表单快速创建签到配置（基础设置 + 多签到任务、多动作），替换旧 NiceGUI 向导
 
 ### 0.9.4
 - 修复 `OpenAIConfigManager.has_config()` 判定逻辑，改为环境变量与本地配置任一存在即视为已配置
