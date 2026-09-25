@@ -13,7 +13,7 @@ FastAPI is not installed, then asserting that:
 
 * ``import tg_signer.webui`` does **not** load ``tg_signer.webui.server``.
 * ``from tg_signer.webui import data`` / ``runner`` / ``account`` /
-  ``auth`` / ``schema_utils`` succeeds without FastAPI.
+  ``auth`` succeeds without FastAPI.
 * Accessing ``AUTH_CODE_ENV`` / ``app`` / ``main`` / ``require_auth``
   triggers a ``ModuleNotFoundError`` (lazy load attempts to pull in
   FastAPI).
@@ -27,7 +27,7 @@ import sys
 import pytest
 
 _LAZY_ATTRS = ("AUTH_CODE_ENV", "app", "main", "require_auth")
-_EAGER_SUBMODULES = ("data", "runner", "account", "auth", "schema_utils")
+_EAGER_SUBMODULES = ("data", "runner", "account", "auth")
 
 
 def _block_fastapi():

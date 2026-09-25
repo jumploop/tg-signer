@@ -95,8 +95,7 @@ Commands:
   login                   登录账号（用于获取session）
   migrate-sign-records    将签到记录从 JSON 迁移到 SQLite（默认保留原...
   logout                  登出账号并删除session文件
-  automation              配置和运行自动化规则（推荐，覆盖monitor能力）
-  monitor                 配置和运行监控
+  automation              配置和运行自动化规则
   multi-run               使用一套配置同时运行多个账号
   reconfig                重新配置
   run                     根据任务配置运行签到
@@ -131,7 +130,6 @@ tg-signer schedule-messages --crontab '0 0 * * *' --next-times 10 -- -1001680975
 tg-signer schedule-messages --crontab '0 0 * * *' --next-times 3 --message-thread-id 1 -- -1003763902761 你好  # 配置群组话题的定时消息
 tg-signer automation init my_auto  # 初始化自动化模板
 tg-signer automation run my_auto  # 运行自动化任务
-tg-signer monitor run  # 配置个人、群组、频道消息监控与自动回复
 tg-signer multi-run -a account_a -a account_b same_task  # 使用'same_task'的配置同时运行'account_a'和'account_b'两个账号
 tg-signer webgui --auth-code averycomplexcode  # 启动一个WebGUI
 ```
@@ -140,7 +138,7 @@ tg-signer webgui --auth-code averycomplexcode  # 启动一个WebGUI
 
 ### 自动化规则（automation）
 
-推荐使用 `tg-signer automation` 统一管理自动化规则（覆盖 monitor 能力）。
+使用 `tg-signer automation` 统一管理消息监控、转发与自动回复等自动化规则。
 
 ```sh
 tg-signer automation init my_auto
@@ -167,7 +165,7 @@ tg-signer login
 ```
 
 根据提示输入手机号码和验证码进行登录并获取最近的聊天列表，确保你想要签到的聊天在列表内。
-运行任务（`run` / `run-once` / `multi-run` / `monitor run` / `automation run`）时，若已存在有效 session 文件会直接复用，无需重复登录；仅当 session 缺失或失效时才需要先执行 `tg-signer login` 或到 WebUI「账号管理」页登录。
+运行任务（`run` / `run-once` / `multi-run` / `automation run`）时，若已存在有效 session 文件会直接复用，无需重复登录；仅当 session 缺失或失效时才需要先执行 `tg-signer login` 或到 WebUI「账号管理」页登录。
 签到任务里的`chat_id`同时支持整数ID和以`@`开头的username，例如`@neo`。
 对于论坛群组，登录输出中会额外打印每个话题的 `message_thread_id`，可直接用于 `--message-thread-id`。
 
@@ -180,7 +178,7 @@ tg-signer login --from-folder Sign
 tg-signer login --from-folder 2
 ```
 
-`--from-folder` 表示“从 Folder 发现对话”，也适用于 `run`、`run-once`、`multi-run`、`automation run` 和 `monitor run`。指定后会加载 Folder 中所有手动加入或置顶的对话，`--num-of-dialogs` 不再生效。当前不支持按联系人、非联系人、机器人、群组或频道等动态规则生成成员的 Folder；请使用只包含手动添加对话的普通 Folder。
+`--from-folder` 表示“从 Folder 发现对话”，也适用于 `run`、`run-once`、`multi-run` 和 `automation run`。指定后会加载 Folder 中所有手动加入或置顶的对话，`--num-of-dialogs` 不再生效。当前不支持按联系人、非联系人、机器人、群组或频道等动态规则生成成员的 Folder；请使用只包含手动添加对话的普通 Folder。
 
 ### 时区
 
@@ -279,185 +277,29 @@ tg-signer run linuxdo
 签到时间误差随机秒数（默认为0）: 300
 ```
 
-### 配置与运行监控
-说明：monitor 为 legacy 功能，推荐使用 `tg-signer automation` 统一管理自动化规则。
+### 监控功能已下线
+
+`tg-signer monitor` 与 `<workdir>/monitors/` 已移除。消息监控、转发与自动回复请统一使用 `tg-signer automation`：
 
 ```sh
-tg-signer monitor run my_monitor
+tg-signer automation init my_auto
+# 编辑 .signer/automations/my_auto/config.json
+tg-signer automation run my_auto
 ```
 
-根据提示进行配置。
+迁移对照：
 
-#### 示例：
+| 旧 monitor 概念 | automation 对应 |
+| --- | --- |
+| 监控项 `chat_id` + 匹配规则 | 触发器 `message` + `filters`（`text_rule` / `text_value` / `from_user_ids`） |
+| 默认发送文本 | handler `send_text` |
+| AI 回复 | handler `ai_reply` |
+| 正则提取发送文本 | handler `send_text` 的 `search_regex` + `template` |
+| 转发到聊天 | handler `forward` |
+| 转发到外部（UDP / Http） | handler `external_forward` |
+| Server酱推送 | handler `server_chan` |
 
-```
-开始配置任务<my_monitor>
-聊天chat id和用户user id均同时支持整数id和字符串username, username必须以@开头，如@neo
-
-配置第1个监控项
-1. Chat ID（登录时最近对话输出中的ID）: -4573702599
-2. 匹配规则('exact', 'contains', 'regex', 'all'): contains
-3. 规则值（不可为空）: kfc
-4. 只匹配来自特定用户ID的消息（多个用逗号隔开, 匹配所有用户直接回车）: @neo
-5. 默认发送文本: V Me 50
-6. 从消息中提取发送文本的正则表达式:
-7. 等待N秒后删除签到消息（发送消息后等待进行删除, '0'表示立即删除, 不需要删除直接回车）, N:
-继续配置？(y/N)：y
-
-配置第2个监控项
-1. Chat ID（登录时最近对话输出中的ID）: -4573702599
-2. 匹配规则('exact', 'contains', 'regex'): regex
-3. 规则值（不可为空）: 参与关键词：「.*?」
-4. 只匹配来自特定用户ID的消息（多个用逗号隔开, 匹配所有用户直接回车）: 61244351
-5. 默认发送文本:
-6. 从消息中提取发送文本的正则表达式: 参与关键词：「(?P<keyword>(.*?))」\n
-7. 发送文本模板（可用{extracted}/{group1}/命名分组；不需要则直接回车）: 我要参与 {keyword}
-8. 等待N秒后删除签到消息（发送消息后等待进行删除, '0'表示立即删除, 不需要删除直接回车）, N: 5
-继续配置？(y/N)：y
-
-配置第3个监控项
-1. Chat ID（登录时最近对话输出中的ID）: -4573702599
-2. 匹配规则(exact, contains, regex, all): all
-3. 只匹配来自特定用户ID的消息（多个用逗号隔开, 匹配所有用户直接回车）:
-4. 总是忽略自己发送的消息（y/N）: y
-5. 默认发送文本（不需要则回车）:
-6. 是否使用AI进行回复(y/N): n
-7. 从消息中提取发送文本的正则表达式（不需要则直接回车）:
-8. 是否通过Server酱推送消息(y/N): n
-9. 是否需要转发到外部（UDP, Http）(y/N): y
-10. 是否需要转发到UDP(y/N): y
-11. 请输入UDP服务器地址和端口（形如`127.0.0.1:1234`）: 127.0.0.1:9999
-12. 是否需要转发到Http(y/N): y
-13. 请输入Http地址（形如`http://127.0.0.1:1234`）: http://127.0.0.1:8000/tg/user1/messages
-继续配置？(y/N)：n
-
-```
-
-#### 示例解释：
-
-1. 聊天`chat id`和用户`user id`均同时支持整数**id**和字符串**username**, username**必须以@开头** 如"neo"输入"@neo"，注意*
-   *username** 可能不存在，示例中`chat id`为-4573702599表示规则只对-4573702599对应的聊天有效。
-
-2. 匹配规则，目前皆**忽略大小写**：
-
-    1. `exact` 为精确匹配，消息必须精确等于该值。
-
-    2. `contains` 为包含匹配，如contains="kfc"，那么只要收到的消息中包含"kfc"如"I like MacDonalds rather than KfC"
-       即匹配到（注意忽略了大小写）
-
-    3. `regex` 为正则，参考  [Python正则表达式](https://docs.python.org/zh-cn/3/library/re.html) ，在消息中有**搜索到该正则即匹配
-       **，示例中的 "参与关键词：「.*?」" 可以匹配消息： "新的抽奖已经创建...
-       参与关键词：「我要抽奖」
-
-       建议先私聊机器人"
-
-    4. 可以只匹配来自特定用户的消息，如群管理员而不是随便什么人发布的抽奖消息
-
-    5. 可以设置默认发布文本， 即只要匹配到消息即默认发送该文本
-
-    6. 提取发布文本的正则，例如 "参与关键词：「(?P<keyword>.*?)」\n" ，注意用括号`(...)` 捕获要提取的文本，
-       可以捕获第3点示例消息的关键词"我要抽奖"并自动发送。若配置了发送文本模板，可用 `{extracted}` 或
-       `{group1}` 引用第一个捕获组，也可用 `{keyword}` 引用命名分组，例如模板 `我要参与 {keyword}` 会发送
-       `我要参与 我要抽奖`。
-
-3. 消息Message结构参考:
-
-```json
-{
-    "_": "Message",
-    "id": 2950,
-    "from_user": {
-        "_": "User",
-        "id": 123456789,
-        "is_self": false,
-        "is_contact": false,
-        "is_mutual_contact": false,
-        "is_deleted": false,
-        "is_bot": false,
-        "is_verified": false,
-        "is_restricted": false,
-        "is_scam": false,
-        "is_fake": false,
-        "is_support": false,
-        "is_premium": false,
-        "is_contact_require_premium": false,
-        "is_close_friend": false,
-        "is_stories_hidden": false,
-        "is_stories_unavailable": true,
-        "is_business_bot": false,
-        "first_name": "linux",
-        "status": "UserStatus.ONLINE",
-        "next_offline_date": "2025-05-30 11:52:40",
-        "username": "linuxdo",
-        "dc_id": 5,
-        "phone_number": "*********",
-        "photo": {
-            "_": "ChatPhoto",
-            "small_file_id": "AQADBQADqqcxG6hqrTMAEAIAA6hqrTMABLkwVDcqzBjAAAQeBA",
-            "small_photo_unique_id": "AgADqqcxG6hqrTM",
-            "big_file_id": "AQADBQADqqcxG6hqrTMAEAMAA6hqrTMABLkwVDcqzBjAAAQeBA",
-            "big_photo_unique_id": "AgADqqcxG6hqrTM",
-            "has_animation": false,
-            "is_personal": false
-        },
-        "added_to_attachment_menu": false,
-        "inline_need_location": false,
-        "can_be_edited": false,
-        "can_be_added_to_attachment_menu": false,
-        "can_join_groups": false,
-        "can_read_all_group_messages": false,
-        "has_main_web_app": false
-    },
-    "date": "2025-05-30 11:47:46",
-    "chat": {
-        "_": "Chat",
-        "id": -52737131599,
-        "type": "ChatType.GROUP",
-        "is_creator": true,
-        "is_deactivated": false,
-        "is_call_active": false,
-        "is_call_not_empty": false,
-        "title": "测试组",
-        "has_protected_content": false,
-        "members_count": 4,
-        "permissions": {
-            "_": "ChatPermissions",
-            "can_send_messages": true,
-            "can_send_media_messages": true,
-            "can_send_other_messages": true,
-            "can_send_polls": true,
-            "can_add_web_page_previews": true,
-            "can_change_info": true,
-            "can_invite_users": true,
-            "can_pin_messages": true,
-            "can_manage_topics": true
-        }
-    },
-    "from_offline": false,
-    "show_caption_above_media": false,
-    "mentioned": false,
-    "scheduled": false,
-    "from_scheduled": false,
-    "edit_hidden": false,
-    "has_protected_content": false,
-    "text": "test, 测试",
-    "video_processing_pending": false,
-    "outgoing": false
-}
-```
-
-#### 示例运行输出：
-
-```
-[INFO] [tg-signer] 2024-10-25 12:29:06,516 core.py 458 开始监控...
-[INFO] [tg-signer] 2024-10-25 12:29:37,034 core.py 439 匹配到监控项：MatchConfig(chat_id=-4573702599, rule=contains, rule_value=kfc), default_send_text=V me 50, send_text_search_regex=None
-[INFO] [tg-signer] 2024-10-25 12:29:37,035 core.py 442 发送文本：V me 50
-[INFO] [tg-signer] 2024-10-25 12:30:02,726 core.py 439 匹配到监控项：MatchConfig(chat_id=-4573702599, rule=regex, rule_value=参与关键词：「.*?」), default_send_text=None, send_text_search_regex=参与关键词：「(?P<keyword>(.*?))」\n
-[INFO] [tg-signer] 2024-10-25 12:30:02,727 core.py 442 发送文本：我要抽奖
-[INFO] [tg-signer] 2024-10-25 12:30:03,001 core.py 226 Message「我要抽奖」 to -4573702599 will be deleted after 5 seconds.
-[INFO] [tg-signer] 2024-10-25 12:30:03,001 core.py 229 Waiting...
-[INFO] [tg-signer] 2024-10-25 12:30:08,260 core.py 232 Message「我要抽奖」 to -4573702599 deleted!
-```
+详见 [docs/automation_usage.md](docs/automation_usage.md)。
 
 ### 版本变动日志
 
@@ -471,9 +313,6 @@ tg-signer monitor run my_monitor
 .signer
 ├── .openai_config.json  # 可选，大模型配置
 ├── data.sqlite3  # SQLite 签到记录库
-├── monitors  # 监控
-│   ├── my_monitor  # 监控任务名
-│       └── config.json  # 监控配置
 ├── users
 │   └── 123456789
 │       ├── latest_chats.json  # 获取的最近对话

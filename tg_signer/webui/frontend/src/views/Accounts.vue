@@ -1,11 +1,27 @@
 <template>
-  <el-card shadow="never">
-    <div class="row">
-      <span class="hint">已发现 {{ accounts.length }} 个账号</span>
-      <span style="flex: 1"></span>
+  <el-card shadow="never" class="accounts-card">
+    <div class="accounts-intro">
+      <div>
+        <span class="section-label">账号会话</span>
+        <p class="section-caption">管理已登录的 Telegram 会话，检查授权状态或添加新账号。</p>
+      </div>
       <el-button type="primary" @click="openLogin">登录新账号</el-button>
     </div>
-    <el-table :data="accounts">
+    <div class="account-metrics">
+      <div class="account-metric">
+        <span class="metric-value">{{ accounts.length }}</span>
+        <span class="metric-label">已发现账号</span>
+      </div>
+      <div class="account-metric">
+        <span class="metric-value">{{ sessionCount }}</span>
+        <span class="metric-label">可用会话</span>
+      </div>
+      <div class="account-metric">
+        <span class="metric-value metric-value--muted">本地</span>
+        <span class="metric-label">凭据存储</span>
+      </div>
+    </div>
+    <el-table v-loading="loading" :data="accounts">
       <el-table-column prop="account" label="账号" min-width="140" />
       <el-table-column label="会话类型" width="240">
         <template #default="{ row }">
@@ -23,7 +39,9 @@
       </el-table-column>
       <el-table-column label="Session 文件" min-width="200" show-overflow-tooltip>
         <template #default="{ row }">
-          {{ row.session_file ? row.session_file.split(/[\\/]/).pop() : '—' }}
+          <span class="session-file">
+            {{ row.session_file ? row.session_file.split(/[\\/]/).pop() : '—' }}
+          </span>
         </template>
       </el-table-column>
       <el-table-column label="操作" width="220">
@@ -43,12 +61,17 @@
       v-model="loginVisible"
       title="登录 Telegram 账号"
       width="480px"
+      class="account-dialog"
       :close-on-click-modal="false"
     >
       <el-steps :active="loginStep" finish-status="success" simple style="margin-bottom: 16px">
         <el-step title="发送验证码" />
         <el-step title="完成登录" />
       </el-steps>
+      <div class="dialog-callout">
+        <el-icon><InfoFilled /></el-icon>
+        <span>验证码会发送到 Telegram 对话，请保持账号可接收消息。</span>
+      </div>
       <el-form label-width="90px">
         <el-form-item label="账号名">
           <el-input
@@ -102,11 +125,16 @@
 </template>
 
 <script setup>
-import { ref, nextTick, onMounted } from 'vue'
+import { computed, ref, nextTick, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import api from '../api'
+import { InfoFilled } from '@element-plus/icons-vue'
+import api, { asArray } from '../api'
 
 const accounts = ref([])
+const loading = ref(false)
+const sessionCount = computed(() =>
+  accounts.value.filter((account) => account.kind && account.kind.length).length
+)
 const loginVisible = ref(false)
 const loginAccount = ref('')
 const phone = ref('')
@@ -120,8 +148,15 @@ const loginStep = ref(0)
 const codeInput = ref(null)
 
 async function refresh() {
-  const { data } = await api.get('/api/accounts')
-  accounts.value = data
+  loading.value = true
+  try {
+    const { data } = await api.get('/api/accounts')
+    accounts.value = asArray(data)
+  } catch (error) {
+    ElMessage.error('账号列表加载失败: ' + errMsg(error))
+  } finally {
+    loading.value = false
+  }
 }
 
 function openLogin() {
@@ -232,7 +267,89 @@ onMounted(refresh)
 </script>
 
 <style scoped>
+.accounts-intro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 20px;
+}
+.section-label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--ts-ink);
+  font-size: 16px;
+  font-weight: 700;
+}
+.section-caption {
+  margin: 0;
+  color: var(--ts-muted);
+  font-size: 13px;
+}
+.account-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 22px;
+}
+.account-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border: 1px solid var(--ts-line);
+  border-radius: 12px;
+  background: #FAFCFF;
+}
+.metric-value {
+  color: var(--ts-ink);
+  font-size: 22px;
+  font-weight: 750;
+  line-height: 1;
+}
+.metric-value--muted {
+  color: var(--ts-muted);
+  font-size: 18px;
+}
+.metric-label {
+  color: var(--ts-muted);
+  font-size: 12px;
+}
+.session-file {
+  color: var(--ts-ink-2);
+  font-family: var(--el-font-family-mono);
+  font-size: 12px;
+}
+.dialog-callout {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: -2px 0 18px;
+  padding: 11px 13px;
+  border: 1px solid #D9E7FA;
+  border-radius: 10px;
+  background: #F5F9FF;
+  color: #47617F;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.dialog-callout .el-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--ts-sky);
+}
 .kind-tag {
   margin-right: 4px;
+}
+
+@media (max-width: 600px) {
+  .accounts-intro {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .account-metrics {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

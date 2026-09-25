@@ -1,6 +1,13 @@
 # Changelog / 版本变动日志
 
 ## 版本变动日志
+### 0.10.0
+- 移除 legacy `monitor` 子系统：删除 `UserMonitor` 类、`tg-signer monitor` 命令组、`MonitorConfig` / `MatchConfig` 配置模型，以及 WebUI 的 Monitor 配置类型与任务运行入口；消息监控、转发与自动回复统一由 `tg-signer automation` 提供
+- `UserMonitor.udp_forward` / `http_api_callback` 迁入 `tg_signer/automation/handlers.py` 作为模块级函数，`external_forward` handler 行为不变
+- 磁盘上已有的 `<workdir>/monitors/` 目录不再被读取，需按 README 迁移对照表改写为 automation 规则
+- WebUI 前端整体重做：侧栏布局、主题样式与各功能页（账号、群组/频道、用户、签到记录、日志、基础设置等）统一刷新
+- README / README_EN 大幅精简，监控相关内容改为 automation 迁移对照说明
+
 ### 0.9.5
 - WebUI 改为前后端分离架构：后端 FastAPI 提供 REST API 并托管静态产物，前端基于 Vue 3 + Vite（源码在 `tg_signer/webui/frontend/`，构建产物随包发布到 `tg_signer/webui/static/`）
 - 移除 NiceGUI 依赖与旧单体页面，`tg-signer[gui]` 现在只依赖 `fastapi` / `uvicorn`

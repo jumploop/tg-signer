@@ -24,6 +24,16 @@ api.interceptors.response.use(
   }
 )
 
+// 后端不可用时，静态服务器可能把 HTML 回退页当作 200 响应返回。
+// 这些守卫保证接口返回异常结构时页面不会因 .filter/.map 崩溃。
+export function asArray(value) {
+  return Array.isArray(value) ? value : []
+}
+
+export function asObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+}
+
 export async function checkAuth() {
   try {
     const { data } = await api.get('/api/auth/status')

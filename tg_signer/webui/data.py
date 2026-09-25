@@ -8,19 +8,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
-from tg_signer.config import (
-    AutomationConfig,
-    BaseJSONConfig,
-    MonitorConfig,
-    SignConfigV3,
-)
+from tg_signer.config import AutomationConfig, BaseJSONConfig, SignConfigV3
 from tg_signer.sign_record_store import SignRecordStore
 
-ConfigKind = Literal["signer", "monitor"]
+ConfigKind = Literal["signer"]
 
 CONFIG_META: dict[ConfigKind, Tuple[str, type[BaseJSONConfig]]] = {
     "signer": ("signs", SignConfigV3),
-    "monitor": ("monitors", MonitorConfig),
 }
 
 DEFAULT_WORKDIR = Path(os.environ.get("TG_SIGNER_WORKDIR", ".signer"))
@@ -236,11 +230,10 @@ def generate_random_config_name(
     """生成一个未被占用的随机配置名,作为新建配置时的默认名称。
 
     - kind="signer" → ``sign_<slug>_<hex>``
-    - kind="monitor" → ``monitor_<slug>_<hex>``
     - 末尾 ``<hex>`` 来自 ``secrets.token_hex``;16 位 hex 命名空间足够大,
       与已有配置冲突的概率可忽略。
     """
-    prefix = "sign" if kind == "signer" else "monitor"
+    prefix = "sign"
     seed = ""
     if chat:
         seed = str(
@@ -510,20 +503,10 @@ class UIState:
         self.workdir: Path = get_workdir(DEFAULT_WORKDIR)
         # 统一主日志:<workdir>/logs/<LOG_FILE_NAME>,与子进程共享同一份
         self.log_path: Path = self.workdir / "logs" / LOG_FILE_NAME
-        self.log_limit: int = 200
-        self.record_filter: str = ""
-        # 联动状态: 配置 select / group_chat_block 间的当前 chat id。
-        # 取值可以是 int(chat.id 数字) 或 str(@username);None 表示未选择。
-        # 写入端: SignerBlock/MonitorBlock.load_current、pick_group;
-        # 读取端: group_chat_block.refresh() 反向高亮。
-        self.selected_chat_id: "int | str | None" = None
 
     def set_workdir(self, path_str: str) -> None:
         self.workdir = get_workdir(Path(path_str).expanduser())
         self.log_path = self.workdir / "logs" / DEFAULT_LOG_FILE.name
-
-    def set_log_path(self, path_str: str) -> None:
-        self.log_path = Path(path_str).expanduser()
 
 
 def _setup_webui_logger(workdir: Path) -> None:

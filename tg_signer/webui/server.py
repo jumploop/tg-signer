@@ -49,29 +49,6 @@ SIGNER_TEMPLATE: Dict[str, object] = {
     "sign_interval": 1,
 }
 
-MONITOR_TEMPLATE: Dict[str, object] = {
-    "match_cfgs": [
-        {
-            "chat_id": "@channel_or_user",
-            "rule": "contains",
-            "rule_value": "关键词",
-            "from_user_ids": None,
-            "always_ignore_me": False,
-            "default_send_text": "自动回复",
-            "ai_reply": False,
-            "ai_prompt": None,
-            "send_text_search_regex": None,
-            "send_text_template": None,
-            "delete_after": None,
-            "ignore_case": True,
-            "forward_to_chat_id": None,
-            "external_forwards": None,
-            "push_via_server_chan": False,
-            "server_chan_send_key": None,
-        }
-    ]
-}
-
 AUTOMATION_TEMPLATE: Dict[str, object] = {
     "rules": [
         {
@@ -255,7 +232,7 @@ def set_state(body: StateBody, _: None = Depends(require_auth)) -> Dict[str, str
 
 
 # ---------------------------------------------------------------------------
-# 配置管理（signer / monitor）
+# 配置管理（signer / automation）
 # ---------------------------------------------------------------------------
 
 
@@ -273,8 +250,6 @@ def list_configs(kind: str, _: None = Depends(require_auth)) -> Dict[str, List[s
 def config_template(kind: str, _: None = Depends(require_auth)) -> Dict[str, Any]:
     if kind == "signer":
         return {"payload": copy.deepcopy(SIGNER_TEMPLATE)}
-    if kind == "monitor":
-        return {"payload": copy.deepcopy(MONITOR_TEMPLATE)}
     if kind == "automation":
         return {"payload": copy.deepcopy(AUTOMATION_TEMPLATE)}
     raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")
@@ -585,7 +560,6 @@ if STATIC_DIR.is_dir() and (STATIC_DIR / "assets").is_dir():
 def main(
     host: str = None,
     port: int = None,
-    storage_secret: str = None,  # noqa: ARG001 - NiceGUI 遗留参数，已不再需要
 ) -> None:
     """启动后端服务：``tg-signer webgui`` 入口。"""
     import uvicorn

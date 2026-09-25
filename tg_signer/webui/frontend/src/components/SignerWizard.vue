@@ -2,7 +2,8 @@
   <el-dialog
     :model-value="visible"
     title="交互式配置向导"
-    width="680px"
+    width="720px"
+    class="wizard-dialog"
     :close-on-click-modal="false"
     @update:model-value="$emit('update:visible', $event)"
     @open="initFromProps"
@@ -11,9 +12,18 @@
       <el-step title="基础设置" />
       <el-step title="签到任务" />
     </el-steps>
+    <div class="wizard-progress">
+      <div>
+        <span class="section-label">{{ step === 0 ? '基础设置' : '签到任务' }}</span>
+        <p class="hint">
+          {{ step === 0 ? '先定义任务名称和执行时间。' : '为每个群组或频道配置要执行的动作。' }}
+        </p>
+      </div>
+      <el-tag type="info" effect="light" round>第 {{ step + 1 }} / 2 步</el-tag>
+    </div>
 
     <!-- Step 1: 基础设置 -->
-    <el-form v-show="step === 0" label-width="120px" style="max-width: 560px">
+    <el-form v-show="step === 0" label-width="120px" class="wizard-form">
       <el-form-item label="任务名称" required>
         <el-input v-model="taskName" placeholder="例如 my_sign" />
       </el-form-item>
@@ -29,9 +39,8 @@
 
     <!-- Step 2: 签到任务列表 -->
     <div v-show="step === 1">
-      <div class="row">
+      <div class="task-toolbar">
         <span class="hint">已添加 {{ chats.length }} 个签到任务</span>
-        <span style="flex: 1"></span>
         <el-button type="primary" size="small" @click="openTask(null)">添加任务</el-button>
       </div>
       <el-empty
@@ -41,7 +50,7 @@
       />
       <div v-else class="task-list">
         <el-card v-for="(chat, idx) in chats" :key="idx" shadow="hover" class="task-card">
-          <div class="row">
+          <div class="task-row">
             <span class="task-index">#{{ idx + 1 }}</span>
             <div class="task-info">
               <div class="task-title">{{ chat.chat_id }}</div>
@@ -52,21 +61,24 @@
               </div>
               <div class="hint">{{ actionSummary(chat.actions) }}</div>
             </div>
-            <span style="flex: 1"></span>
-            <el-button size="small" @click="openTask(idx)">编辑</el-button>
-            <el-button size="small" type="danger" plain @click="removeTask(idx)">删除</el-button>
+            <div class="task-actions">
+              <el-button size="small" @click="openTask(idx)">编辑</el-button>
+              <el-button size="small" type="danger" plain @click="removeTask(idx)">删除</el-button>
+            </div>
           </div>
         </el-card>
       </div>
     </div>
 
     <template #footer>
+      <div class="wizard-footer">
       <el-button v-if="step === 1" @click="step = 0">上一步</el-button>
       <el-button v-if="step === 0" type="primary" @click="step = 1">下一步</el-button>
       <template v-if="step === 1">
         <el-button @click="$emit('update:visible', false)">取消</el-button>
         <el-button type="primary" :loading="saving" @click="saveAll">保存配置</el-button>
       </template>
+      </div>
     </template>
 
     <!-- 任务编辑对话框 -->
@@ -74,10 +86,11 @@
       v-model="taskDialogVisible"
       :title="taskIndex === null ? '添加签到任务' : '编辑签到任务'"
       width="560px"
+      class="task-dialog"
       append-to-body
       :close-on-click-modal="false"
     >
-      <el-form label-width="120px">
+      <el-form label-width="120px" class="task-form">
         <el-form-item label="Chat ID" required>
           <el-input v-model="draft.chatId" placeholder="整数 ID 或 @username" />
           <div class="hint">支持整数 chat_id（如 -1001234567890）或 @username</div>
@@ -110,6 +123,7 @@
         <el-form-item label="动作列表" required>
           <div class="action-editor">
             <div v-for="(act, ai) in draft.actions" :key="ai" class="action-row">
+              <div class="action-fields">
               <el-select v-model="act.type" style="width: 210px" @change="onActionTypeChange(act)">
                 <el-option
                   v-for="opt in ACTION_OPTIONS"
@@ -141,6 +155,7 @@
                 v-else-if="act.type === 'reply_calculation'"
                 class="hint"
               >自动回复消息中的计算题（需配置大模型）</span>
+              </div>
               <el-button type="danger" plain size="small" @click="removeAction(ai)">
                 删除
               </el-button>
@@ -414,38 +429,148 @@ async function saveAll() {
 </script>
 
 <style scoped>
+.wizard-progress,
+.task-toolbar,
+.task-row,
+.wizard-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.wizard-progress {
+  align-items: flex-start;
+  margin-bottom: 22px;
+  padding: 14px 16px;
+  border: 1px solid var(--ts-line);
+  border-radius: 12px;
+  background: #FAFCFF;
+}
+.section-label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--ts-ink);
+  font-size: 15px;
+  font-weight: 700;
+}
+.wizard-progress .hint {
+  margin: 0;
+}
+.wizard-form {
+  max-width: 580px;
+}
+.task-toolbar {
+  margin-bottom: 14px;
+}
 .task-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 .task-card {
   margin-bottom: 0;
+  border-color: var(--ts-line);
+  box-shadow: none;
+}
+.task-card:hover {
+  border-color: #C9D9EC;
+  box-shadow: var(--ts-shadow-sm);
 }
 .task-index {
-  font-weight: 600;
-  color: #909399;
-  width: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--ts-sky-soft);
+  color: var(--ts-sky);
+  font-size: 11px;
+  font-weight: 800;
 }
 .task-info {
   flex: 1;
   min-width: 0;
 }
 .task-title {
-  font-weight: 500;
+  overflow: hidden;
+  color: var(--ts-ink);
+  font-family: var(--el-font-family-mono);
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
 }
 .action-editor {
   width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 .action-row {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--ts-line);
+  border-radius: 10px;
+  background: #FAFCFF;
+}
+.action-fields {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.task-form :deep(.el-form-item__label) {
+  color: var(--ts-muted);
+  font-weight: 600;
 }
 .add-action {
   align-self: flex-start;
+}
+.wizard-footer {
+  justify-content: flex-end;
+  width: 100%;
+}
+
+@media (max-width: 600px) {
+  .wizard-progress,
+  .task-toolbar,
+  .task-row,
+  .wizard-footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .task-actions {
+    width: 100%;
+  }
+
+  .task-actions > * {
+    flex: 1;
+  }
+
+  .action-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .action-fields {
+    align-items: stretch;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .action-fields > * {
+    width: 100% !important;
+  }
 }
 </style>

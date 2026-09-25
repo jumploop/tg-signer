@@ -207,8 +207,8 @@ def test_different_accounts_run_independently(monkeypatch, tmp_path):
     assert ok1 and ok2 and ok3
     assert set(runner._LOCKS) == {"signer:alice", "signer:bob", "signer:charlie"}
 
-    # 同账号下 signer 已在跑 → monitor 启动被拒(锁互斥)
-    ok4, msg4 = runner.start("monitor", "m1", tmp_path, "alice")
+    # 同账号下 signer 已在跑 → automation 启动被拒(锁互斥)
+    ok4, msg4 = runner.start("automation", "a1", tmp_path, "alice")
     assert not ok4
     assert "alice" in msg4
 

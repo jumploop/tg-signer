@@ -1,8 +1,17 @@
 <template>
-  <el-card shadow="never">
-    <el-form inline>
+  <el-card shadow="never" class="run-card">
+    <div class="run-intro">
+      <div>
+        <span class="section-label">启动控制</span>
+        <p class="section-caption">选择账号和任务范围，集中启动或停止后台进程。</p>
+      </div>
+      <el-tag :type="runningCount ? 'success' : 'info'" effect="light" round>
+        {{ runningCount ? `${runningCount} 个进程运行中` : '当前无运行进程' }}
+      </el-tag>
+    </div>
+    <el-form inline class="run-form">
       <el-form-item label="类型">
-        <el-select v-model="kind" style="width: 160px">
+        <el-select v-model="kind" class="kind-select">
           <el-option label="Signer（签到）" value="signer" />
           <el-option label="Automation（自动化）" value="automation" />
         </el-select>
@@ -11,7 +20,7 @@
         <el-select
           v-model="account"
           placeholder="选择账号"
-          style="width: 200px"
+          class="account-select"
           filterable
         >
           <el-option
@@ -38,7 +47,7 @@
           collapse-tags
           collapse-tags-tooltip
           placeholder="从配置列表选择任务（可多选）"
-          style="width: 360px"
+          class="task-select"
           :loading="loadingTasks"
         >
           <el-option
@@ -48,7 +57,7 @@
             :value="name"
           />
         </el-select>
-        <span class="hint" style="margin-left: 8px">
+        <span class="selection-count">
           已选择 {{ selectedTasks.length }} 个任务
         </span>
       </el-form-item>
@@ -58,11 +67,18 @@
         <el-button type="danger" plain @click="shutdownAll">全部停止</el-button>
       </el-form-item>
     </el-form>
-    <p class="hint">
+    <div class="run-note">
+      <el-icon><InfoFilled /></el-icon>
+      <span>
       同一账号同类型的多个任务会合并到一个子进程运行（共享 Client，避免 SQLite
       session 文件锁冲突），请一次性选择全部任务后启动；日志写入
       &lt;workdir&gt;/logs/，可在「日志」页查看。
-    </p>
+      </span>
+    </div>
+    <div class="table-heading">
+      <span>运行中的进程</span>
+      <span class="table-heading__meta">每 5 秒自动刷新</span>
+    </div>
     <el-table :data="rows">
       <el-table-column label="类型" width="180">
         <template #default="{ row }">{{ kindLabel(row.kind) }}</template>
@@ -108,6 +124,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
+import { InfoFilled } from '@element-plus/icons-vue'
 import api from '../api'
 
 const kind = ref('signer')
@@ -124,7 +141,6 @@ let timer = null
 
 const KIND_LABELS = {
   signer: 'Signer（签到）',
-  monitor: 'Monitor（监控）',
   automation: 'Automation（自动化）',
 }
 
@@ -140,6 +156,7 @@ const rows = computed(() =>
     }
   })
 )
+const runningCount = computed(() => rows.value.filter((row) => row.running).length)
 
 const allSelected = computed(
   () => taskNames.value.length > 0 && selectedTasks.value.length === taskNames.value.length
@@ -282,7 +299,123 @@ onUnmounted(() => clearInterval(timer))
 </script>
 
 <style scoped>
+.run-intro,
+.table-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+.run-intro {
+  margin-bottom: 22px;
+}
+.section-label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--ts-ink);
+  font-size: 16px;
+  font-weight: 700;
+}
+.section-caption {
+  margin: 0;
+  color: var(--ts-muted);
+  font-size: 13px;
+}
+.run-form {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.8fr) minmax(190px, 1fr) minmax(420px, 2fr) auto;
+  align-items: end;
+  gap: 14px;
+  margin: 0 -10px;
+}
+.run-form :deep(.el-form-item) {
+  min-width: 0;
+  margin: 0 10px;
+}
+.run-form :deep(.el-form-item__label) {
+  padding-bottom: 7px;
+  color: var(--ts-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.run-form :deep(.el-form-item:last-child) {
+  display: flex;
+  gap: 8px;
+  margin-right: 0;
+}
+.kind-select,
+.account-select {
+  width: 100%;
+}
+.task-select {
+  width: 100%;
+}
+.selection-count {
+  display: inline-block;
+  margin-top: 8px;
+  color: var(--ts-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.run-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 4px 0 26px;
+  padding: 12px 14px;
+  border: 1px solid #D9E7FA;
+  border-radius: 10px;
+  background: #F5F9FF;
+  color: #47617F;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.run-note .el-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--ts-sky);
+}
+.table-heading {
+  margin-bottom: 12px;
+  color: var(--ts-ink);
+  font-size: 14px;
+  font-weight: 700;
+}
+.table-heading__meta {
+  color: var(--ts-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
 .task-tag {
   margin: 2px 4px 2px 0;
+}
+
+@media (max-width: 980px) {
+  .run-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .run-form :deep(.el-form-item:last-child) {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 600px) {
+  .run-intro,
+  .table-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .run-form {
+    display: block;
+  }
+  .run-form :deep(.el-form-item),
+  .run-form :deep(.el-form-item:last-child) {
+    display: block;
+    margin: 0 0 14px;
+  }
+  .run-form :deep(.el-form-item:last-child) {
+    display: flex;
+    flex-wrap: wrap;
+  }
 }
 </style>

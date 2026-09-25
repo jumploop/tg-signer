@@ -33,12 +33,9 @@ def test_list_log_files_finds_all_logs(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "kind,prefix",
-    [("signer", "sign_"), ("monitor", "monitor_")],
-)
-def test_generate_random_name_basic_shape(tmp_path, kind, prefix):
-    name = data.generate_random_config_name(kind, workdir=tmp_path)
+def test_generate_random_name_basic_shape(tmp_path):
+    prefix = "sign_"
+    name = data.generate_random_config_name("signer", workdir=tmp_path)
     assert name.startswith(prefix)
     # 末尾应当是 4~16 位 hex
     suffix = name[len(prefix) :].rsplit("_", 1)[-1]
@@ -56,8 +53,8 @@ def test_generate_random_name_uses_chat_title(tmp_path):
 
 def test_generate_random_name_uses_username_when_no_title(tmp_path):
     chat = {"id": 42, "username": "channel_xyz", "type": "channel"}
-    name = data.generate_random_config_name("monitor", chat, workdir=tmp_path)
-    assert name.startswith("monitor_")
+    name = data.generate_random_config_name("signer", chat, workdir=tmp_path)
+    assert name.startswith("sign_")
     # 不能直接出现 `@`,只保留字母/数字/下划线
     assert "@" not in name
     # 简化后的 slug 中应包含核心单词
@@ -286,16 +283,3 @@ def test_resolve_chat_id_for_selector_misses(requested):
 def test_resolve_chat_id_for_selector_empty_dict():
     assert data.resolve_chat_id_for_selector(123, {}) is None
     assert data.resolve_chat_id_for_selector("@chan_a", {}) is None
-
-
-def test_ui_state_has_selected_chat_id_default_none():
-    state = data.UIState()
-    assert state.selected_chat_id is None
-
-
-def test_ui_state_selected_chat_id_roundtrip():
-    state = data.UIState()
-    state.selected_chat_id = 123
-    assert state.selected_chat_id == 123
-    state.selected_chat_id = "@chan_a"
-    assert state.selected_chat_id == "@chan_a"

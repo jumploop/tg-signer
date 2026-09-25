@@ -632,14 +632,6 @@ def migrate_sign_records(obj, legacy_user_id: str | None, delete_json: bool):
 @click.option("--host", "-H", "host", default="127.0.0.1", help="监听地址")
 @click.option("--port", "-P", "port", default=8080, help="监听端口")
 @click.option(
-    "--storage-secret",
-    "-S",
-    "storage_secret",
-    default=None,
-    show_default=True,
-    help="（已废弃，兼容保留）旧版 NiceGUI 存储密钥参数，现已无实际作用",
-)
-@click.option(
     "--auth-code",
     "auth_code",
     default=None,
@@ -650,11 +642,10 @@ def migrate_sign_records(obj, legacy_user_id: str | None, delete_json: bool):
 def webgui(
     host: str = None,
     port: int = None,
-    storage_secret: str = None,
     auth_code: str = None,
 ):
     from tg_signer.webui import AUTH_CODE_ENV, main
 
     if auth_code:
         os.environ[AUTH_CODE_ENV] = auth_code
-    main(host=host, port=port, storage_secret=storage_secret)
+    main(host=host, port=port)

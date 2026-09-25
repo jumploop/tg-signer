@@ -37,7 +37,6 @@ def test_default_log_file_name_is_unified():
 def test_process_key_is_per_account():
     # 0.9.12 起 key 是 (kind, account),同账号多任务共享一个进程
     assert runner.process_key("signer", "mingtian") == "signer:mingtian"
-    assert runner.process_key("monitor", "mingtian") == "monitor:mingtian"
 
 
 def test_build_command_signer_single_task(monkeypatch, tmp_path):
@@ -65,27 +64,16 @@ def test_build_command_signer_multiple_tasks(monkeypatch, tmp_path):
 def test_build_command_kinds_proxy_and_invalid(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "sys", type("FakeSys", (), {"executable": "py"}))
     # 单任务: 仍可接受 str,自动包成 list
-    assert runner.build_command("monitor", "m1", tmp_path, "a")[-3:] == [
-        "monitor",
-        "run",
-        "m1",
-    ]
     assert runner.build_command("automation", "a1", tmp_path, "a")[-3:] == [
         "automation",
         "run",
         "a1",
     ]
-    # 多任务: 三个 kind 都要正确拼接
+    # 多任务: signer / automation 都要正确拼接
     assert runner.build_command("signer", ["s1", "s2"], tmp_path, "a")[-3:] == [
         "run",
         "s1",
         "s2",
-    ]
-    assert runner.build_command("monitor", ["m1", "m2"], tmp_path, "a")[-4:] == [
-        "monitor",
-        "run",
-        "m1",
-        "m2",
     ]
     assert runner.build_command("automation", ["a1", "a2"], tmp_path, "a")[-4:] == [
         "automation",
@@ -245,11 +233,11 @@ def test_shutdown_all_terminates_tracked_processes(monkeypatch, tmp_path):
     # (同 account 即使不同 kind 也应被账户锁拒绝 —— 已在 test_account_lock_is_per_account 测)
     runner.start("signer", "t1", tmp_path, "acc1")
     runner.start("signer", "t2", tmp_path, "acc2")
-    runner.start("monitor", "m1", tmp_path, "acc3")
+    runner.start("automation", "a1", tmp_path, "acc3")
     assert len(runner._PROCESSES) == 3
 
     stopped = runner.shutdown_all(timeout=3.0)
-    assert set(stopped) == {"signer:acc1", "signer:acc2", "monitor:acc3"}
+    assert set(stopped) == {"signer:acc1", "signer:acc2", "automation:acc3"}
     assert runner._PROCESSES == {}
     assert runner._LOCKS == {}
     assert runner.running_tasks() == {}

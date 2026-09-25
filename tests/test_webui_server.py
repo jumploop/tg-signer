@@ -59,10 +59,6 @@ def test_config_template(client):
     assert signer_tpl.status_code == 200
     assert "chats" in signer_tpl.json()["payload"]
 
-    monitor_tpl = client.get("/api/configs/monitor/template")
-    assert monitor_tpl.status_code == 200
-    assert "match_cfgs" in monitor_tpl.json()["payload"]
-
     assert client.get("/api/configs/unknown/template").status_code == 400
 
 

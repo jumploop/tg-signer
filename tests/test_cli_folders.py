@@ -4,7 +4,6 @@ import pytest
 from click.testing import CliRunner
 
 import tg_signer.cli.automation as automation_cli
-import tg_signer.cli.monitor as monitor_cli
 import tg_signer.cli.signer as signer_cli
 from tg_signer.core import ChatFolderError
 
@@ -101,11 +100,6 @@ def test_signer_commands_forward_folder(monkeypatch, runner, args, method):
             ["automation", "run", "--from-folder", "Sign", "task"],
             automation_cli,
             "get_automation",
-        ),
-        (
-            ["monitor", "run", "--from-folder", "Sign", "task"],
-            monitor_cli,
-            "get_monitor",
         ),
     ],
 )

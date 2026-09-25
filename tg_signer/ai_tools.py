@@ -2,11 +2,11 @@ import base64
 import json
 import os
 import pathlib
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Optional, TypedDict, Union
 
 import json_repair
 from pydantic import TypeAdapter
-from typing_extensions import Optional, Required, TypedDict
+from typing_extensions import Required
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI  # 在性能弱的机器上导入openai包实在有些慢

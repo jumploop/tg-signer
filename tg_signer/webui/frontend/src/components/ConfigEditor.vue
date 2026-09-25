@@ -1,10 +1,11 @@
 <template>
-  <el-card shadow="never">
-    <div class="row">
+  <el-card v-loading="loading" shadow="never" class="config-editor">
+    <div class="editor-toolbar">
+      <div class="toolbar-fields">
       <el-select
         v-model="selected"
         placeholder="选择已有配置"
-        style="width: 260px"
+        class="config-select"
         filterable
         clearable
         @clear="newConfig"
@@ -14,22 +15,36 @@
       <el-input
         v-model="name"
         placeholder="配置名称"
-        style="width: 200px"
+        class="config-name"
         clearable
         :disabled="editing"
       />
       <el-button @click="newConfig">新建</el-button>
       <el-button @click="fillTemplate">填充模板</el-button>
-      <span style="flex: 1"></span>
+      </div>
+      <div class="toolbar-actions">
       <el-button type="primary" :loading="saving" @click="save">
         {{ editing ? '保存修改' : '保存' }}
       </el-button>
       <el-button type="danger" plain :disabled="!editing" @click="remove">
         删除
       </el-button>
-      <el-button @click="refresh">刷新</el-button>
+      <el-button :loading="loading" @click="refresh">刷新</el-button>
+      </div>
     </div>
-    <p class="hint">{{ hint }}</p>
+    <div class="editor-status">
+      <div>
+        <span class="section-label">{{ kindLabel }}</span>
+        <p class="hint">{{ hint }}</p>
+      </div>
+      <el-tag :type="editing ? 'primary' : 'info'" effect="light" round>
+        {{ editing ? '编辑中' : '新建模式' }}
+      </el-tag>
+    </div>
+    <div class="code-heading">
+      <span>JSON 配置</span>
+      <span class="hint">保存前会自动校验 JSON 格式</span>
+    </div>
     <el-input
       v-model="jsonText"
       type="textarea"
@@ -43,7 +58,7 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import api from '../api'
+import api, { asArray } from '../api'
 
 const props = defineProps({ kind: String, prefillChat: String })
 const emit = defineEmits(['applied'])
@@ -54,28 +69,43 @@ const name = ref('')
 const jsonText = ref('')
 const hint = ref('')
 const saving = ref(false)
+const loading = ref(false)
 
 const editing = computed(() => selected.value !== null && selected.value !== '')
+const kindLabel = computed(() =>
+  props.kind === 'signer' ? 'Signer 签到配置' : 'Automation 自动化配置'
+)
 
 async function refresh() {
-  const { data } = await api.get(`/api/configs/${props.kind}`)
-  names.value = data.names
-  if (!editing.value && names.value.length === 0) {
-    hint.value = '暂无配置。填写名称后粘贴 JSON，或点击「填充模板」「新建」开始。'
+  loading.value = true
+  try {
+    const { data } = await api.get(`/api/configs/${props.kind}`)
+    names.value = asArray(data.names)
+    if (!editing.value && names.value.length === 0) {
+      hint.value = '暂无配置。填写名称后粘贴 JSON，或点击「填充模板」「新建」开始。'
+    }
+  } catch (error) {
+    hint.value = '配置列表加载失败，请确认 WebUI 服务正常运行。'
+  } finally {
+    loading.value = false
   }
 }
 
 async function loadRaw(target) {
   if (!target) return
-  const { data } = await api.get(
-    `/api/configs/${props.kind}/${encodeURIComponent(target)}`
-  )
-  name.value = data.name
-  selected.value = data.name
-  jsonText.value = JSON.stringify(data.payload, null, 2)
-  hint.value = data.updated_from_old
-    ? '该配置已自动迁移为当前结构（保存时将写入新格式）。路径: ' + data.path
-    : `正在编辑: ${data.name}。路径: ${data.path}`
+  try {
+    const { data } = await api.get(
+      `/api/configs/${props.kind}/${encodeURIComponent(target)}`
+    )
+    name.value = data.name
+    selected.value = data.name
+    jsonText.value = JSON.stringify(data.payload, null, 2)
+    hint.value = data.updated_from_old
+      ? '该配置已自动迁移为当前结构（保存时将写入新格式）。路径: ' + data.path
+      : `正在编辑: ${data.name}。路径: ${data.path}`
+  } catch (error) {
+    ElMessage.error('配置加载失败: ' + errMsg(error))
+  }
 }
 
 function newConfig() {
@@ -237,3 +267,96 @@ watch(
 
 onMounted(refresh)
 </script>
+
+<style scoped>
+.editor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 22px;
+}
+.toolbar-fields,
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.config-select {
+  width: 250px;
+}
+.config-name {
+  width: 190px;
+}
+.editor-status,
+.code-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+.editor-status {
+  align-items: flex-start;
+  margin-bottom: 22px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--ts-line);
+}
+.section-label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--ts-ink);
+  font-size: 15px;
+  font-weight: 700;
+}
+.editor-status .hint {
+  margin: 0;
+}
+.code-heading {
+  margin-bottom: 10px;
+  color: var(--ts-ink-2);
+  font-size: 13px;
+  font-weight: 700;
+}
+.config-editor :deep(.el-textarea__inner) {
+  min-height: 460px !important;
+  line-height: 1.65;
+  padding: 16px;
+  resize: vertical;
+}
+
+@media (max-width: 900px) {
+  .editor-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .toolbar-actions {
+    width: 100%;
+  }
+}
+
+@media (max-width: 600px) {
+  .toolbar-fields,
+  .toolbar-actions {
+    width: 100%;
+  }
+
+  .toolbar-fields > *,
+  .toolbar-actions > * {
+    flex: 1 1 auto;
+  }
+
+  .config-select,
+  .config-name {
+    width: 100%;
+  }
+
+  .editor-status,
+  .code-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+}
+</style>

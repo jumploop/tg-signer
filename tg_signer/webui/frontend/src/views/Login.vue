@@ -3,8 +3,9 @@
     <div class="login-panel">
       <div class="login-brand">
         <span class="brand-badge"><el-icon><Promotion /></el-icon></span>
+        <span class="login-eyebrow">PRIVATE CONSOLE</span>
         <h1>tg-signer</h1>
-        <p>Telegram 自动化控制台</p>
+        <p>安全进入你的 Telegram 自动化工作台</p>
       </div>
       <el-input
         v-model="code"
@@ -12,6 +13,7 @@
         show-password
         placeholder="授权码"
         size="large"
+        aria-label="授权码"
         @keyup.enter="submit"
       />
       <el-button
@@ -85,23 +87,23 @@ onMounted(async () => {
   align-items: center;
   justify-content: center;
   background:
-    radial-gradient(1200px 500px at 15% -10%, rgba(42, 159, 216, 0.12), transparent 60%),
-    radial-gradient(1000px 420px at 90% 110%, rgba(15, 42, 61, 0.08), transparent 55%),
+    radial-gradient(900px 460px at 12% 0%, rgba(37, 105, 208, 0.16), transparent 62%),
+    radial-gradient(760px 420px at 92% 100%, rgba(13, 27, 42, 0.1), transparent 58%),
     var(--ts-surface);
 }
 .login-panel {
-  width: 380px;
-  padding: 40px 36px 28px;
+  width: min(420px, calc(100vw - 32px));
+  padding: 44px 40px 32px;
   background: var(--ts-card);
   border: 1px solid var(--ts-line);
-  border-radius: 16px;
-  box-shadow: 0 18px 48px rgba(15, 42, 61, 0.08);
+  border-radius: 20px;
+  box-shadow: 0 22px 60px rgba(15, 31, 51, 0.1);
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 18px;
 }
 .login-brand {
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 .brand-badge {
   display: inline-flex;
@@ -109,18 +111,26 @@ onMounted(async () => {
   justify-content: center;
   width: 46px;
   height: 46px;
-  border-radius: 12px;
+  border-radius: 14px;
   background: var(--ts-navy);
-  color: #7FC7EE;
+  color: #8DBBFF;
   font-size: 24px;
   margin-bottom: 14px;
 }
+.login-eyebrow {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--ts-sky);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+}
 .login-brand h1 {
   margin: 0;
-  font-size: 22px;
+  font-size: 26px;
   font-weight: 700;
   color: var(--ts-ink);
-  letter-spacing: 0.3px;
+  letter-spacing: -0.5px;
 }
 .login-brand p {
   margin: 4px 0 0;
@@ -143,5 +153,11 @@ onMounted(async () => {
   border: 1px solid var(--ts-line);
   border-radius: 4px;
   padding: 1px 5px;
+}
+
+@media (max-width: 480px) {
+  .login-panel {
+    padding: 34px 24px 26px;
+  }
 }
 </style>

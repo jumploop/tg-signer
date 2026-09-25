@@ -5,7 +5,7 @@
   构建产物（``tg_signer/webui/static``）。
 - 前端源码位于 ``tg_signer/webui/frontend/``（Vue 3 + Vite），构建产物随包发布。
 
-轻量子模块 ``data`` / ``runner`` / ``account`` / ``auth`` / ``schema_utils``
+轻量子模块 ``data`` / ``runner`` / ``account`` / ``auth``
 在导入时不依赖 FastAPI，因此在没有安装 ``tg-signer[gui]`` 额外依赖的环境
 （例如 CI 默认 Linux runner、纯 CLI 部署）里，``from tg_signer.webui import
 data`` 之类的语句仍然可以正常解析。
@@ -17,14 +17,13 @@ PEP 562 模块级 ``__getattr__`` 按需懒加载它们，既保持
 调用时强依赖 FastAPI。
 """
 
-from tg_signer.webui import account, auth, data, runner, schema_utils
+from tg_signer.webui import account, auth, data, runner
 
 __all__ = [
     "account",
     "auth",
     "data",
     "runner",
-    "schema_utils",
     "AUTH_CODE_ENV",
     "app",
     "main",

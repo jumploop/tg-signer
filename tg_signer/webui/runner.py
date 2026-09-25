@@ -191,8 +191,6 @@ def build_command(
         cmd += ["--proxy", proxy]
     if kind == "signer":
         cmd += ["run", *tasks]
-    elif kind == "monitor":
-        cmd += ["monitor", "run", *tasks]
     elif kind == "automation":
         cmd += ["automation", "run", *tasks]
     else:
