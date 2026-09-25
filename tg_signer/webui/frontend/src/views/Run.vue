@@ -4,7 +4,6 @@
       <el-form-item label="类型">
         <el-select v-model="kind" style="width: 160px">
           <el-option label="Signer（签到）" value="signer" />
-          <el-option label="Monitor（监控）" value="monitor" />
           <el-option label="Automation（自动化）" value="automation" />
         </el-select>
       </el-form-item>
@@ -24,12 +23,26 @@
         </el-select>
       </el-form-item>
       <el-form-item label="任务">
-        <el-input
-          v-model="tasksText"
-          placeholder="任务名，多个用逗号分隔"
-          style="width: 320px"
-          clearable
-        />
+        <el-select
+          v-model="selectedTasks"
+          multiple
+          filterable
+          collapse-tags
+          collapse-tags-tooltip
+          placeholder="从配置列表选择任务（可多选）"
+          style="width: 360px"
+          :loading="loadingTasks"
+        >
+          <el-option
+            v-for="name in taskNames"
+            :key="name"
+            :label="name"
+            :value="name"
+          />
+        </el-select>
+        <span class="hint" style="margin-left: 8px">
+          已选择 {{ selectedTasks.length }} 个任务
+        </span>
       </el-form-item>
       <el-form-item>
         <el-button type="primary" :loading="starting" @click="start">启动</el-button>
@@ -38,8 +51,9 @@
       </el-form-item>
     </el-form>
     <p class="hint">
-      同一账号同类型任务共用一个子进程（共享 Client，避免 SQLite session
-      文件锁冲突）。日志写入 &lt;workdir&gt;/logs/，可在「日志」页查看。
+      同一账号同类型的多个任务会合并到一个子进程运行（共享 Client，避免 SQLite
+      session 文件锁冲突），请一次性选择全部任务后启动；日志写入
+      &lt;workdir&gt;/logs/，可在「日志」页查看。
     </p>
     <el-table :data="rows">
       <el-table-column label="类型" width="180">
@@ -68,14 +82,16 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '../api'
 
 const kind = ref('signer')
 const account = ref('')
 const accounts = ref([])
-const tasksText = ref('')
+const taskNames = ref([])
+const selectedTasks = ref([])
+const loadingTasks = ref(false)
 const tasks = ref({})
 const starting = ref(false)
 const stopping = ref(false)
@@ -111,29 +127,42 @@ async function refresh() {
   }
 }
 
+async function loadTasks() {
+  loadingTasks.value = true
+  try {
+    const { data } = await api.get(`/api/configs/${kind.value}`)
+    taskNames.value = data.names || []
+  } catch (error) {
+    taskNames.value = []
+  } finally {
+    loadingTasks.value = false
+  }
+}
+
+watch(kind, () => {
+  selectedTasks.value = []
+  loadTasks()
+})
+
 async function start() {
-  const list = tasksText.value
-    .split(/[,，]/)
-    .map((task) => task.trim())
-    .filter(Boolean)
   if (!account.value) {
     ElMessage.warning('请选择账号')
     return
   }
-  if (!list.length) {
-    ElMessage.warning('请输入至少一个任务名')
+  if (!selectedTasks.value.length) {
+    ElMessage.warning('请选择至少一个任务')
     return
   }
   starting.value = true
   try {
     const { data } = await api.post('/api/run/start', {
       kind: kind.value,
-      tasks: list,
+      tasks: selectedTasks.value,
       account: account.value,
     })
     showMsg(data)
     if (data.ok) {
-      tasksText.value = ''
+      selectedTasks.value = []
     }
     refresh()
   } catch (error) {
@@ -203,6 +232,7 @@ function errMsg(error) {
 
 onMounted(() => {
   refresh()
+  loadTasks()
   timer = setInterval(refresh, 5000)
 })
 onUnmounted(() => clearInterval(timer))

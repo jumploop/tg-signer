@@ -45,7 +45,8 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 
-const props = defineProps({ kind: String })
+const props = defineProps({ kind: String, prefillChat: String })
+const emit = defineEmits(['applied'])
 
 const names = ref([])
 const selected = ref(null)
@@ -175,9 +176,64 @@ function errMsg(error) {
   )
 }
 
+function fillChatId(payload, chat) {
+  if (props.kind === 'signer') {
+    if (!Array.isArray(payload.chats) || !payload.chats.length) return null
+    payload.chats[0].chat_id = chat
+    return 'chats[0].chat_id'
+  }
+  if (props.kind === 'automation') {
+    const rule = Array.isArray(payload.rules) ? payload.rules[0] : null
+    if (!rule || !Array.isArray(rule.triggers) || !rule.triggers.length) return null
+    const trigger = rule.triggers[0]
+    if (!trigger.params || typeof trigger.params !== 'object') trigger.params = {}
+    trigger.params.chat_id = chat
+    return 'rules[0].triggers[0].params.chat_id'
+  }
+  return null
+}
+
+async function applyPrefill(chat) {
+  let payload
+  const current = jsonText.value.trim()
+  if (!current || current === '{}') {
+    try {
+      const { data } = await api.get(`/api/configs/${props.kind}/template`)
+      payload = data.payload
+    } catch (error) {
+      ElMessage.error(errMsg(error))
+      return
+    }
+  } else {
+    try {
+      payload = JSON.parse(current)
+    } catch (error) {
+      ElMessage.error('JSON 格式错误，无法填入: ' + error.message)
+      return
+    }
+  }
+  const field = fillChatId(payload, chat)
+  if (!field) {
+    ElMessage.warning('当前 JSON 结构中没有可填入的 chat_id 字段，请手动编辑')
+    return
+  }
+  jsonText.value = JSON.stringify(payload, null, 2)
+  hint.value = `已填入 ${field} = ${chat}，确认后点「保存」。`
+  ElMessage.success(`已填入 ${field}: ${chat}`)
+  emit('applied')
+}
+
 watch(selected, (value) => {
   if (value) loadRaw(value)
 })
+
+watch(
+  () => props.prefillChat,
+  (chat) => {
+    if (chat) applyPrefill(String(chat))
+  },
+  { immediate: true }
+)
 
 onMounted(refresh)
 </script>
