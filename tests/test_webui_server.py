@@ -8,6 +8,9 @@
 
 from __future__ import annotations
 
+import pathlib
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -236,3 +239,31 @@ def test_auth_login_flow(client, monkeypatch):
 def test_index_served_or_reports_missing_build(client):
     resp = client.get("/")
     assert resp.status_code in (200, 503)
+
+
+def test_static_assets_referenced_by_entry_are_committed():
+    """前端产物随仓库分发，入口 chunk 引用的资源必须一起提交。
+
+    历史问题：入口 bundle 的 __vite__mapDeps 引用了未提交的 chunk，
+    线上加载 Login 视图时动态 import 404，页面渲染为空白。
+    """
+    static_dir = pathlib.Path(server.__file__).parent / "static"
+    index_html = static_dir / "index.html"
+    if not index_html.exists():
+        pytest.skip("前端尚未构建，缺少 static/index.html")
+
+    html = index_html.read_text(encoding="utf-8")
+    entry_match = re.search(r"assets/(index-[A-Za-z0-9_-]+\.js)", html)
+    assert entry_match, "index.html 未引用入口 chunk"
+
+    entry = static_dir / "assets" / entry_match.group(1)
+    assert entry.exists(), f"入口 chunk 缺失: {entry.name}"
+
+    bundle = entry.read_text(encoding="utf-8")
+    referenced = set(re.findall(r'"assets/([^"]+)"', bundle))
+    assert referenced, "入口 chunk 未声明预加载依赖"
+
+    missing = sorted(
+        name for name in referenced if not (static_dir / "assets" / name).exists()
+    )
+    assert not missing, f"以下静态资源被入口 chunk 引用但未提交: {missing}"

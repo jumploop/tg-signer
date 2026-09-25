@@ -1,6 +1,11 @@
 # Changelog / 版本变动日志
 
 ## 版本变动日志
+### 0.10.1
+- 修复 WebUI 线上白屏：前端入口 bundle 的 `__vite__mapDeps` 引用了两个从未提交的构建产物（`index-AwMIY2pU.js` / `index-BQVSlQXh.js`），导致登录视图动态 import 404、页面渲染为空白。现已补齐并随包发布
+- 新增回归测试 `test_static_assets_referenced_by_entry_are_committed`，校验入口 chunk 引用的每个静态资源都已提交，防止构建产物再次漏提交
+- 修复 `OpenAIConfig` 在 Python 3.10 / 3.11 下触发 `PydanticUserError` 的问题（改用 `typing_extensions.TypedDict`），恢复 3.10 / 3.11 的 CI 测试矩阵
+
 ### 0.10.0
 - 移除 legacy `monitor` 子系统：删除 `UserMonitor` 类、`tg-signer monitor` 命令组、`MonitorConfig` / `MatchConfig` 配置模型，以及 WebUI 的 Monitor 配置类型与任务运行入口；消息监控、转发与自动回复统一由 `tg-signer automation` 提供
 - `UserMonitor.udp_forward` / `http_api_callback` 迁入 `tg_signer/automation/handlers.py` 作为模块级函数，`external_forward` handler 行为不变
