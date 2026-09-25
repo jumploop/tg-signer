@@ -3,14 +3,8 @@
 </template>
 
 <style>
-html, body, #app {
-  margin: 0;
+#app {
   height: 100%;
-}
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
-    'Microsoft YaHei', sans-serif;
-  background: #f5f7fa;
 }
 .row {
   display: flex;
@@ -21,10 +15,10 @@ body {
 }
 .hint {
   font-size: 12px;
-  color: #888;
+  color: var(--ts-muted);
 }
 .mono {
-  font-family: 'SFMono-Regular', Consolas, 'Courier New', monospace;
+  font-family: var(--el-font-family-mono);
   font-size: 12px;
 }
 .logbox textarea {
