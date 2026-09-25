@@ -2,7 +2,7 @@
 
 ## 版本变动日志
 ### 0.9.5
-- WebUI 改为前后端分离架构：后端 FastAPI 提供 REST API 并托管静态产物，前端基于 Vue 3 + Vite（源码在 `webui_frontend/`，构建产物随包发布到 `tg_signer/webui/static/`）
+- WebUI 改为前后端分离架构：后端 FastAPI 提供 REST API 并托管静态产物，前端基于 Vue 3 + Vite（源码在 `tg_signer/webui/frontend/`，构建产物随包发布到 `tg_signer/webui/static/`）
 - 移除 NiceGUI 依赖与旧单体页面，`tg-signer[gui]` 现在只依赖 `fastapi` / `uvicorn`
 - 新增后端 REST API 冒烟测试与 FastAPI 懒加载测试
 

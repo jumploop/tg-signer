@@ -3,7 +3,7 @@
 前后端分离架构：
 - 后端 ``tg_signer.webui.server`` 提供 FastAPI REST API 并托管 Vue 前端
   构建产物（``tg_signer/webui/static``）。
-- 前端源码位于仓库 ``webui_frontend/``（Vue 3 + Vite），构建产物随包发布。
+- 前端源码位于 ``tg_signer/webui/frontend/``（Vue 3 + Vite），构建产物随包发布。
 
 轻量子模块 ``data`` / ``runner`` / ``account`` / ``auth`` / ``schema_utils``
 在导入时不依赖 FastAPI，因此在没有安装 ``tg-signer[gui]`` 额外依赖的环境

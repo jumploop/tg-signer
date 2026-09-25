@@ -3,7 +3,7 @@
 复用 ``tg_signer.webui`` 下不依赖 UI 框架的逻辑模块（``data`` /
 ``account`` / ``runner`` / ``auth``），将原 NiceGUI 页面改造成
 前后端分离架构。后端只提供 API 与静态文件服务，前端为
-``webui_frontend/``（Vue 3 + Vite），构建产物位于
+``tg_signer/webui/frontend/``（Vue 3 + Vite），构建产物位于
 ``tg_signer/webui/static``。
 """
 
@@ -510,7 +510,7 @@ def index() -> FileResponse:
     if not index_file.is_file():
         raise HTTPException(
             status_code=503,
-            detail="前端产物缺失，请先在 webui_frontend/ 执行 npm run build",
+            detail="前端产物缺失，请先在 tg_signer/webui/frontend/ 执行 npm run build",
         )
     return FileResponse(index_file)
 
