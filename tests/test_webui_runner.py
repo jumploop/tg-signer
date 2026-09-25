@@ -23,6 +23,7 @@ def _cleanup_processes():
                 proc.kill()
                 proc.wait(timeout=5)
         runner._PROCESSES.pop(key, None)
+        runner._TASK_NAMES.pop(key, None)
         lock = runner._LOCKS.pop(key, None)
         if lock is not None:
             lock.release()
@@ -142,6 +143,32 @@ def test_start_accepts_list_of_tasks(monkeypatch, tmp_path):
     assert ok, msg
     assert captured_cmds == [("signer", ["a", "b", "c"])]
     runner.stop("signer", "acc")
+
+
+def test_running_task_names_records_started_tasks(monkeypatch, tmp_path):
+    """start 后 running_task_names 返回该进程实际运行的任务名列表。"""
+    monkeypatch.setattr(
+        runner,
+        "build_command",
+        lambda *a, **k: [sys.executable, "-c", "import time; time.sleep(60)"],
+    )
+    ok, msg = runner.start("signer", ["daily", "nightly"], tmp_path, "acc")
+    assert ok, msg
+    assert runner.running_task_names() == {"signer:acc": ["daily", "nightly"]}
+    runner.stop("signer", "acc")
+
+
+def test_running_task_names_cleared_after_stop(monkeypatch, tmp_path):
+    """stop 后任务名应被清理,避免下次同 key 启动显示旧任务。"""
+    monkeypatch.setattr(
+        runner,
+        "build_command",
+        lambda *a, **k: [sys.executable, "-c", "import time; time.sleep(60)"],
+    )
+    ok, _msg = runner.start("signer", ["old_task"], tmp_path, "acc")
+    assert ok
+    runner.stop("signer", "acc")
+    assert "signer:acc" not in runner.running_task_names()
 
 
 def test_running_tasks_cleans_finished(monkeypatch, tmp_path):

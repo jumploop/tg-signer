@@ -31,6 +31,8 @@ _PROCESSES: Dict[str, subprocess.Popen] = {}
 # 无法再启动任何任务。POSIX 上 flock 是 advisory,Windows 上 msvcrt.locking
 # 是 mandatory;跨平台都依赖 OS 在进程退出时关闭所有 fd → 锁自动释放。
 _LOCKS: Dict[str, "LockHandle"] = {}
+# 每个进程 key 实际启动的任务名,供 WebUI 展示"当前在跑哪些任务"。
+_TASK_NAMES: Dict[str, List[str]] = {}
 
 # 启动后等待子进程就绪的秒数,用于尽早捕获启动失败(参数错误、session 无效等)
 _STARTUP_GRACE_SECONDS = 1.5  # Windows 进程启动通常需要 0.5-1.5s
@@ -136,6 +138,15 @@ def _acquire_account_lock(workdir: Path, account: str) -> LockHandle:
     return LockHandle(fp)
 
 
+def _forget(key: str) -> None:
+    """清理 key 对应的进程 / 锁 / 任务名,并释放锁。"""
+    _PROCESSES.pop(key, None)
+    _TASK_NAMES.pop(key, None)
+    lock = _LOCKS.pop(key, None)
+    if lock is not None:
+        lock.release()
+
+
 # ---------------------------------------------------------------------------
 # 进程 key / 命令构造
 # ---------------------------------------------------------------------------
@@ -201,11 +212,17 @@ def running_tasks() -> Dict[str, bool]:
         if proc.poll() is None:
             result[key] = True
         else:
-            _PROCESSES.pop(key, None)
-            lock = _LOCKS.pop(key, None)
-            if lock is not None:
-                lock.release()
+            _forget(key)
             result[key] = False
+    return result
+
+
+def running_task_names() -> Dict[str, List[str]]:
+    """返回 {process_key: 任务名列表},仅包含仍在运行的进程。"""
+    result: Dict[str, List[str]] = {}
+    for key, proc in list(_PROCESSES.items()):
+        if proc.poll() is None:
+            result[key] = list(_TASK_NAMES.get(key, []))
     return result
 
 
@@ -216,10 +233,7 @@ def status(kind: str, account: str) -> bool:
     if proc is None:
         return False
     if proc.poll() is not None:
-        _PROCESSES.pop(key, None)
-        lock = _LOCKS.pop(key, None)
-        if lock is not None:
-            lock.release()
+        _forget(key)
         return False
     return True
 
@@ -296,6 +310,7 @@ def start(
 
     _PROCESSES[key] = child
     _LOCKS[key] = lock
+    _TASK_NAMES[key] = list(tasks)
     task_disp = tasks[0] if len(tasks) == 1 else f"{len(tasks)} 个任务"
     return True, f"{kind} 任务 {task_disp} 已启动 (PID {child.pid})"
 
@@ -304,10 +319,7 @@ def stop(kind: str, account: str) -> Tuple[bool, str]:
     key = process_key(kind, account)
     proc = _PROCESSES.get(key)
     if proc is None or proc.poll() is not None:
-        _PROCESSES.pop(key, None)
-        lock = _LOCKS.pop(key, None)
-        if lock is not None:
-            lock.release()
+        _forget(key)
         return False, f"账号 {account} 的 {kind} 任务未在运行"
     proc.terminate()
     try:
@@ -315,10 +327,7 @@ def stop(kind: str, account: str) -> Tuple[bool, str]:
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait(timeout=5)
-    _PROCESSES.pop(key, None)
-    lock = _LOCKS.pop(key, None)
-    if lock is not None:
-        lock.release()
+    _forget(key)
     return True, f"账号 {account} 的 {kind} 任务已停止"
 
 
@@ -343,9 +352,6 @@ def shutdown_all(timeout: float = 5.0) -> List[str]:
                     pass
             except Exception:  # noqa: BLE001
                 pass
-        _PROCESSES.pop(key, None)
-        lock = _LOCKS.pop(key, None)
-        if lock is not None:
-            lock.release()
+        _forget(key)
         stopped.append(key)
     return stopped

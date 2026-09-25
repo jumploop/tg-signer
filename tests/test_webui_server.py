@@ -186,7 +186,7 @@ def test_chats_cache_empty(client):
 
 
 def test_run_status_and_controls(client):
-    assert client.get("/api/run").json() == {"tasks": {}}
+    assert client.get("/api/run").json() == {"tasks": {}, "task_names": {}}
 
     resp = client.post(
         "/api/run/start",

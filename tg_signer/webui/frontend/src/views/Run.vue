@@ -23,6 +23,14 @@
         </el-select>
       </el-form-item>
       <el-form-item label="任务">
+        <el-checkbox
+          :model-value="allSelected"
+          :indeterminate="someSelected"
+          :disabled="!taskNames.length"
+          @change="toggleSelectAll"
+        >
+          全选
+        </el-checkbox>
         <el-select
           v-model="selectedTasks"
           multiple
@@ -60,6 +68,22 @@
         <template #default="{ row }">{{ kindLabel(row.kind) }}</template>
       </el-table-column>
       <el-table-column prop="account" label="账号" width="200" />
+      <el-table-column label="任务" min-width="220">
+        <template #default="{ row }">
+          <template v-if="row.tasks.length">
+            <el-tag
+              v-for="name in row.tasks"
+              :key="name"
+              size="small"
+              type="info"
+              class="task-tag"
+            >
+              {{ name }}
+            </el-tag>
+          </template>
+          <span v-else class="hint">-</span>
+        </template>
+      </el-table-column>
       <el-table-column label="状态" width="120">
         <template #default="{ row }">
           <el-tag :type="row.running ? 'success' : 'info'">
@@ -93,6 +117,7 @@ const taskNames = ref([])
 const selectedTasks = ref([])
 const loadingTasks = ref(false)
 const tasks = ref({})
+const taskNamesByKey = ref({})
 const starting = ref(false)
 const stopping = ref(false)
 let timer = null
@@ -106,8 +131,21 @@ const KIND_LABELS = {
 const rows = computed(() =>
   Object.entries(tasks.value).map(([key, running]) => {
     const [k, acc] = key.split(':')
-    return { key, kind: k, account: acc || key, running }
+    return {
+      key,
+      kind: k,
+      account: acc || key,
+      running,
+      tasks: taskNamesByKey.value[key] || [],
+    }
   })
+)
+
+const allSelected = computed(
+  () => taskNames.value.length > 0 && selectedTasks.value.length === taskNames.value.length
+)
+const someSelected = computed(
+  () => selectedTasks.value.length > 0 && selectedTasks.value.length < taskNames.value.length
 )
 
 function kindLabel(k) {
@@ -121,10 +159,15 @@ async function refresh() {
       api.get('/api/accounts'),
     ])
     tasks.value = runData.data.tasks || {}
+    taskNamesByKey.value = runData.data.task_names || {}
     accounts.value = accData.data
   } catch (error) {
     /* 轮询期间忽略瞬时错误 */
   }
+}
+
+function toggleSelectAll(checked) {
+  selectedTasks.value = checked ? [...taskNames.value] : []
 }
 
 async function loadTasks() {
@@ -237,3 +280,9 @@ onMounted(() => {
 })
 onUnmounted(() => clearInterval(timer))
 </script>
+
+<style scoped>
+.task-tag {
+  margin: 2px 4px 2px 0;
+}
+</style>

@@ -476,7 +476,10 @@ async def fetch_chats(
 
 @app.get("/api/run")
 def run_status(_: None = Depends(require_auth)) -> Dict[str, Any]:
-    return {"tasks": runner_mod.running_tasks()}
+    return {
+        "tasks": runner_mod.running_tasks(),
+        "task_names": runner_mod.running_task_names(),
+    }
 
 
 @app.post("/api/run/start")
