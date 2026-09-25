@@ -1454,7 +1454,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             return True
         return False
 
-    async def wait_for(self, chat: SignChatV3, action: ActionT, timeout=10):
+    async def wait_for(self, chat: SignChatV3, action: ActionT, timeout=30):
         if isinstance(action, SendTextAction):
             return await self.send_message(
                 chat.chat_id,
