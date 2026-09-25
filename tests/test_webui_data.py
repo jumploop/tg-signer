@@ -105,6 +105,96 @@ def test_list_task_names_ignores_dirs_without_config(tmp_path):
     assert data.list_task_names("signer", workdir) == ["real_task"]
 
 
+def test_list_automation_names(tmp_path):
+    workdir = tmp_path
+    (workdir / "automations" / "a_json").mkdir(parents=True)
+    (workdir / "automations" / "a_json" / "config.json").write_text(
+        "{}", encoding="utf-8"
+    )
+    (workdir / "automations" / "b_yaml").mkdir(parents=True)
+    (workdir / "automations" / "b_yaml" / "config.yaml").write_text(
+        "rules: []", encoding="utf-8"
+    )
+    (workdir / "automations" / "c_yml").mkdir(parents=True)
+    (workdir / "automations" / "c_yml" / "config.yml").write_text(
+        "rules: []", encoding="utf-8"
+    )
+    # 残留空目录不应出现在配置列表
+    (workdir / "automations" / "ghost").mkdir(parents=True)
+    assert data.list_automation_names(workdir) == ["a_json", "b_yaml", "c_yml"]
+
+
+def test_list_automation_names_missing_dir(tmp_path):
+    assert data.list_automation_names(tmp_path) == []
+
+
+def test_automation_config_json_roundtrip(tmp_path):
+    workdir = tmp_path
+    payload = {
+        "rules": [
+            {
+                "id": "rule_1",
+                "triggers": [{"type": "message", "params": {"chat_id": "@chan"}}],
+                "handlers": [{"handler": "send_text", "params": {"text": "ok"}}],
+            }
+        ]
+    }
+    saved = data.save_automation_config("auto_json", payload, workdir)
+    assert saved.name == "config.json"
+    assert (workdir / "automations" / "auto_json" / "config.json").is_file()
+
+    entry = data.load_automation_config("auto_json", workdir)
+    assert entry.payload["rules"][0]["id"] == "rule_1"
+    assert entry.payload["rules"][0]["triggers"][0]["type"] == "message"
+
+
+def test_automation_config_yaml_read(tmp_path):
+    pytest.importorskip("yaml")
+    workdir = tmp_path
+    auto_dir = workdir / "automations" / "auto_yaml"
+    auto_dir.mkdir(parents=True)
+    (auto_dir / "config.yaml").write_text(
+        "rules:\n"
+        "  - id: rule_1\n"
+        "    triggers:\n"
+        "      - type: message\n"
+        "        params:\n"
+        "          chat_id: '@chan'\n"
+        "    handlers:\n"
+        "      - handler: send_text\n"
+        "        params:\n"
+        "          text: ok\n",
+        encoding="utf-8",
+    )
+    entry = data.load_automation_config("auto_yaml", workdir)
+    assert entry.path.name == "config.yaml"
+    assert entry.payload["rules"][0]["id"] == "rule_1"
+
+    # 保存后写回标准 JSON（CLI 解析 JSON 优先）
+    data.save_automation_config("auto_yaml", entry.payload, workdir)
+    assert (auto_dir / "config.json").is_file()
+
+
+def test_automation_config_load_missing_raises(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        data.load_automation_config("ghost", tmp_path)
+
+
+def test_automation_config_save_rejects_invalid(tmp_path):
+    with pytest.raises(ValueError):
+        data.save_automation_config("bad", {"rules": [{"id": "x"}]}, workdir=tmp_path)
+
+
+def test_automation_config_delete_removes_dir(tmp_path):
+    task_dir = tmp_path / "automations" / "gone"
+    task_dir.mkdir(parents=True)
+    (task_dir / "config.json").write_text("{}", encoding="utf-8")
+    deleted = data.delete_automation_config("gone", tmp_path)
+    assert deleted == task_dir / "config.json"
+    assert not task_dir.exists()
+    assert data.list_automation_names(tmp_path) == []
+
+
 def test_delete_config_removes_whole_dir_and_records(tmp_path):
     workdir = tmp_path
     task_dir = workdir / "signs" / "my_task"

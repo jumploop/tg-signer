@@ -8,7 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
-from tg_signer.config import BaseJSONConfig, MonitorConfig, SignConfigV3
+from tg_signer.config import (
+    AutomationConfig,
+    BaseJSONConfig,
+    MonitorConfig,
+    SignConfigV3,
+)
 from tg_signer.sign_record_store import SignRecordStore
 
 ConfigKind = Literal["signer", "monitor"]
@@ -76,6 +81,107 @@ def list_task_names(
     return sorted(
         p.name for p in root.iterdir() if p.is_dir() and (p / "config.json").is_file()
     )
+
+
+def list_automation_names(workdir: Optional[Path | str] = None) -> List[str]:
+    """List automation task names from <workdir>/automations/*/.
+
+    Automation 配置支持 config.json / config.yaml / config.yml 三种文件名,
+    与 CLI 的解析顺序一致,只要存在其一即视为有效任务。
+    """
+    base = get_workdir(workdir)
+    root = base / "automations"
+    if not root.is_dir():
+        return []
+    return sorted(
+        p.name
+        for p in root.iterdir()
+        if p.is_dir()
+        and any(
+            (p / name).is_file()
+            for name in ("config.json", "config.yaml", "config.yml")
+        )
+    )
+
+
+def resolve_automation_config_file(
+    name: str, workdir: Optional[Path | str] = None
+) -> Optional[Path]:
+    """返回 automations/<name>/ 下第一个存在的配置文件。"""
+    root = get_workdir(workdir) / "automations" / name
+    for file_name in ("config.json", "config.yaml", "config.yml"):
+        candidate = root / file_name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _read_automation_payload(path: Path) -> Dict[str, Any]:
+    if path.suffix in {".yml", ".yaml"}:
+        try:
+            import yaml  # type: ignore
+        except ModuleNotFoundError as exc:
+            raise ValueError("未安装 pyyaml，无法读取 YAML 配置") from exc
+        with open(path, "r", encoding="utf-8") as fp:
+            payload = yaml.safe_load(fp) or {}
+        if not isinstance(payload, dict):
+            raise ValueError("YAML 配置必须是字典结构")
+        return payload
+    with open(path, "r", encoding="utf-8") as fp:
+        return json.load(fp)
+
+
+def load_automation_config(
+    name: str, workdir: Optional[Path | str] = None
+) -> ConfigEntry:
+    config_file = resolve_automation_config_file(name, workdir)
+    if config_file is None:
+        raise FileNotFoundError(
+            f"配置不存在: {get_workdir(workdir) / 'automations' / name}"
+        )
+    payload = _read_automation_payload(config_file)
+    loaded = AutomationConfig.load(payload)
+    if loaded is None:
+        raise ValueError(f"无法解析配置: {config_file}")
+    cfg, from_old = loaded
+    return ConfigEntry(
+        name=name,
+        path=config_file,
+        updated_from_old=from_old,
+        payload=cfg.to_jsonable(),
+        cfg=cfg,
+    )
+
+
+def save_automation_config(
+    name: str,
+    content: Dict[str, Any] | str | BaseJSONConfig,
+    workdir: Optional[Path | str] = None,
+) -> Path:
+    """校验并写入 automations/<name>/config.json（JSON 优先于 YAML）。"""
+    if isinstance(content, BaseJSONConfig):
+        cfg = content
+    else:
+        data = json.loads(content) if isinstance(content, str) else content
+        loaded = AutomationConfig.load(data)
+        if loaded is None:
+            raise ValueError("配置校验失败")
+        cfg, _ = loaded
+    config_file = get_workdir(workdir) / "automations" / name / "config.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(config_file, "w", encoding="utf-8") as fp:
+        json.dump(cfg.to_jsonable(), fp, ensure_ascii=False, indent=2)
+    return config_file
+
+
+def delete_automation_config(name: str, workdir: Optional[Path | str] = None) -> Path:
+    config_file = resolve_automation_config_file(name, workdir)
+    if config_file is None:
+        raise FileNotFoundError(
+            f"配置不存在: {get_workdir(workdir) / 'automations' / name}"
+        )
+    shutil.rmtree(config_file.parent, ignore_errors=True)
+    return config_file
 
 
 def resolve_chat_id_for_selector(

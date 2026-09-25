@@ -7,6 +7,12 @@
 - 新增后端 REST API 冒烟测试与 FastAPI 懒加载测试
 - WebUI 新增「交互式配置向导」：分步表单快速创建签到配置（基础设置 + 多签到任务、多动作），替换旧 NiceGUI 向导
 - WebUI 界面整体重塑：深蓝 + 电报蓝主题与纸飞机品牌形象，登录页、侧栏导航、按钮层级与空状态等全站视觉统一重设计
+- WebUI 配置管理新增 Automation 配置编辑：支持读取 `config.json` / `config.yaml` / `config.yml`（JSON 优先）、模板初始化、校验保存与删除
+- Automation 默认模板对齐 CLI 示例结构（`demo_message_reply`，含完整 trigger params / filters / handlers / vars），可直接保存运行
+- WebUI 任务运行页任务名改为从配置列表多选；同一账号同类型的多个任务合并到一个子进程运行，共享 Client 以避免 SQLite session 文件锁冲突
+- WebUI 移除 legacy Monitor 入口（配置管理与任务运行页均不再提供 Monitor），统一推荐使用 `tg-signer automation` 管理自动化规则
+- WebUI 群组/频道页新增「复制到配置」：一键将群组/频道 ID 填入 Signer 或 Automation 配置对应字段，并自动跳转到配置管理页
+- WebUI 群组/频道页「读取缓存」补充 loading 状态与空缓存/失败提示，空状态文案给出明确操作引导
 
 ### 0.9.4
 - 修复 `OpenAIConfigManager.has_config()` 判定逻辑，改为环境变量与本地配置任一存在即视为已配置

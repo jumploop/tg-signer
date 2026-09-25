@@ -86,6 +86,57 @@ def test_configs_crud(client):
     assert client.get("/api/configs/signer").json()["names"] == []
 
 
+def test_configs_list_automation_names(client, tmp_path):
+    (tmp_path / "automations" / "daily").mkdir(parents=True)
+    (tmp_path / "automations" / "daily" / "config.json").write_text(
+        "{}", encoding="utf-8"
+    )
+    (tmp_path / "automations" / "nightly").mkdir(parents=True)
+    (tmp_path / "automations" / "nightly" / "config.yaml").write_text(
+        "rules: []", encoding="utf-8"
+    )
+    # 残留空目录不应被列出
+    (tmp_path / "automations" / "ghost").mkdir(parents=True)
+
+    resp = client.get("/api/configs/automation")
+    assert resp.status_code == 200
+    assert resp.json()["names"] == ["daily", "nightly"]
+
+
+def test_automation_config_crud_via_api(client, tmp_path):
+    tpl = client.get("/api/configs/automation/template")
+    assert tpl.status_code == 200
+    assert tpl.json()["payload"]["rules"][0]["id"] == "demo_message_reply"
+
+    payload = {
+        "rules": [
+            {
+                "id": "rule_1",
+                "triggers": [{"type": "message", "params": {"chat_id": "@chan"}}],
+                "handlers": [{"handler": "send_text", "params": {"text": "ok"}}],
+            }
+        ]
+    }
+    resp = client.post("/api/configs/automation/demo", json=payload)
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "demo"
+    assert (tmp_path / "automations" / "demo" / "config.json").is_file()
+
+    got = client.get("/api/configs/automation/demo")
+    assert got.status_code == 200
+    assert got.json()["payload"]["rules"][0]["id"] == "rule_1"
+
+    assert client.get("/api/configs/automation/missing").status_code == 404
+    bad = client.post(
+        "/api/configs/automation/bad",
+        json={"rules": [{"id": "no_triggers"}]},
+    )
+    assert bad.status_code == 400
+
+    assert client.delete("/api/configs/automation/demo").json()["ok"] is True
+    assert client.get("/api/configs/automation").json()["names"] == []
+
+
 def test_records_and_users_empty(client):
     assert client.get("/api/records").json() == []
     assert client.get("/api/users").json() == []

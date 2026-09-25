@@ -72,6 +72,39 @@ MONITOR_TEMPLATE: Dict[str, object] = {
     ]
 }
 
+AUTOMATION_TEMPLATE: Dict[str, object] = {
+    "rules": [
+        {
+            "id": "demo_message_reply",
+            "enabled": True,
+            "triggers": [
+                {
+                    "id": None,
+                    "type": "message",
+                    "params": {
+                        "chat_id": "@channel_or_user",
+                        "chat_ids": None,
+                        "from_user_ids": None,
+                        "reply_to_me": False,
+                        "reply_to_message_id": None,
+                        "ignore_case": True,
+                    },
+                }
+            ],
+            "filters": {
+                "chat_id": None,
+                "chat_ids": None,
+                "from_user_ids": None,
+                "text_rule": "contains",
+                "text_value": "关键词",
+                "ignore_case": True,
+            },
+            "handlers": [{"handler": "send_text", "params": {"text": "自动回复"}}],
+            "vars": {},
+        }
+    ]
+}
+
 
 def _expected_auth_code() -> Optional[str]:
     return os.environ.get(AUTH_CODE_ENV) or None
@@ -228,6 +261,9 @@ def set_state(body: StateBody, _: None = Depends(require_auth)) -> Dict[str, str
 
 @app.get("/api/configs/{kind}")
 def list_configs(kind: str, _: None = Depends(require_auth)) -> Dict[str, List[str]]:
+    if kind == "automation":
+        # 只提供任务名列表供「任务运行」页选择;automation 配置编辑仍走 CLI。
+        return {"names": data_mod.list_automation_names(state.workdir)}
     if kind not in data_mod.CONFIG_META:
         raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")
     return {"names": data_mod.list_task_names(kind, state.workdir)}
@@ -239,13 +275,22 @@ def config_template(kind: str, _: None = Depends(require_auth)) -> Dict[str, Any
         return {"payload": copy.deepcopy(SIGNER_TEMPLATE)}
     if kind == "monitor":
         return {"payload": copy.deepcopy(MONITOR_TEMPLATE)}
+    if kind == "automation":
+        return {"payload": copy.deepcopy(AUTOMATION_TEMPLATE)}
     raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")
 
 
 @app.get("/api/configs/{kind}/{name}")
 def get_config(kind: str, name: str, _: None = Depends(require_auth)) -> Dict[str, Any]:
     try:
-        entry = data_mod.load_config(kind, name, workdir=state.workdir)
+        if kind == "automation":
+            entry = data_mod.load_automation_config(name, workdir=state.workdir)
+        else:
+            if kind not in data_mod.CONFIG_META:
+                raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")
+            entry = data_mod.load_config(kind, name, workdir=state.workdir)
+    except HTTPException:
+        raise
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except ValueError as exc:
@@ -261,10 +306,18 @@ def save_config(
     _: None = Depends(require_auth),
 ) -> Dict[str, Any]:
     try:
-        data_mod.save_config(kind, name, payload, workdir=state.workdir)
+        if kind == "automation":
+            data_mod.save_automation_config(name, payload, workdir=state.workdir)
+            entry = data_mod.load_automation_config(name, workdir=state.workdir)
+        else:
+            if kind not in data_mod.CONFIG_META:
+                raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")
+            data_mod.save_config(kind, name, payload, workdir=state.workdir)
+            entry = data_mod.load_config(kind, name, workdir=state.workdir)
+    except HTTPException:
+        raise
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=f"配置校验失败: {exc}")
-    entry = data_mod.load_config(kind, name, workdir=state.workdir)
     return _config_entry_payload(entry)
 
 
@@ -273,7 +326,14 @@ def delete_config(
     kind: str, name: str, _: None = Depends(require_auth)
 ) -> Dict[str, bool]:
     try:
-        data_mod.delete_config(kind, name, workdir=state.workdir)
+        if kind == "automation":
+            data_mod.delete_automation_config(name, workdir=state.workdir)
+        else:
+            if kind not in data_mod.CONFIG_META:
+                raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")
+            data_mod.delete_config(kind, name, workdir=state.workdir)
+    except HTTPException:
+        raise
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return {"ok": True}
