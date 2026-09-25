@@ -1,5 +1,6 @@
 """Tests for tg_signer.webui.data module."""
 
+import json
 import re
 
 import pytest
@@ -103,6 +104,47 @@ def test_list_task_names_ignores_dirs_without_config(tmp_path):
     # 删除配置后残留的目录(无 config.json)不应再出现在配置列表
     (workdir / "signs" / "ghost_task" / "legacy").mkdir(parents=True)
     assert data.list_task_names("signer", workdir) == ["real_task"]
+
+
+def _write_user_cache(workdir, user_id, chats):
+    user_dir = workdir / "users" / str(user_id)
+    user_dir.mkdir(parents=True, exist_ok=True)
+    (user_dir / "me.json").write_text(
+        json.dumps({"id": user_id, "first_name": "Tester"}), encoding="utf-8"
+    )
+    (user_dir / "latest_chats.json").write_text(json.dumps(chats), encoding="utf-8")
+
+
+def test_load_group_chats_accepts_enum_style_types(tmp_path):
+    """CLI 登录经 Object.default 序列化的 'ChatType.BOT' 等类型也应被识别。"""
+    _write_user_cache(
+        tmp_path,
+        1,
+        [
+            {"id": 10, "title": "群", "type": "ChatType.GROUP", "username": None},
+            {"id": 11, "title": "机器人", "type": "ChatType.BOT", "username": "bot"},
+            {"id": 12, "title": "私人", "type": "ChatType.PRIVATE", "username": None},
+        ],
+    )
+    chats = data.load_group_chats(tmp_path)
+    ids = {c["id"] for c in chats}
+    assert ids == {10, 11}
+    # 输出中的 type 归一化为小写名称
+    assert {c["id"]: c["type"] for c in chats} == {10: "group", 11: "bot"}
+
+
+def test_load_group_chats_accepts_plain_types(tmp_path):
+    """WebUI 登录写入的 'bot' 等小写类型同样被识别。"""
+    _write_user_cache(
+        tmp_path,
+        1,
+        [
+            {"id": 20, "title": "频道", "type": "channel", "username": "ch"},
+            {"id": 21, "title": "群", "type": "supergroup", "username": None},
+        ],
+    )
+    chats = data.load_group_chats(tmp_path)
+    assert {c["id"] for c in chats} == {20, 21}
 
 
 def test_list_automation_names(tmp_path):

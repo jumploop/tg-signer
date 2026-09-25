@@ -467,6 +467,19 @@ def load_logs(
 GROUP_CHAT_TYPES = {"basic", "group", "supergroup", "channel", "bot"}
 
 
+def _normalize_chat_type(value: Any) -> str:
+    """归一化对话类型名称。
+
+    ``latest_chats.json`` 的 type 字段存在两种写法：WebUI 登录写入的是
+    ``"bot"``，而 CLI 登录经 Pyrogram ``Object.default`` 序列化后写入的是
+    ``"ChatType.BOT"``。这里统一取最后一段并转小写，使两种缓存都能识别。
+    """
+    text = str(value or "").strip()
+    if "." in text:
+        text = text.rsplit(".", 1)[-1]
+    return text.lower()
+
+
 def load_group_chats(workdir: Optional[Path | str] = None) -> List[Dict[str, Any]]:
     """Aggregate group/channel info from all users' latest_chats.json, deduplicated by id."""
     seen: Dict[Any, Dict[str, Any]] = {}
@@ -474,14 +487,16 @@ def load_group_chats(workdir: Optional[Path | str] = None) -> List[Dict[str, Any
         account = (
             info.data.get("first_name") or info.data.get("username") or info.user_id
         )
-        for chat in info.latest_chats or []:
-            chat_type = str(chat.get("type") or "").lower()
+        for chat in info.latest_chats:
+            chat_type = _normalize_chat_type(chat.get("type"))
             if chat_type not in GROUP_CHAT_TYPES:
                 continue
             chat_id = chat.get("id")
             if chat_id is None:
                 continue
-            seen.setdefault(chat_id, {**chat, "account": str(account)})
+            seen.setdefault(
+                chat_id, {**chat, "type": chat_type, "account": str(account)}
+            )
     return sorted(
         seen.values(),
         key=lambda c: str(c.get("title") or c.get("username") or "").lower(),

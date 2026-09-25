@@ -13,6 +13,9 @@
 - WebUI 移除 legacy Monitor 入口（配置管理与任务运行页均不再提供 Monitor），统一推荐使用 `tg-signer automation` 管理自动化规则
 - WebUI 群组/频道页新增「复制到配置」：一键将群组/频道 ID 填入 Signer 或 Automation 配置对应字段，并自动跳转到配置管理页
 - WebUI 群组/频道页「读取缓存」补充 loading 状态与空缓存/失败提示，空状态文案给出明确操作引导
+- 修复 WebUI 群组/频道过滤失效：`latest_chats.json` 中 CLI 登录写入的 `ChatType.BOT` 等枚举形式类型此前会被整份丢弃，现统一归一化为小写名称（WebUI 登录写入的 `bot` 形式同样兼容）
+- 签到动作 `wait_for` 默认超时由 10 秒提升至 30 秒，给 Telegram API 慢响应与 FloodWait 重试更大余量
+- WebUI 任务运行页新增任务「全选」，并展示每个运行中进程实际执行的任务名（后端 `/api/run` 新增 `task_names` 字段）
 
 ### 0.9.4
 - 修复 `OpenAIConfigManager.has_config()` 判定逻辑，改为环境变量与本地配置任一存在即视为已配置
