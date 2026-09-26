@@ -60,4 +60,24 @@ export function hasToken() {
   return Boolean(localStorage.getItem(TOKEN_KEY))
 }
 
+// navigator.clipboard 只在安全上下文（HTTPS 或 localhost）可用，
+// 通过局域网 IP 以 HTTP 访问 WebUI 时它是 undefined，需要退回 execCommand。
+export async function copyText(text) {
+  const value = String(text)
+  if (window.isSecureContext && navigator.clipboard) {
+    await navigator.clipboard.writeText(value)
+    return
+  }
+  const area = document.createElement('textarea')
+  area.value = value
+  area.setAttribute('readonly', '')
+  area.style.position = 'fixed'
+  area.style.top = '-9999px'
+  document.body.appendChild(area)
+  area.select()
+  const copied = document.execCommand('copy')
+  document.body.removeChild(area)
+  if (!copied) throw new Error('复制失败')
+}
+
 export default api

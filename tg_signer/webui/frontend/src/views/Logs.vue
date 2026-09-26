@@ -33,7 +33,7 @@
 <script setup>
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import api, { asArray } from '../api'
+import api, { asArray, copyText } from '../api'
 
 const files = ref([])
 const selected = ref('')
@@ -67,7 +67,7 @@ async function refresh() {
 
 async function copyLog() {
   try {
-    await navigator.clipboard.writeText(content.value)
+    await copyText(content.value)
     ElMessage.success('已复制日志')
   } catch (error) {
     ElMessage.warning('复制失败，请手动选择复制')

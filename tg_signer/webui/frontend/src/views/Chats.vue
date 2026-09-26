@@ -62,7 +62,7 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
-import api, { asArray } from '../api'
+import api, { asArray, copyText } from '../api'
 
 const router = useRouter()
 const accounts = ref([])
@@ -126,7 +126,7 @@ async function fetchLive() {
 
 async function copyId(id) {
   try {
-    await navigator.clipboard.writeText(String(id))
+    await copyText(id)
     ElMessage.success('已复制: ' + id)
   } catch (error) {
     ElMessage.warning('复制失败，请手动复制')

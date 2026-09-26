@@ -38,3 +38,29 @@ jobs:
       - name: Run tests
         run: |
           pytest -W=ignore::DeprecationWarning:pyrogram.sync -vv tests/
+
+  e2e:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: tg_signer/webui/frontend
+
+      # 先重新构建，确保回归测的是当前源码而不是仓库里可能过期的产物。
+      # 产物漏提交由 tests/test_webui_server.py 的静态资源完整性用例守住。
+      - name: Build frontend
+        run: npm run build
+        working-directory: tg_signer/webui/frontend
+
+      - name: Run browser regression tests
+        run: npm run test:e2e
+        working-directory: tg_signer/webui/frontend
