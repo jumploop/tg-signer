@@ -1,6 +1,12 @@
 # Changelog / 版本变动日志
 
 ## 版本变动日志
+### 0.10.2
+- 修复 WebUI 复制按钮在非安全上下文下必然失败：`navigator.clipboard` 只在 HTTPS 或 localhost 存在，通过局域网 IP 以 HTTP 访问（如 `http://192.168.x.x:8080`）时为 `undefined`。新增 `copyText()` 统一处理，安全上下文走异步剪贴板，否则降级为隐藏 textarea + `document.execCommand('copy')`。群组/频道「复制ID」与日志「复制日志」均已修复
+- WebUI 群组/频道「复制到配置」现在会自动生成配置名（`sign_<标题>_<hex>` 形式）。此前只填入 `chat_id`，名称留空导致保存时提示「请填写配置名称」。自动命名仅在新建模式下生效，不会覆盖已填名称或正在编辑的配置
+- 新增 `GET /api/configs/{kind}/suggest-name`，对外暴露此前已存在但无任何调用方的 `generate_random_config_name()`
+- 新增浏览器回归测试 `tg_signer/webui/frontend/e2e/clipboard.mjs`（Playwright），同时覆盖安全上下文与非安全上下文两条复制分支；CI 新增 `e2e` job，纯 Node 执行、不依赖 Python，复用 runner 自带 Chrome
+
 ### 0.10.1
 - 修复 WebUI 线上白屏：前端入口 bundle 的 `__vite__mapDeps` 引用了两个从未提交的构建产物（`index-AwMIY2pU.js` / `index-BQVSlQXh.js`），导致登录视图动态 import 404、页面渲染为空白。现已补齐并随包发布
 - 新增回归测试 `test_static_assets_referenced_by_entry_are_committed`，校验入口 chunk 引用的每个静态资源都已提交，防止构建产物再次漏提交
