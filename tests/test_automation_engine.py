@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -74,6 +75,50 @@ def make_worker(tmp_path):
     return AutomationHarness(tmp_path)
 
 
+def test_load_config_error_mentions_field(tmp_path):
+    """坏 automation 配置要报出字段明细。"""
+    worker = make_worker(tmp_path)
+    (worker.task_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "rules": [
+                    {
+                        "id": "r1",
+                        "triggers": [
+                            {"type": "message", "params": {"chat_id": 1, "nope": 2}}
+                        ],
+                        "handlers": [{"handler": "send_text", "params": {}}],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"params\.nope"):
+        worker.load_config()
+
+
+def test_numeric_string_chat_id_actually_matches(tmp_path):
+    """配置里写成字符串数字时，规则也必须能命中（否则静默永不触发）。"""
+    worker = make_worker(tmp_path)
+    msg = DummyMessage(text="Hello", chat=DummyChat(id=-1001234567890))
+    assert worker._match_chat(msg, "-1001234567890", None)
+
+
+def test_username_chat_id_still_matches_by_username(tmp_path):
+    worker = make_worker(tmp_path)
+    msg = DummyMessage(text="Hello", chat=DummyChat(id=1, username="neo"))
+    assert worker._match_chat(msg, "@neo", None)
+    assert not worker._match_chat(msg, "@other", None)
+
+
+def test_numeric_string_from_user_id_actually_matches(tmp_path):
+    worker = make_worker(tmp_path)
+    msg = DummyMessage(text="hi", chat=DummyChat(id=1), from_user=DummyUser(id=12345))
+    assert worker._match_user(msg, ["12345"])
+    assert not worker._match_user(msg, ["999"])
+
+
 def test_match_filter_variants(tmp_path):
     worker = make_worker(tmp_path)
     chat = DummyChat(id=1, username="room")
@@ -139,6 +184,40 @@ def test_match_chat_ids_and_username(tmp_path):
     assert worker._match_chat(msg, "@room", None)
     assert worker._match_chat(msg, None, ["@room", 2])
     assert not worker._match_chat(msg, None, ["@other"])
+
+
+def test_numeric_chat_id_written_as_string_never_matches(tmp_path):
+    """WebUI 复制到配置必须把数字 ID 写成 JSON 数字而非字符串。
+
+    ``_match_chat`` 只对 ``int`` 做数字比较，字符串 "-1001234567890" 会落进
+    ``@username`` 分支，与任何数字群都对不上，规则会静默失效。
+    """
+    worker = make_worker(tmp_path)
+    chat = DummyChat(id=-1001234567890, username="my_channel")
+    msg = DummyMessage(text="ok", chat=chat)
+
+    payload = {
+        "rules": [
+            {
+                "id": "demo",
+                "enabled": True,
+                "triggers": [
+                    {
+                        "type": "message",
+                        "params": {"chat_id": -1001234567890},
+                    }
+                ],
+                "filters": {"chat_id": -1001234567890},
+                "handlers": [],
+                "vars": {},
+            }
+        ]
+    }
+    rule = AutomationConfig.model_validate(payload).rules[0]
+    assert isinstance(rule.triggers[0].params.chat_id, int)
+    assert isinstance(rule.filters.chat_id, int)
+    assert worker._match_chat(msg, rule.triggers[0].params.chat_id, None)
+    assert worker._match_filter(rule.filters, msg)
 
 
 def test_compute_next_run_interval_and_cron(tmp_path):

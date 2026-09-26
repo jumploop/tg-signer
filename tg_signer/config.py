@@ -1,3 +1,4 @@
+import re
 from datetime import time
 from enum import Enum
 from typing import (
@@ -13,6 +14,7 @@ from typing import (
     Union,
 )
 
+from croniter import CroniterError, croniter
 from pydantic import (
     AnyHttpUrl,
     BaseModel,
@@ -42,6 +44,63 @@ def parse_chat_id_or_username(value: Union[int, str]) -> ChatId:
             raise ValueError("username cannot be empty")
         return value
     return int(value)
+
+
+def normalize_chat_ref(value: Union[int, str, None]) -> Union[int, str, None]:
+    """把数字字符串形式的 chat/user 引用转成 int，其余原样返回。
+
+    automation 的 ``_match_chat`` 只对 int 做数字比较，字符串 ``"-100123"`` 会落进
+    ``@username`` 分支导致规则永不命中且不报错。这里做一次宽松归一化：
+    纯数字（含负号）转 int，``@username`` 保持字符串。
+    """
+    if value is None or isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if re.fullmatch(r"-?\d+", text):
+        return int(text)
+    return value
+
+
+def normalize_chat_refs(values):
+    if values is None:
+        return None
+    return [normalize_chat_ref(item) for item in values]
+
+
+def normalize_sign_at(value: str) -> str:
+    """校验签到时间，返回等价的 crontab 表达式。
+
+    支持 ``HH:MM[:SS]`` 时间格式与 cron 表达式（全角冒号会先归一化）。
+    非法输入抛 ``ValueError``，供配置校验层拦截。
+    """
+    text = str(value).replace("：", ":").strip()
+    if not text:
+        raise ValueError("sign_at 不能为空")
+    try:
+        parsed = time.fromisoformat(text)
+    except ValueError:
+        pass
+    else:
+        return f"{parsed.minute} {parsed.hour} * * *"
+    try:
+        croniter(text)
+    except CroniterError as exc:
+        raise ValueError(f"不是合法的时间或 cron 表达式: {text}") from exc
+    return text
+
+
+def format_validation_error(exc: Exception, limit: int = 8) -> str:
+    """把校验异常压成 ``字段: 原因`` 列表，便于直接展示给用户。"""
+    if not isinstance(exc, ValidationError):
+        return str(exc)
+    errors = exc.errors()
+    parts = [
+        f"{'.'.join(str(loc) for loc in err['loc']) or '<root>'}: {err['msg']}"
+        for err in errors[:limit]
+    ]
+    if len(errors) > limit:
+        parts.append(f"等 {len(errors)} 项")
+    return "; ".join(parts)
 
 
 def get_display_width(text: str) -> int:
@@ -80,11 +139,16 @@ class BaseJSONConfig(BaseModel):
 
     @classmethod
     def valid(cls, d):
+        instance, _err = cls._validate(d)
+        return instance
+
+    @classmethod
+    def _validate(cls, d):
         try:
             instance = cls.model_validate(d)
-        except (ValidationError, TypeError):
-            return None
-        return instance
+        except (ValidationError, TypeError) as exc:
+            return None, format_validation_error(exc)
+        return instance, None
 
     def to_jsonable(self):
         return self.model_dump(mode="json")
@@ -94,13 +158,29 @@ class BaseJSONConfig(BaseModel):
         return obj
 
     @classmethod
-    def load(cls, d: dict) -> Optional[Tuple[Self, bool]]:
-        if instance := cls.valid(d):
-            return instance, False
+    def load_checked(cls, d: dict) -> Tuple[Optional[Self], bool, Optional[str]]:
+        """与 load() 相同，但额外返回校验失败原因，供界面展示字段明细。"""
+        instance, err = cls._validate(d)
+        if instance is not None:
+            return instance, False, None
         for old in cls.olds or []:
-            if old_inst := old.valid(d):
-                return old.to_current(old_inst), True
-        return None
+            # 递归走 old 自己的 olds，否则 V3 -> V2 -> V1 这条链会在 V2 处断掉，
+            # 导致 V1 老配置永远无法迁移。
+            old_inst, _migrated, _old_err = old.load_checked(d)
+            if old_inst is None:
+                continue
+            try:
+                return old.to_current(old_inst), True, None
+            except (ValidationError, TypeError) as exc:
+                return None, False, format_validation_error(exc)
+        return None, False, err
+
+    @classmethod
+    def load(cls, d: dict) -> Optional[Tuple[Self, bool]]:
+        instance, migrated, _err = cls.load_checked(d)
+        if instance is None:
+            return None
+        return instance, migrated
 
 
 class SignConfigV1(BaseJSONConfig):
@@ -365,6 +445,13 @@ class SignConfigV3(BaseJSONConfig):
     random_seconds: int = 0
     sign_interval: int = 1  # 连续签到的间隔时间，单位秒
 
+    @field_validator("sign_at")
+    @classmethod
+    def _check_sign_at(cls, value: str) -> str:
+        # 只校验不改写，避免存量配置被静默重写成 crontab。
+        normalize_sign_at(value)
+        return value
+
     @property
     def requires_ai(self) -> bool:
         return any(chat.requires_ai for chat in self.chats)
@@ -386,7 +473,20 @@ class HttpCallback(BaseModel):
     method: Literal["post"] = "post"
 
 
-class MessageTriggerParams(BaseModel):
+class ChatRefsMixin(BaseModel):
+    """把数字字符串形式的 chat/user 引用归一化成 int，@username 保持字符串。"""
+
+    @field_validator(
+        "chat_id", "chat_ids", "from_user_ids", mode="before", check_fields=False
+    )
+    @classmethod
+    def _normalize_chat_refs(cls, value):
+        if isinstance(value, list):
+            return normalize_chat_refs(value)
+        return normalize_chat_ref(value)
+
+
+class MessageTriggerParams(ChatRefsMixin):
     model_config = ConfigDict(extra="forbid")
 
     chat_id: Optional[Union[int, str]] = None
@@ -397,7 +497,7 @@ class MessageTriggerParams(BaseModel):
     ignore_case: bool = True
 
 
-class TimerTriggerParams(BaseModel):
+class TimerTriggerParams(ChatRefsMixin):
     model_config = ConfigDict(extra="forbid")
 
     chat_id: Optional[Union[int, str]] = None
@@ -406,7 +506,7 @@ class TimerTriggerParams(BaseModel):
     random_seconds: int = 0
 
 
-class StartupTriggerParams(BaseModel):
+class StartupTriggerParams(ChatRefsMixin):
     model_config = ConfigDict(extra="forbid")
 
     chat_id: Optional[Union[int, str]] = None
@@ -439,7 +539,7 @@ TriggerConfig: TypeAlias = Annotated[
 ]
 
 
-class FilterConfig(BaseModel):
+class FilterConfig(ChatRefsMixin):
     chat_id: Optional[Union[int, str]] = None
     chat_ids: Optional[List[Union[int, str]]] = None
     from_user_ids: Optional[List[Union[int, str]]] = None

@@ -7,7 +7,6 @@ import random
 import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
-from datetime import time as dt_time
 from typing import (
     Annotated,
     Awaitable,
@@ -22,7 +21,7 @@ from typing import (
 )
 from urllib import parse
 
-from croniter import CroniterBadCronError, croniter
+from croniter import croniter
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pyrogram import Client as BaseClient
 from pyrogram import errors, filters
@@ -52,6 +51,7 @@ from tg_signer.config import (
     SignChatV3,
     SignConfigV3,
     SupportAction,
+    normalize_sign_at,
     parse_chat_id_or_username,
 )
 
@@ -512,7 +512,11 @@ class BaseUserWorker(Generic[ConfigT]):
             config = self.reconfig()
         else:
             with open(self.config_file, "r", encoding="utf-8") as fp:
-                config, from_old = cfg_cls.load(json.load(fp))
+                config, from_old, err = cfg_cls.load_checked(json.load(fp))
+                if config is None:
+                    raise ValueError(
+                        f"无法解析配置: {self.config_file}（{err or '未知原因'}）"
+                    )
                 if from_old:
                     self.write_config(config)
         self.config = config
@@ -1063,23 +1067,11 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         self,
         sign_at_str: str,
     ) -> Optional[str]:
-        sign_at_str = sign_at_str.replace("：", ":").strip()
-
         try:
-            sign_at = dt_time.fromisoformat(sign_at_str)
-            crontab_expr = self._time_to_crontab(sign_at)
+            return normalize_sign_at(sign_at_str)
         except ValueError:
-            try:
-                croniter(sign_at_str)
-                crontab_expr = sign_at_str
-            except CroniterBadCronError:
-                self.log(f"时间格式错误: {sign_at_str}", level="error")
-                return None
-        return crontab_expr
-
-    @staticmethod
-    def _time_to_crontab(sign_at: dt_time) -> str:
-        return f"{sign_at.minute} {sign_at.hour} * * *"
+            self.log(f"时间格式错误: {sign_at_str}", level="error")
+            return None
 
     def load_sign_record(self):
         user_id = str(self.user.id)

@@ -64,6 +64,7 @@ const props = defineProps({
   kind: String,
   prefillChat: String,
   prefillTitle: String,
+  prefillUsername: String,
 })
 const emit = defineEmits(['applied'])
 
@@ -213,7 +214,7 @@ function errMsg(error) {
 function fillChatId(payload, chat) {
   if (props.kind === 'signer') {
     if (!Array.isArray(payload.chats) || !payload.chats.length) return null
-    payload.chats[0].chat_id = chat
+    payload.chats[0].chat_id = toChatValue(chat)
     return 'chats[0].chat_id'
   }
   if (props.kind === 'automation') {
@@ -221,10 +222,34 @@ function fillChatId(payload, chat) {
     if (!rule || !Array.isArray(rule.triggers) || !rule.triggers.length) return null
     const trigger = rule.triggers[0]
     if (!trigger.params || typeof trigger.params !== 'object') trigger.params = {}
-    trigger.params.chat_id = chat
+    trigger.params.chat_id = toChatValue(chat)
+    // 过滤器同样锁定该群，避免其他群的消息也命中这条规则
+    if (rule.filters && typeof rule.filters === 'object') {
+      rule.filters.chat_id = toChatValue(chat)
+    }
     return 'rules[0].triggers[0].params.chat_id'
   }
   return null
+}
+
+// 数字 ID 必须写成 JSON 数字。automation 的 _match_chat 只对 int 做数字比较,
+// 字符串 "-1001234567890" 会被当作 @username 分支,规则将永不命中。
+function toChatValue(raw) {
+  const text = String(raw).trim()
+  return /^-?\d+$/.test(text) ? Number(text) : text
+}
+
+// Signer 任务名优先用群组标题，其次用用户名；同时给一个随机的签到延迟。
+// 只在新建时填：模板里的「示例任务」/random_seconds:0 是占位值需要替换，
+// 而编辑已有配置时不能抹掉用户自己填的群组名和延迟（与 suggestName 同理）。
+function fillSignerExtras(payload) {
+  if (props.kind !== 'signer' || editing.value) return null
+  const chat = Array.isArray(payload.chats) ? payload.chats[0] : null
+  if (!chat) return null
+  const label = (props.prefillTitle || props.prefillUsername || '').trim()
+  if (label) chat.name = label
+  payload.random_seconds = 100 + Math.floor(Math.random() * 901)
+  return label
 }
 
 async function applyPrefill(chat) {
@@ -251,10 +276,12 @@ async function applyPrefill(chat) {
     ElMessage.warning('当前 JSON 结构中没有可填入的 chat_id 字段，请手动编辑')
     return
   }
+  const label = fillSignerExtras(payload)
   jsonText.value = JSON.stringify(payload, null, 2)
   await suggestName(chat)
-  hint.value = `已填入 ${field} = ${chat}，确认后点「保存」。`
-  ElMessage.success(`已填入 ${field}: ${chat}`)
+  const extra = label ? `，任务名 = ${label}` : ''
+  hint.value = `已填入 ${field} = ${chat}${extra}，确认后点「保存」。`
+  ElMessage.success(`已填入 ${field}: ${chat}${extra}`)
   emit('applied')
 }
 
@@ -263,7 +290,11 @@ async function suggestName(chat) {
   if (editing.value || name.value.trim()) return
   try {
     const { data } = await api.get(`/api/configs/${props.kind}/suggest-name`, {
-      params: { chat_id: chat, title: props.prefillTitle || '' },
+      params: {
+        chat_id: chat,
+        title: props.prefillTitle || '',
+        username: props.prefillUsername || '',
+      },
     })
     name.value = data.name
   } catch (error) {

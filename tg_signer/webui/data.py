@@ -17,6 +17,10 @@ CONFIG_META: dict[ConfigKind, Tuple[str, type[BaseJSONConfig]]] = {
     "signer": ("signs", SignConfigV3),
 }
 
+# 随机配置名支持 automation,但它没有 CONFIG_META 条目(不走 signs/ 目录)。
+NameGenKind = Literal["signer", "automation"]
+NAME_PREFIXES: dict[NameGenKind, str] = {"signer": "sign", "automation": "auto"}
+
 DEFAULT_WORKDIR = Path(os.environ.get("TG_SIGNER_WORKDIR", ".signer"))
 LOG_DIR = Path("logs")
 DEFAULT_LOG_FILE = LOG_DIR / "tg-signer.log"
@@ -134,10 +138,9 @@ def load_automation_config(
             f"配置不存在: {get_workdir(workdir) / 'automations' / name}"
         )
     payload = _read_automation_payload(config_file)
-    loaded = AutomationConfig.load(payload)
-    if loaded is None:
-        raise ValueError(f"无法解析配置: {config_file}")
-    cfg, from_old = loaded
+    cfg, from_old, err = AutomationConfig.load_checked(payload)
+    if cfg is None:
+        raise ValueError(f"无法解析配置: {config_file}（{err or '未知原因'}）")
     return ConfigEntry(
         name=name,
         path=config_file,
@@ -157,10 +160,9 @@ def save_automation_config(
         cfg = content
     else:
         data = json.loads(content) if isinstance(content, str) else content
-        loaded = AutomationConfig.load(data)
-        if loaded is None:
-            raise ValueError("配置校验失败")
-        cfg, _ = loaded
+        cfg, _from_old, err = AutomationConfig.load_checked(data)
+        if cfg is None:
+            raise ValueError(err or "配置校验失败")
     config_file = get_workdir(workdir) / "automations" / name / "config.json"
     config_file.parent.mkdir(parents=True, exist_ok=True)
     with open(config_file, "w", encoding="utf-8") as fp:
@@ -223,17 +225,17 @@ def _slugify(value: str, limit: int = 24) -> str:
 
 
 def generate_random_config_name(
-    kind: ConfigKind,
+    kind: NameGenKind,
     chat: Optional[Dict[str, Any]] = None,
     workdir: Optional[Path | str] = None,
 ) -> str:
     """生成一个未被占用的随机配置名,作为新建配置时的默认名称。
 
-    - kind="signer" → ``sign_<slug>_<hex>``
+    - kind="signer" → ``sign_<slug>_<hex>``;kind="automation" → ``auto_<slug>_<hex>``
     - 末尾 ``<hex>`` 来自 ``secrets.token_hex``;16 位 hex 命名空间足够大,
       与已有配置冲突的概率可忽略。
     """
-    prefix = "sign"
+    prefix = NAME_PREFIXES[kind]
     seed = ""
     if chat:
         seed = str(
@@ -244,7 +246,10 @@ def generate_random_config_name(
             or ""
         )
     slug = _slugify(seed) or "chat"
-    existing = set(list_task_names(kind, workdir))
+    if kind == "automation":
+        existing = set(list_automation_names(workdir))
+    else:
+        existing = set(list_task_names(kind, workdir))
     name = f"{prefix}_{slug}_{secrets.token_hex(8)}"
     if name not in existing:
         return name
@@ -260,10 +265,9 @@ def load_config(
     cfg_cls = CONFIG_META[kind][1]
     with open(config_file, "r", encoding="utf-8") as fp:
         raw = json.load(fp)
-    loaded = cfg_cls.load(raw)
-    if loaded is None:
-        raise ValueError(f"无法解析配置: {config_file}")
-    cfg, from_old = loaded
+    cfg, from_old, err = cfg_cls.load_checked(raw)
+    if cfg is None:
+        raise ValueError(f"无法解析配置: {config_file}（{err or '未知原因'}）")
     if from_old:
         # keep the latest structure aligned with current schema
         save_config(kind, name, cfg, workdir=workdir)
@@ -284,10 +288,9 @@ def save_config(
         cfg = content
     else:
         data = json.loads(content) if isinstance(content, str) else content
-        loaded = cfg_cls.load(data)
-        if loaded is None:
-            raise ValueError("配置校验失败")
-        cfg, _ = loaded
+        cfg, _from_old, err = cfg_cls.load_checked(data)
+        if cfg is None:
+            raise ValueError(err or "配置校验失败")
     config_file = _config_path(kind, name, workdir)
     config_file.parent.mkdir(parents=True, exist_ok=True)
     with open(config_file, "w", encoding="utf-8") as fp:

@@ -22,6 +22,7 @@ from tg_signer.config import (
     RuleConfig,
     TimerTriggerConfig,
     TriggerConfig,
+    normalize_chat_ref,
 )
 from tg_signer.core import BaseUserWorker, get_now
 
@@ -110,10 +111,9 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             config = self.reconfig()
         else:
             payload = self._read_config_payload(config_path)
-            loaded = cfg_cls.load(payload)
-            if loaded is None:
-                raise ValueError(f"无法解析配置: {config_path}")
-            config, from_old = loaded
+            config, from_old, err = cfg_cls.load_checked(payload)
+            if config is None:
+                raise ValueError(f"无法解析配置: {config_path}（{err or '未知原因'}）")
             if config_path.suffix in {".yml", ".yaml"}:
                 self.config = config
                 self.log(
@@ -453,7 +453,9 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         if isinstance(value, str):
             if value in {"me", "self"}:
                 return "me"
-            return value.lower().strip("@")
+            text = value.lower().strip("@")
+            # 数字字符串也要能匹配 int 形式的 user id。
+            return normalize_chat_ref(text)
         return value
 
     def _match_chat(
@@ -469,6 +471,8 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         if not chat_ids:
             return True
         for target in chat_ids:
+            # 配置里写成数字字符串也要能命中，否则规则会静默永不触发。
+            target = normalize_chat_ref(target)
             if isinstance(target, int) and message.chat.id == target:
                 return True
             if isinstance(target, str):

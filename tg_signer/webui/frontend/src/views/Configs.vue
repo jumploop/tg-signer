@@ -19,6 +19,7 @@
         kind="signer"
         :prefill-chat="prefillChat('signer')"
         :prefill-title="prefillTitle"
+        :prefill-username="prefillUsername"
         @applied="clearPrefill"
       />
     </el-tab-pane>
@@ -27,6 +28,7 @@
         kind="automation"
         :prefill-chat="prefillChat('automation')"
         :prefill-title="prefillTitle"
+        :prefill-username="prefillUsername"
         @applied="clearPrefill"
       />
     </el-tab-pane>
@@ -62,6 +64,7 @@ watch(
 )
 
 const prefillTitle = computed(() => route.query.title || '')
+const prefillUsername = computed(() => route.query.username || '')
 
 function prefillChat(kind) {
   return route.query.kind === kind ? route.query.chat || '' : ''

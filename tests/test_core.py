@@ -1473,3 +1473,23 @@ def test_normal_run_skips_username_resolution_errors_per_chat(signer_factory):
     asyncio.run(signer.normal_run(only_once=True))
 
     assert signed_chats == [123456]
+
+
+def test_validate_sign_at_rejects_garbage(signer_factory):
+    signer = signer_factory(task_name="bad_cron")
+    assert signer._validate_sign_at("不是 cron") is None
+    assert signer._validate_sign_at("06:00:00") == "0 6 * * *"
+    assert signer._validate_sign_at("0 6 * * *") == "0 6 * * *"
+
+
+def test_load_config_error_mentions_field(signer_factory):
+    """坏配置要报出字段明细，而不是 unpack None 的天书。"""
+    signer = signer_factory(task_name="bad_cron")
+    signer.config_file.write_text(
+        json.dumps(
+            {"chats": [{"chat_id": 1, "actions": "nope"}], "sign_at": "0 6 * * *"}
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"chats\.0\.actions"):
+        signer.load_config()

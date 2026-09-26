@@ -1,6 +1,16 @@
 # Changelog / 版本变动日志
 
 ## 版本变动日志
+### 0.10.3
+- WebUI「群组/频道 → 复制到配置」改为优先写入群组/频道的数字 ID（此前固定写 `@username`），仅在拿不到 ID 时才退回用户名
+- 修复 Automation 规则的 `chat_id` 为数字字符串时规则永不触发且不报错：`_match_chat` / `_normalize_user_id` 只对 `int` 做数字比较，字符串会落进 `@username` 分支。新增 `normalize_chat_ref()` 归一化纯数字字符串为 `int`（`@username` 保持字符串），并在 `MessageTriggerParams` / `TimerTriggerParams` / `StartupTriggerParams` / `FilterConfig` 上通过 `ChatRefsMixin` 于解析阶段统一处理
+- WebUI「复制到配置」为 Signer 配置自动填写群组任务名（优先标题、其次用户名）与随机 `random_seconds`（100~1000）；仅在新建时填写，编辑已有配置不覆盖用户已填的群组名与延迟
+- WebUI「复制到配置」为 Automation 配置同步锁定过滤器 `filters.chat_id`，避免其他群的消息也命中该规则
+- `generate_random_config_name()` 支持 `automation` 类型（`auto_<slug>_<hex>`），`GET /api/configs/{kind}/suggest-name` 的守卫由 `CONFIG_META` 改为 `NAME_PREFIXES`，修复 automation 类型的 400 报错
+- 配置校验错误现在透出字段明细：此前所有失败都是无信息的「配置校验失败」。`BaseJSONConfig` 新增 `load_checked()` 返回 `(cfg, migrated, err)` 并通过 `format_validation_error()` 输出 `字段路径: 原因`，`load()` 委托它以保持 V1/V2/V3 兼容链唯一实现；WebUI 读写与 CLI 加载路径均已接入
+- 修复 `sign_at` 不校验的问题：此前 `sign_at` 写任意字符串都能保存成功，运行时再把 `None` 传给 `croniter` 崩溃。新增 `normalize_sign_at()` 校验并由 `SignConfigV3` 的 field validator 接入（只校验不改写，存量配置不会被静默重写）
+- 修复 V1 老配置永远不会被迁移：`BaseJSONConfig.load_checked()` 遍历 `olds` 时只做一层校验，`SignConfigV3` 在 V2 处断链导致 V1 格式无法升级。改为递归 `old.load_checked(d)`，V1 → V2 → V3 现可完整走通
+
 ### 0.10.2
 - 修复 WebUI 复制按钮在非安全上下文下必然失败：`navigator.clipboard` 只在 HTTPS 或 localhost 存在，通过局域网 IP 以 HTTP 访问（如 `http://192.168.x.x:8080`）时为 `undefined`。新增 `copyText()` 统一处理，安全上下文走异步剪贴板，否则降级为隐藏 textarea + `document.execCommand('copy')`。群组/频道「复制ID」与日志「复制日志」均已修复
 - WebUI 群组/频道「复制到配置」现在会自动生成配置名（`sign_<标题>_<hex>` 形式）。此前只填入 `chat_id`，名称留空导致保存时提示「请填写配置名称」。自动命名仅在新建模式下生效，不会覆盖已填名称或正在编辑的配置

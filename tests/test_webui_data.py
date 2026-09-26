@@ -93,6 +93,21 @@ def test_generate_random_name_no_collision_under_saturation(tmp_path):
         assert re.fullmatch(r"sign_测试_[0-9a-f]{16}", name)
 
 
+def test_generate_random_name_supports_automation(tmp_path):
+    workdir = tmp_path
+    # automation 走 automations/ 目录,不能复用 list_task_names
+    (workdir / "automations" / "auto_busy_aaaa").mkdir(parents=True)
+    (workdir / "automations" / "auto_busy_aaaa" / "config.json").write_text(
+        "{}", encoding="utf-8"
+    )
+    name = data.generate_random_config_name(
+        "automation", {"title": "My Group"}, workdir=workdir
+    )
+    assert name.startswith("auto_My_Group_")
+    assert name != "auto_busy_aaaa"
+    assert re.fullmatch(r"auto_My_Group_[0-9a-f]{4,16}", name)
+
+
 def test_list_task_names_ignores_dirs_without_config(tmp_path):
     workdir = tmp_path
     real_dir = workdir / "signs" / "real_task"
@@ -283,3 +298,63 @@ def test_resolve_chat_id_for_selector_misses(requested):
 def test_resolve_chat_id_for_selector_empty_dict():
     assert data.resolve_chat_id_for_selector(123, {}) is None
     assert data.resolve_chat_id_for_selector("@chan_a", {}) is None
+
+
+# ---------------------------------------------------------------------------
+# save_config / save_automation_config 的校验错误明细
+# ---------------------------------------------------------------------------
+
+
+def test_save_config_rejects_invalid_cron(tmp_path):
+    payload = {
+        "chats": [{"chat_id": 1, "actions": []}],
+        "sign_at": "不是 cron",
+    }
+    with pytest.raises(ValueError, match="sign_at"):
+        data.save_config("signer", "bad", payload, workdir=tmp_path)
+    assert not (tmp_path / "signs" / "bad").exists()
+
+
+def test_save_config_error_lists_field_path(tmp_path):
+    payload = {
+        "chats": [{"chat_id": 1, "actions": "not-a-list"}],
+        "sign_at": "0 6 * * *",
+    }
+    with pytest.raises(ValueError, match=r"chats\.0\.actions"):
+        data.save_config("signer", "bad", payload, workdir=tmp_path)
+
+
+def test_save_automation_config_error_lists_field_path(tmp_path):
+    payload = {
+        "rules": [
+            {
+                "id": "r1",
+                "enabled": True,
+                "triggers": [{"type": "message", "params": {"chat_id": 123}}],
+                "handlers": [{"handler": "send_text", "params": {"text": "hi"}}],
+            }
+        ]
+    }
+    payload["rules"][0]["triggers"][0]["params"]["nope"] = 1
+    with pytest.raises(ValueError, match=r"triggers\.0\..*params\.nope"):
+        data.save_automation_config("bad", payload, workdir=tmp_path)
+
+
+def test_load_config_migrates_legacy_v1_file(tmp_path):
+    """V1 老配置放在磁盘上也必须能加载并升级。"""
+    task_dir = tmp_path / "signs" / "legacy"
+    task_dir.mkdir(parents=True)
+    (task_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "chat_id": 123,
+                "sign_text": "老配置",
+                "sign_at": "06:00:00",
+                "random_seconds": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    entry = data.load_config("signer", "legacy", tmp_path)
+    assert entry.updated_from_old is True
+    assert entry.payload["chats"][0]["chat_id"] == 123

@@ -134,7 +134,10 @@ async function copyId(id) {
 }
 
 function chatValue(row) {
-  return row.username ? '@' + row.username : String(row.id)
+  // 群组/频道的数字 ID 通用且稳定，优先填它；只有拿不到 ID 时才退回 @username。
+  const id = row.id
+  if (id !== undefined && id !== null && id !== '') return String(id)
+  return row.username ? '@' + row.username : ''
 }
 
 function applyToConfig(target, row) {
@@ -142,7 +145,12 @@ function applyToConfig(target, row) {
   const label = target === 'signer' ? 'Signer（签到）' : 'Automation（自动化）'
   router.push({
     name: 'configs',
-    query: { kind: target, chat: value, title: row.title || '' },
+    query: {
+      kind: target,
+      chat: value,
+      title: row.title || '',
+      username: row.username || '',
+    },
   })
   ElMessage.info(`正在前往配置管理页，将 ${value} 填入 ${label} 配置`)
 }

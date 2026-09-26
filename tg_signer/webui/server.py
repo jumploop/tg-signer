@@ -260,12 +260,13 @@ def config_suggest_name(
     kind: str,
     chat_id: str = Query(default=""),
     title: str = Query(default=""),
+    username: str = Query(default=""),
     _: None = Depends(require_auth),
 ) -> Dict[str, str]:
     """为「群组/频道 → 复制到配置」生成一个未被占用的默认配置名。"""
-    if kind not in data_mod.CONFIG_META:
+    if kind not in data_mod.NAME_PREFIXES:
         raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")
-    chat = {"id": chat_id, "title": title}
+    chat = {"id": chat_id, "title": title, "username": username}
     return {"name": data_mod.generate_random_config_name(kind, chat, state.workdir)}
 
 

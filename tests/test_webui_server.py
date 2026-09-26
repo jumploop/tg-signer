@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import copy
 import pathlib
 import re
 
@@ -65,6 +66,41 @@ def test_config_template(client):
     assert client.get("/api/configs/unknown/template").status_code == 400
 
 
+def test_save_config_rejects_invalid_cron_with_field_detail(client):
+    payload = {**SIGNER_PAYLOAD, "sign_at": "不是 cron"}
+    resp = client.post("/api/configs/signer/bad_cron", json=payload)
+    assert resp.status_code == 400
+    assert "sign_at" in resp.json()["detail"]
+
+
+def test_save_config_reports_offending_field(client):
+    payload = copy.deepcopy(SIGNER_PAYLOAD)
+    payload["chats"][0]["actions"] = "not-a-list"
+    resp = client.post("/api/configs/signer/bad_action", json=payload)
+    assert resp.status_code == 400
+    assert "chats.0.actions" in resp.json()["detail"]
+
+
+def test_save_automation_reports_offending_field(client):
+    resp = client.post(
+        "/api/configs/automation/bad_rule",
+        json={
+            "rules": [
+                {
+                    "id": "r1",
+                    "enabled": True,
+                    "triggers": [
+                        {"type": "message", "params": {"chat_id": 123, "nope": 1}}
+                    ],
+                    "handlers": [{"handler": "send_text", "params": {"text": "hi"}}],
+                }
+            ]
+        },
+    )
+    assert resp.status_code == 400
+    assert "nope" in resp.json()["detail"]
+
+
 def test_config_suggest_name(client):
     resp = client.get(
         "/api/configs/signer/suggest-name",
@@ -78,7 +114,23 @@ def test_config_suggest_name(client):
     fallback = client.get("/api/configs/signer/suggest-name").json()["name"]
     assert fallback.startswith("sign_")
 
+    # 无标题但有用户名时，用用户名而不是数字 ID 兜底
+    by_user = client.get(
+        "/api/configs/signer/suggest-name",
+        params={"chat_id": "-1001234567890", "username": "my_group"},
+    ).json()["name"]
+    assert by_user.startswith("sign_my_group_")
+
     assert client.get("/api/configs/unknown/suggest-name").status_code == 400
+
+
+def test_config_suggest_name_supports_automation(client):
+    resp = client.get(
+        "/api/configs/automation/suggest-name",
+        params={"chat_id": "-1001234567890", "title": "My Group"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["name"].startswith("auto_My_Group_")
 
 
 def test_configs_crud(client):
