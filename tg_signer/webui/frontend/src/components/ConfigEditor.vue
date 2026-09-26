@@ -60,7 +60,11 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api, { asArray } from '../api'
 
-const props = defineProps({ kind: String, prefillChat: String })
+const props = defineProps({
+  kind: String,
+  prefillChat: String,
+  prefillTitle: String,
+})
 const emit = defineEmits(['applied'])
 
 const names = ref([])
@@ -248,9 +252,23 @@ async function applyPrefill(chat) {
     return
   }
   jsonText.value = JSON.stringify(payload, null, 2)
+  await suggestName(chat)
   hint.value = `已填入 ${field} = ${chat}，确认后点「保存」。`
   ElMessage.success(`已填入 ${field}: ${chat}`)
   emit('applied')
+}
+
+// 新建模式下自动生成配置名；已在编辑或用户已填名时保持原样。
+async function suggestName(chat) {
+  if (editing.value || name.value.trim()) return
+  try {
+    const { data } = await api.get(`/api/configs/${props.kind}/suggest-name`, {
+      params: { chat_id: chat, title: props.prefillTitle || '' },
+    })
+    name.value = data.name
+  } catch (error) {
+    ElMessage.warning('自动生成配置名失败，请手动填写')
+  }
 }
 
 watch(selected, (value) => {

@@ -140,7 +140,10 @@ function chatValue(row) {
 function applyToConfig(target, row) {
   const value = chatValue(row)
   const label = target === 'signer' ? 'Signer（签到）' : 'Automation（自动化）'
-  router.push({ name: 'configs', query: { kind: target, chat: value } })
+  router.push({
+    name: 'configs',
+    query: { kind: target, chat: value, title: row.title || '' },
+  })
   ElMessage.info(`正在前往配置管理页，将 ${value} 填入 ${label} 配置`)
 }
 

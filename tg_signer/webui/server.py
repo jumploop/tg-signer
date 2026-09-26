@@ -255,6 +255,20 @@ def config_template(kind: str, _: None = Depends(require_auth)) -> Dict[str, Any
     raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")
 
 
+@app.get("/api/configs/{kind}/suggest-name")
+def config_suggest_name(
+    kind: str,
+    chat_id: str = Query(default=""),
+    title: str = Query(default=""),
+    _: None = Depends(require_auth),
+) -> Dict[str, str]:
+    """为「群组/频道 → 复制到配置」生成一个未被占用的默认配置名。"""
+    if kind not in data_mod.CONFIG_META:
+        raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")
+    chat = {"id": chat_id, "title": title}
+    return {"name": data_mod.generate_random_config_name(kind, chat, state.workdir)}
+
+
 @app.get("/api/configs/{kind}/{name}")
 def get_config(kind: str, name: str, _: None = Depends(require_auth)) -> Dict[str, Any]:
     try:

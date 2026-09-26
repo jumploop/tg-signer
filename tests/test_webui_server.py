@@ -65,6 +65,22 @@ def test_config_template(client):
     assert client.get("/api/configs/unknown/template").status_code == 400
 
 
+def test_config_suggest_name(client):
+    resp = client.get(
+        "/api/configs/signer/suggest-name",
+        params={"chat_id": "-1001234567890", "title": "My Group"},
+    )
+    assert resp.status_code == 200
+    name = resp.json()["name"]
+    assert name.startswith("sign_My_Group_")
+
+    # 无标题时退回用 chat_id 兜底，且缺省参数也要能工作
+    fallback = client.get("/api/configs/signer/suggest-name").json()["name"]
+    assert fallback.startswith("sign_")
+
+    assert client.get("/api/configs/unknown/suggest-name").status_code == 400
+
+
 def test_configs_crud(client):
     resp = client.post("/api/configs/signer/demo", json=SIGNER_PAYLOAD)
     assert resp.status_code == 200
