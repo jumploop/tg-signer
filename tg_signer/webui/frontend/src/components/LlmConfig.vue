@@ -17,7 +17,12 @@
     />
     <el-form label-width="140px" class="llm-form">
       <el-form-item label="OPENAI_API_KEY">
-        <el-input v-model="apiKey" type="password" show-password />
+        <el-input
+          v-model="apiKey"
+          type="password"
+          show-password
+          :placeholder="apiKeyPlaceholder"
+        />
       </el-form-item>
       <el-form-item label="OPENAI_BASE_URL">
         <el-input v-model="baseUrl" placeholder="例如 https://api.openai.com/v1" />
@@ -35,11 +40,15 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import api, { asObject } from '../api'
 
 const apiKey = ref('')
+// 服务端只回掩码（如 ****abcd），绝不明文下发。这里单独存掩码、不回填进输入框：
+// 回填会让人误以为框里是真实密钥，且 show-password 一开就是「****abcd」这种
+// 看着像坏掉的值。改为留空 + 占位符说明，留空即「不修改」。
+const apiKeyMask = ref('')
 const baseUrl = ref('')
 const model = ref('')
 const hint = ref('')
@@ -47,12 +56,20 @@ const loading = ref(false)
 const saving = ref(false)
 const testing = ref(false)
 
+const apiKeyConfigured = computed(() => apiKeyMask.value.length > 0)
+const apiKeyPlaceholder = computed(() =>
+  apiKeyConfigured.value
+    ? `已配置（${apiKeyMask.value}），留空表示不修改`
+    : '请输入 API Key',
+)
+
 async function refresh() {
   loading.value = true
   try {
     const { data } = await api.get('/api/llm-config')
     const config = asObject(data.config)
-    apiKey.value = config.api_key || ''
+    apiKeyMask.value = config.api_key || ''
+    apiKey.value = ''
     baseUrl.value = config.base_url || ''
     model.value = config.model || ''
     hint.value = data.has_env
@@ -66,14 +83,15 @@ async function refresh() {
 }
 
 async function save() {
-  if (!apiKey.value.trim()) {
+  const typed = apiKey.value.trim()
+  if (!typed && !apiKeyConfigured.value) {
     ElMessage.warning('API Key 不能为空')
     return
   }
   saving.value = true
   try {
     await api.post('/api/llm-config', {
-      api_key: apiKey.value.trim(),
+      api_key: typed,
       base_url: baseUrl.value,
       model: model.value,
     })
@@ -87,14 +105,15 @@ async function save() {
 }
 
 async function testConn() {
-  if (!apiKey.value.trim()) {
+  const typed = apiKey.value.trim()
+  if (!typed && !apiKeyConfigured.value) {
     ElMessage.warning('API Key 不能为空')
     return
   }
   testing.value = true
   try {
     const { data } = await api.post('/api/llm-config/test', {
-      api_key: apiKey.value.trim(),
+      api_key: typed,
       base_url: baseUrl.value,
       model: model.value,
     })

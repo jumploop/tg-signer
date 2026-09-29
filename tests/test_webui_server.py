@@ -576,3 +576,28 @@ def test_static_assets_referenced_by_entry_are_committed():
         name for name in referenced if not (static_dir / "assets" / name).exists()
     )
     assert not missing, f"以下静态资源被入口 chunk 引用但未提交: {missing}"
+
+
+def test_llm_config_ui_leaves_the_stored_key_blank():
+    """前端产物必须体现「已配置，留空表示不修改」。
+
+    服务端只回掩码（如 ``****1234``），明文不出服务端；前端若把掩码当值回填进
+    密码框，用户就分不清「已配置」与「这是真实密钥」，``show-password`` 一开还会
+    露出一串形如坏掉的 ``****1234``。源码改完若忘记重建 ``static/``，这里会失败
+    —— 这正是本项的历史代价（前端产物随仓库分发）。
+    """
+    static_dir = pathlib.Path(server.__file__).parent / "static"
+    assets_dir = static_dir / "assets"
+    if not assets_dir.exists():
+        pytest.skip("前端尚未构建，缺少 static/assets")
+
+    chunks = []
+    for chunk in assets_dir.glob("*.js"):
+        text = chunk.read_text(encoding="utf-8")
+        # `llm-form` 是 LlmConfig.vue 的 scoped class，用它定位该组件所在的 chunk。
+        if "llm-form" in text:
+            chunks.append((chunk.name, text))
+    assert chunks, "未找到打包后的 LLM 配置组件"
+
+    missing = [name for name, text in chunks if "留空表示不修改" not in text]
+    assert not missing, f"以下产物的 LLM 配置界面未体现「留空表示不修改」: {missing}"
