@@ -545,6 +545,33 @@ def test_auth_login_locks_out_after_max_attempts(
     assert client.get("/api/state").status_code == 429
 
 
+def test_index_disables_cache_and_assets_are_immutable(client):
+    """index.html 必须回源校验，带 hash 的 chunk 才可长期缓存。
+
+    历史问题：两者都没发 Cache-Control，浏览器按 Last-Modified 做启发式
+    缓存。升级后 Vite 会重命名 chunk（如 Configs-D3OhaQpj.js ->
+    Configs-DeKRQTYv.js），被缓存的旧 index.html 仍指向已删除的 chunk，
+    入口 JS 404 导致整页白屏。
+    """
+    resp = client.get("/")
+    if resp.status_code == 200:
+        assert "no-cache" in resp.headers.get("cache-control", "")
+
+    static_dir = pathlib.Path(server.__file__).parent / "static"
+    index_html = static_dir / "index.html"
+    if not index_html.exists():
+        pytest.skip("前端尚未构建，缺少 static/index.html")
+
+    entry_match = re.search(
+        r"assets/(index-[A-Za-z0-9_-]+\.js)", index_html.read_text(encoding="utf-8")
+    )
+    assert entry_match, "index.html 未引用入口 chunk"
+
+    asset = client.get(f"/assets/{entry_match.group(1)}")
+    if asset.status_code == 200:
+        assert "immutable" in asset.headers.get("cache-control", "")
+
+
 def test_index_served_or_reports_missing_build(client):
     resp = client.get("/")
     assert resp.status_code in (200, 503)

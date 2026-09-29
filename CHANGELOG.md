@@ -1,6 +1,10 @@
 # Changelog / 版本变动日志
 
 ## 版本变动日志
+### 0.10.6
+- **fix: WebUI 升级后整页白屏**：`/` 与 `/assets/*` 此前都没有 `Cache-Control`，浏览器按 `Last-Modified` 做启发式缓存。Vite 每次构建按内容 hash 重命名 chunk（例如 `Configs-D3OhaQpj.js` -> `Configs-DeKRQTYv.js`），被缓存的旧 `index.html` 仍指向升级后已删除的 chunk，入口 JS 404 导致整页白屏。现 `index.html` 发 `Cache-Control: no-cache, must-revalidate` 强制回源校验，带 hash 的 chunk 发 `public, max-age=31536000, immutable` 长期缓存
+- 新增回归测试 `test_index_disables_cache_and_assets_are_immutable` 锁定上述两条缓存头
+
 ### 0.10.5
 - **仅文档更新，无代码变更**：`docs/security_audit_2026-09-29.md` 新增第七轮审计（§13），补齐历轮未覆盖的前端源码 / WebUI 认证实现 / docker 部署配置三块，新发现 3 项 P2、2 项 P3（P2-18 爆破防护形同虚设、P2-19 锁定可被用于 DoS、P2-20 docker 以 root 运行且 compose 引用不存在的 `start.sh`、P3-9 授权码非常量时间比较、P3-10 令牌即授权码）。本版本未修复这些发现，修复方向见 §13.8
 - 同时复验两项 P1 修复仍然生效（`/api/logs?path=` 越界返回 400；`account` 目录穿越被 `resolve_under()` 拒绝），并记录了 `data.py:_check_workdir()` 这处此前未记载的纵深防御

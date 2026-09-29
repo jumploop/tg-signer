@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -635,11 +635,33 @@ def index() -> FileResponse:
             status_code=503,
             detail="前端产物缺失，请先在 tg_signer/webui/frontend/ 执行 npm run build",
         )
-    return FileResponse(index_file)
+    # index.html 引用的是带内容 hash 的 chunk 文件名。升级后 chunk 会被重命名
+    # （例如 Configs-D3OhaQpj.js -> Configs-DeKRQTYv.js）。若浏览器缓存了旧版
+    # index.html，就会去请求已不存在的旧 chunk 并收到 404，表现为整页白屏。
+    # 这里显式要求每次回源校验；配合下方 assets 的 immutable 缓存。
+    return FileResponse(
+        index_file,
+        headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
+
+
+class ImmutableStaticFiles(StaticFiles):
+    # 给带内容 hash 的构建产物加长期缓存。文件名中的 hash 随内容变化，
+    # 内容变了文件名必然变，因此可以安全地 immutable 缓存，同时避免每次
+    # 升级后重新下载全部 chunk。
+
+    def file_response(self, *args, **kwargs) -> Response:
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
 
 
 if STATIC_DIR.is_dir() and (STATIC_DIR / "assets").is_dir():
-    app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
+    app.mount(
+        "/assets",
+        ImmutableStaticFiles(directory=STATIC_DIR / "assets"),
+        name="assets",
+    )
 
 
 def main(
