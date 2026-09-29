@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import os
 import pathlib
 from typing import TYPE_CHECKING, Optional, Union
@@ -14,6 +15,8 @@ if TYPE_CHECKING:
 from tg_signer.utils import UserInput, print_to_user
 
 DEFAULT_MODEL = "gpt-4o"
+
+logger = logging.getLogger("tg-signer")
 
 
 def encode_image(image: bytes):
@@ -174,8 +177,18 @@ class AITools:
             temperature=temperature,
         )
         message = completion.choices[0].message
-        result = json_repair.loads(message.content)
-        return int(result["option"])
+        # 模型偶尔会输出非 JSON / 缺 option 字段 / 空 content。这个方法的返回值
+        # 直接被签到主循环使用,不能让解析异常逃逸出去打死整个任务,统一收敛成
+        # -1 由调用方按「序号无效」处理。
+        result = json_repair.loads(message.content or "")
+        if not isinstance(result, dict):
+            logger.warning("图片识别返回的不是 JSON 对象: %r", message.content)
+            return -1
+        try:
+            return int(result["option"])
+        except (KeyError, TypeError, ValueError):
+            logger.warning("图片识别返回缺少合法的 option 字段: %r", message.content)
+            return -1
 
     async def calculate_problem(
         self,
@@ -225,4 +238,6 @@ class AITools:
             stream=False,
         )
         message = completion.choices[0].message
-        return message.content
+        # content 可能是 None(例如模型只返回 tool_calls),返回空串让调用方
+        # 得到「没拿到内容」而不是把 None 传给 send_message。
+        return message.content or ""

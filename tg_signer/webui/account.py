@@ -11,9 +11,19 @@ from pyrogram import errors
 
 from tg_signer import core as tg_core
 from tg_signer.core import Client, chat_to_dict, get_api_config, get_client, get_proxy
+from tg_signer.utils import resolve_under
 
 LOGIN_SESSIONS: Dict[str, "_AccountLoginSession"] = {}
 _ACCOUNT_USERS_FILE = "webui_accounts.json"
+
+
+def _account_path(account: str, workdir, suffix: str = "") -> pathlib.Path:
+    """返回 ``<workdir>/<account><suffix>``,账号名越界时抛 ``ValueError``。
+
+    账号名来自请求体并会被拼进 session 文件名;注销流程还会 ``unlink()``,
+    所以必须保证它是 ``workdir`` 下的单一路径分量。
+    """
+    return resolve_under(pathlib.Path(workdir), account, suffix=suffix)
 
 
 def list_accounts(workdir) -> List[Dict[str, Any]]:
@@ -86,6 +96,8 @@ class _AccountLoginSession:
     def __init__(self, account: str, workdir: pathlib.Path):
         self.account = account
         self.workdir = pathlib.Path(workdir)
+        # 下面的 get_client 会把账号名拼进 session 文件路径,先校验一次。
+        _account_path(account, self.workdir)
         self.phone = ""
         self.phone_code_hash: Optional[str] = None
         self.loop = asyncio.new_event_loop()
@@ -228,8 +240,8 @@ def _new_client(account: str, workdir: pathlib.Path) -> Any:
     """
     workdir = pathlib.Path(workdir)
     api_id, api_hash = get_api_config()
-    session_file = workdir / f"{account}.session"
-    session_string_file = workdir / f"{account}.session_string"
+    session_file = _account_path(account, workdir, ".session")
+    session_string_file = _account_path(account, workdir, ".session_string")
     in_memory = not session_file.is_file() and session_string_file.is_file()
     return Client(
         account,
@@ -238,7 +250,7 @@ def _new_client(account: str, workdir: pathlib.Path) -> Any:
         proxy=get_proxy(),
         workdir=str(workdir),
         in_memory=in_memory,
-        key=str((workdir / account).resolve()),
+        key=str(_account_path(account, workdir).resolve()),
     )
 
 
@@ -254,7 +266,7 @@ def _session_file_usable(account: str, workdir: pathlib.Path) -> bool:
     """
     workdir = pathlib.Path(workdir)
     for suffix in (".session", ".session_string"):
-        f = workdir / f"{account}{suffix}"
+        f = _account_path(account, workdir, suffix)
         try:
             if f.is_file() and f.stat().st_size > 0:
                 return True
@@ -381,7 +393,7 @@ async def logout_account(account: str, workdir) -> str:
             pass
         remove_account_user(account, workdir)
         for suffix in (".session", ".session-journal", ".session_string"):
-            session_file = workdir / f"{account}{suffix}"
+            session_file = _account_path(account, workdir, suffix)
             if session_file.is_file():
                 session_file.unlink()
     return f"已登出并删除 session 文件: {account}"

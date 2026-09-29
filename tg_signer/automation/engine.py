@@ -196,6 +196,8 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         self.log(f"startup 任务数: {len(startup_tasks)}", level="DEBUG")
         # timer trigger 统一由轮询调度循环驱动。
         timer_task = asyncio.create_task(self.timer_loop())
+        for task in (*startup_tasks, timer_task):
+            task.add_done_callback(self._log_task_failure)
         async with self.app:
             self.log("开始自动化运行...")
             await idle()
@@ -205,6 +207,19 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
 
     def _has_trigger(self, rule: RuleConfig, trigger_type: str) -> bool:
         return any(trigger.type == trigger_type for trigger in rule.triggers)
+
+    @staticmethod
+    def _log_task_failure(task: asyncio.Task) -> None:
+        """记录后台任务异常退出。
+
+        这些协程没有 await 点,不主动取异常的话只会以
+        "Task exception was never retrieved" 的形式被 GC 打印,故障会被静默吞掉。
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("后台任务异常退出: %s", exc, exc_info=exc)
 
     async def run_startup(self, rule: RuleConfig) -> None:
         for index, trigger in enumerate(rule.triggers):
@@ -227,63 +242,76 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             await self._run_rule(rule, event)
 
     async def timer_loop(self) -> None:
+        """轮询调度循环。
+
+        异常必须被关在这一层:该协程是 ``create_task`` 起的、无人 await,
+        一旦抛出就只会以 "Task exception was never retrieved" 的形式被 GC
+        打印,进程照常存活但**所有 timer 规则永久不再触发**(静默失效)。
+        """
         self.log(f"timer 轮询启动, tick={self._tick_seconds}s", level="DEBUG")
         while True:
-            now = get_now()
-            cfg = self.config
-            for rule in cfg.rules:
-                if not rule.enabled:
+            try:
+                await self._tick_timers()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.exception("timer 轮询异常，%ss 后继续", self._tick_seconds)
+            await asyncio.sleep(self._tick_seconds)
+
+    async def _tick_timers(self) -> None:
+        """遍历所有 timer trigger,到期即执行一轮规则。"""
+        now = get_now()
+        cfg = self.config
+        for rule in cfg.rules:
+            if not rule.enabled:
+                continue
+            for index, trigger in enumerate(rule.triggers):
+                if trigger.type != "timer":
                     continue
-                for index, trigger in enumerate(rule.triggers):
-                    if trigger.type != "timer":
-                        continue
-                    timer_trigger = trigger
-                    trigger_id = self._trigger_id(rule, trigger, index)
-                    next_run = self.state.get_trigger_next_run(rule.id, trigger_id)
-                    if next_run is None:
-                        # 首次见到该 trigger，计算并写入 next_run_at。
-                        next_run = self._compute_next_run(timer_trigger, now)
-                        if next_run:
-                            self.state.set_trigger_next_run(
-                                rule.id, trigger_id, next_run
-                            )
-                            self.state.save()
-                            self.log(
-                                f"初始化 timer 下次执行: rule={rule.id}, trigger={trigger_id}, next={next_run.isoformat()}",
-                                level="DEBUG",
-                            )
-                        else:
-                            self.log(
-                                f"timer 未配置 cron/interval: rule={rule.id}, trigger={trigger_id}",
-                                level="DEBUG",
-                            )
-                        continue
-                    if now >= next_run:
-                        self.log(
-                            f"触发 timer: rule={rule.id}, trigger={trigger_id}, due={next_run.isoformat()}",
-                            level="DEBUG",
-                        )
-                        event = Event(
-                            type="timer",
-                            chat_id=timer_trigger.params.chat_id,
-                            message=None,
-                            now=now,
-                            trigger_id=trigger_id,
-                            rule_id=rule.id,
-                        )
-                        await self._run_rule(rule, event)
-                        next_run = self.state.get_trigger_next_run(rule.id, trigger_id)
-                        if not next_run or next_run <= now:
-                            # 未被 schedule_next 覆盖时，按 trigger 默认策略推导下一次。
-                            next_run = self._compute_next_run(timer_trigger, now)
+                timer_trigger = trigger
+                trigger_id = self._trigger_id(rule, trigger, index)
+                next_run = self.state.get_trigger_next_run(rule.id, trigger_id)
+                if next_run is None:
+                    # 首次见到该 trigger，计算并写入 next_run_at。
+                    next_run = self._compute_next_run(timer_trigger, now)
+                    if next_run:
                         self.state.set_trigger_next_run(rule.id, trigger_id, next_run)
-                        self.state.set_trigger_last_run(rule.id, trigger_id, now)
                         self.state.save()
                         self.log(
-                            f"timer 执行完成: rule={rule.id}, trigger={trigger_id}, next={next_run.isoformat() if next_run else 'None'}",
+                            f"初始化 timer 下次执行: rule={rule.id}, trigger={trigger_id}, next={next_run.isoformat()}",
                             level="DEBUG",
                         )
-            await asyncio.sleep(self._tick_seconds)
+                    else:
+                        self.log(
+                            f"timer 未配置 cron/interval: rule={rule.id}, trigger={trigger_id}",
+                            level="DEBUG",
+                        )
+                    continue
+                if now >= next_run:
+                    self.log(
+                        f"触发 timer: rule={rule.id}, trigger={trigger_id}, due={next_run.isoformat()}",
+                        level="DEBUG",
+                    )
+                    event = Event(
+                        type="timer",
+                        chat_id=timer_trigger.params.chat_id,
+                        message=None,
+                        now=now,
+                        trigger_id=trigger_id,
+                        rule_id=rule.id,
+                    )
+                    await self._run_rule(rule, event)
+                    next_run = self.state.get_trigger_next_run(rule.id, trigger_id)
+                    if not next_run or next_run <= now:
+                        # 未被 schedule_next 覆盖时，按 trigger 默认策略推导下一次。
+                        next_run = self._compute_next_run(timer_trigger, now)
+                    self.state.set_trigger_next_run(rule.id, trigger_id, next_run)
+                    self.state.set_trigger_last_run(rule.id, trigger_id, now)
+                    self.state.save()
+                    self.log(
+                        f"timer 执行完成: rule={rule.id}, trigger={trigger_id}, next={next_run.isoformat() if next_run else 'None'}",
+                        level="DEBUG",
+                    )
 
     async def on_message(self, client, message: Message):
         _ = client

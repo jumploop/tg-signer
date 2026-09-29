@@ -29,6 +29,9 @@ from tg_signer.webui import runner as runner_mod
 
 AUTH_CODE_ENV = "TG_SIGNER_GUI_AUTHCODE"
 
+# 视为「仅本机可访问」的监听地址；其余地址必须配合授权码启动。
+LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
 _auth_storage: Dict[str, Any] = {}
 
 state = data_mod.UIState()
@@ -326,6 +329,8 @@ def delete_config(
         raise
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return {"ok": True}
 
 
@@ -349,17 +354,31 @@ def list_users(_: None = Depends(require_auth)) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def _mask_api_key(api_key: str) -> str:
+    """把密钥渲染成仅供展示的掩码,明文不出服务端。"""
+    key = (api_key or "").strip()
+    if not key:
+        return ""
+    if len(key) <= 8:
+        return "****"
+    return f"****{key[-4:]}"
+
+
+def _llm_manager() -> OpenAIConfigManager:
+    return OpenAIConfigManager(state.workdir)
+
+
 @app.get("/api/llm-config")
 def get_llm_config(_: None = Depends(require_auth)) -> Dict[str, Any]:
-    manager = OpenAIConfigManager(state.workdir)
+    manager = _llm_manager()
     has_env = manager.has_env_config()
-    cfg = manager.load_config()
+    cfg = manager.load_config() or {}
     return {
         "has_env": has_env,
         "config": {
-            "api_key": (cfg or {}).get("api_key", ""),
-            "base_url": (cfg or {}).get("base_url") or "",
-            "model": (cfg or {}).get("model") or "",
+            "api_key": _mask_api_key(cfg.get("api_key", "")),
+            "base_url": cfg.get("base_url") or "",
+            "model": cfg.get("model") or "",
         },
     }
 
@@ -368,22 +387,49 @@ def get_llm_config(_: None = Depends(require_auth)) -> Dict[str, Any]:
 def save_llm_config(
     body: LmConfigBody, _: None = Depends(require_auth)
 ) -> Dict[str, Any]:
-    if not body.api_key.strip():
+    """保存 LLM 配置。
+
+    ``api_key`` 为空、或恰好是服务端回显的掩码时都视为「不修改已有密钥」,
+    这样前端即使把回显值原样提交回来也不会覆盖真实密钥。
+    """
+    manager = _llm_manager()
+    stored_key = (manager.load_file_config() or {}).get("api_key", "").strip()
+    effective_key = (manager.load_config() or {}).get("api_key", "").strip()
+
+    posted = (body.api_key or "").strip()
+    if posted and posted not in (
+        _mask_api_key(stored_key),
+        _mask_api_key(effective_key),
+    ):
+        api_key = posted
+    elif stored_key:
+        api_key = stored_key
+    else:
         raise HTTPException(status_code=400, detail="API Key 不能为空")
-    OpenAIConfigManager(state.workdir).save_config(
-        body.api_key.strip(),
+
+    manager.save_config(
+        api_key,
         base_url=(body.base_url or "").strip() or None,
         model=(body.model or "").strip() or None,
     )
-    return {"ok": True}
+    return {"ok": True, "api_key_unchanged": api_key != posted}
 
 
 @app.post("/api/llm-config/test")
 async def test_llm_config(
     body: LmConfigBody, _: None = Depends(require_auth)
 ) -> Dict[str, Any]:
+    manager = _llm_manager()
+    api_key = (body.api_key or "").strip()
+    if not api_key or api_key == _mask_api_key(
+        (manager.load_config() or {}).get("api_key", "")
+    ):
+        # 前端回显的是掩码(或留空)时,用服务端已保存的密钥去测连通性。
+        api_key = (manager.load_config() or {}).get("api_key", "").strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="API Key 不能为空")
     ok, message = await test_openai_connection(
-        body.api_key,
+        api_key,
         base_url=(body.base_url or "").strip() or None,
         model=(body.model or "").strip() or None,
     )
@@ -404,9 +450,12 @@ def list_accounts(_: None = Depends(require_auth)) -> List[Dict[str, Any]]:
 async def account_send_code(
     body: LoginCodeBody, _: None = Depends(require_auth)
 ) -> Dict[str, Any]:
-    result, message = await asyncio.to_thread(
-        account_mod.send_login_code, body.account, body.phone, state.workdir
-    )
+    try:
+        result, message = await asyncio.to_thread(
+            account_mod.send_login_code, body.account, body.phone, state.workdir
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return {"result": result, "message": message}
 
 
@@ -424,7 +473,10 @@ async def account_complete_login(
 async def account_authorized(
     account: str, _: None = Depends(require_auth)
 ) -> Dict[str, Any]:
-    ok, message = await account_mod.is_account_authorized(account, state.workdir)
+    try:
+        ok, message = await account_mod.is_account_authorized(account, state.workdir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return {"ok": ok, "message": message}
 
 
@@ -434,7 +486,7 @@ async def account_logout(
 ) -> Dict[str, Any]:
     try:
         message = await account_mod.logout_account(body.account, state.workdir)
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"message": message}
 
@@ -453,9 +505,12 @@ def list_chats(_: None = Depends(require_auth)) -> List[Dict[str, Any]]:
 async def fetch_chats(
     body: ChatFetchBody, _: None = Depends(require_auth)
 ) -> Dict[str, Any]:
-    ok, message, chats = await account_mod.fetch_dialogs(
-        body.account, state.workdir, 50
-    )
+    try:
+        ok, message, chats = await account_mod.fetch_dialogs(
+            body.account, state.workdir, 50
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return {"ok": ok, "message": message, "chats": chats}
 
 
@@ -513,10 +568,15 @@ def read_logs(
     limit: int = Query(default=200, ge=1, le=5000),
     _: None = Depends(require_auth),
 ) -> Dict[str, Any]:
-    resolved, lines = data_mod.load_logs(
-        limit=limit,
-        log_path=path if path is not None else str(state.log_path),
-    )
+    try:
+        resolved, lines = data_mod.load_logs(
+            limit=limit,
+            log_path=path if path is not None else str(state.log_path),
+            # 只允许读 <workdir>/logs 下的文件,挡住任意文件读取。
+            log_dir=state.log_path.parent,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return {"path": str(resolved), "lines": lines}
 
 
@@ -581,6 +641,13 @@ def main(
 
     host = host or "127.0.0.1"
     port = int(port or 8080)
+    if host not in LOOPBACK_HOSTS and not _expected_auth_code():
+        # fail-closed：监听非回环地址意味着整个网络都能访问这些接口
+        # （账号登录/注销、读日志、拉起任务），没有授权码等同于无鉴权开放。
+        raise SystemExit(
+            f"拒绝启动：监听 {host} 会让 WebUI 对整个网络开放，"
+            f"请通过 --auth-code 或环境变量 {AUTH_CODE_ENV} 设置授权码。"
+        )
     _setup_logger()
     uvicorn.run(app, host=host, port=port, log_level="info")
 

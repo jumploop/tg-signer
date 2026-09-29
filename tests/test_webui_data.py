@@ -29,6 +29,52 @@ def test_list_log_files_finds_all_logs(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# load_logs / _resolve_log_path：只能读 log_dir 下的文件
+# ---------------------------------------------------------------------------
+
+
+def test_load_logs_reads_name_and_absolute_path_under_log_dir(tmp_path):
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    main_log = log_dir / "tg-signer.log"
+    main_log.write_text("a\nb\n", encoding="utf-8")
+
+    for value in (None, "tg-signer.log", str(main_log)):
+        resolved, lines = data.load_logs(limit=10, log_path=value, log_dir=log_dir)
+        assert resolved == main_log.resolve()
+        assert lines[:2] == ["a", "b"]
+
+
+def test_load_logs_defaults_to_main_log_file(tmp_path):
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "tg-signer.log").write_text("x\n", encoding="utf-8")
+
+    resolved, lines = data.load_logs(log_dir=log_dir)
+    assert resolved.name == data.LOG_FILE_NAME
+    assert lines[0] == "x"
+
+
+@pytest.mark.parametrize(
+    "make_target",
+    [
+        lambda tmp_path: tmp_path / "acc.session_string",  # workdir 根下的敏感文件
+        lambda tmp_path: tmp_path / ".." / "outside.log",  # 上级目录
+    ],
+    ids=["sensitive-file", "parent-dir"],
+)
+def test_load_logs_rejects_path_outside_log_dir(tmp_path, make_target):
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    target = make_target(tmp_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("SECRET\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="路径越界"):
+        data.load_logs(log_path=target, log_dir=log_dir)
+
+
+# ---------------------------------------------------------------------------
 # generate_random_config_name
 # ---------------------------------------------------------------------------
 
@@ -260,6 +306,71 @@ def test_delete_config_removes_whole_dir_and_records(tmp_path):
     assert deleted == task_dir / "config.json"
     assert not task_dir.exists()
     assert data.list_task_names("signer", workdir) == []
+
+
+# 名称必须是单一路径分量:否则删除会落到配置根目录之外
+# (甚至整个 workdir)。
+_TRAVERSAL_NAMES = ["..", ".", "", "a/b", "a\\b", "sub\\..\\.."]
+
+
+@pytest.mark.parametrize("name", _TRAVERSAL_NAMES)
+def test_delete_config_rejects_non_component_name(tmp_path, name):
+    workdir = tmp_path
+    task_dir = workdir / "signs" / "my_task"
+    task_dir.mkdir(parents=True)
+    (task_dir / "config.json").write_text("{}", encoding="utf-8")
+    (workdir / "config.json").write_text("{}", encoding="utf-8")
+    (workdir / "data.sqlite3").write_text("x", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        data.delete_config("signer", name, workdir=workdir)
+
+    # workdir 与其中的配置必须原样保留
+    assert task_dir.exists()
+    assert (workdir / "signs").exists()
+    assert (workdir / "data.sqlite3").exists()
+
+
+@pytest.mark.parametrize("name", _TRAVERSAL_NAMES)
+def test_delete_automation_config_rejects_non_component_name(tmp_path, name):
+    workdir = tmp_path
+    task_dir = workdir / "automations" / "gone"
+    task_dir.mkdir(parents=True)
+    (task_dir / "config.json").write_text("{}", encoding="utf-8")
+    (workdir / "automations" / "config.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        data.delete_automation_config(name, workdir)
+
+    assert task_dir.exists()
+    assert (workdir / "automations").exists()
+
+
+def test_delete_config_rejects_absolute_path(tmp_path):
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "config.json").write_text("{}", encoding="utf-8")
+
+    workdir = tmp_path / "wd"
+    (workdir / "signs").mkdir(parents=True)
+
+    with pytest.raises(ValueError):
+        data.delete_config("signer", str(victim), workdir=workdir)
+
+    assert victim.exists()
+
+
+@pytest.mark.parametrize("name", ["my_task", "签到任务", "task with space", "a.b-c_d"])
+def test_delete_config_accepts_ordinary_names(tmp_path, name):
+    # 合法名称(中文/空格/点横线下划线)必须仍然可以删除
+    task_dir = tmp_path / "signs" / name
+    task_dir.mkdir(parents=True)
+    (task_dir / "config.json").write_text("{}", encoding="utf-8")
+
+    deleted = data.delete_config("signer", name, workdir=tmp_path)
+
+    assert deleted == task_dir / "config.json"
+    assert not task_dir.exists()
 
 
 # ---------------------------------------------------------------------------

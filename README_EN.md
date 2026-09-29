@@ -144,6 +144,17 @@ tg-signer webgui --auth-code averycomplexcode  # Start the WebGUI
 
 When `--auth-code` is set, 5 consecutive wrong attempts lock the login for 60 seconds.
 
+The WebGUI listens on `127.0.0.1` by default and is only reachable locally when no auth code is set. To expose it on `--host 0.0.0.0` (or any non-loopback address) you **must** also pass `--auth-code` or set `TG_SIGNER_GUI_AUTHCODE`; otherwise startup is refused, because an unauthenticated WebGUI can read local files and operate your accounts.
+
+The WebGUI "work directory" can only be switched within a limited range: by default the **parent** of the work directory it was started with. Targets outside that range are rejected and no directory is created. The work directory decides where plugins are loaded from (`<workdir>/handlers/*.py`) and what the child processes can read and write. If you really need other locations, list the allowed roots in `TG_SIGNER_WEBUI_WORKDIR_ROOTS` (separated by the platform path separator):
+
+```sh
+export TG_SIGNER_WEBUI_WORKDIR_ROOTS=/srv/tg-signer:/mnt/backup
+tg-signer webgui
+```
+
+The API key on the "LLM connection" page is only returned as a mask (e.g. `****1234`); the plaintext secret never reaches the browser. Leaving the field blank — or keeping the returned mask as-is — means "do not change the stored key", and "Test connection" falls back to the stored key when the field is blank.
+
 ### Configure a Proxy (Optional)
 
 `tg-signer` does not read the system proxy. Use the `TG_PROXY` environment

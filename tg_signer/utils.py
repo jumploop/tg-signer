@@ -251,6 +251,56 @@ def numbering(num: int, lang: NumberingLangT):
         return str(num)
 
 
+def resolve_under(
+    root: str | os.PathLike[str], name: str, *, suffix: str = ""
+) -> pathlib.Path:
+    """把 ``name`` 解析为 ``root`` 下的直接子项,越界即抛 ``ValueError``。
+
+    调用方多是把外部字符串(配置名 / 账号名)直接拼进路径,而部分调用方随后
+    会创建或删除文件,所以 ``name`` 必须是单一路径分量。仅靠 ``resolve()``
+    后的包含性断言不够:``.`` 与空串解析后就是 ``root`` 自身;``.. `` /
+    ``...`` 这类名称会被 Win32 剥离尾随点与空格,变成 ``..``。
+    """
+    invalid = f"名称非法: {name!r}"
+    if not isinstance(name, str) or not name or "\x00" in name:
+        raise ValueError(invalid)
+    if name in (".", "..") or "/" in name or "\\" in name:
+        raise ValueError(invalid)
+    if name != name.rstrip(". "):
+        raise ValueError(invalid)
+    if pathlib.Path(name).is_absolute() or pathlib.Path(name).drive:
+        raise ValueError(invalid)
+    root_path = pathlib.Path(root)
+    target = root_path / f"{name}{suffix}"
+    if target.resolve().parent != root_path.resolve():
+        raise ValueError(invalid)
+    return target
+
+
+def resolve_within(
+    root: str | os.PathLike[str], path: str | os.PathLike[str]
+) -> pathlib.Path:
+    """把 ``path`` 解析为 ``root`` 内的直接子项,越界即抛 ``ValueError``。
+
+    与 :func:`resolve_under` 的差别在于允许 ``path`` 自带路径分量(前端会把
+    ``<workdir>/logs/x.log`` 这类绝对路径回传),只要求最终落在 ``root`` 内;
+    相对路径按 ``root`` 解析而非当前工作目录。``resolve()`` 会展开符号链接,
+    所以指向 root 之外的软链同样会被拒绝。
+    """
+    raw = os.fspath(path)
+    if not raw or "\x00" in raw:
+        raise ValueError(f"路径非法: {raw!r}")
+    root_path = pathlib.Path(root).resolve()
+    candidate = pathlib.Path(raw).expanduser()
+    if candidate.is_absolute():
+        resolved = candidate.resolve()
+    else:
+        resolved = (root_path / candidate).resolve()
+    if resolved.parent != root_path:
+        raise ValueError(f"路径越界: {raw!r}")
+    return resolved
+
+
 def _load_timezone_from_file(path: str | os.PathLike[str]):
     path = pathlib.Path(path).expanduser()
     if not path.is_file():

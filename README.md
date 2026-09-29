@@ -136,6 +136,17 @@ tg-signer webgui --auth-code averycomplexcode  # 启动一个WebGUI
 
 启用 `--auth-code` 后，连续输错 5 次授权码会锁定 60 秒。
 
+WebGUI 默认只监听 `127.0.0.1`，不设置授权码时仅本机可访问。若要通过 `--host 0.0.0.0`（或任意非回环地址）对外提供服务，**必须同时提供 `--auth-code` 或环境变量 `TG_SIGNER_GUI_AUTHCODE`**，否则程序会拒绝启动 —— 未鉴权的 WebGUI 能被读取本地文件、操作账号。
+
+WebGUI 的「工作目录」只能在限定范围内切换：默认是启动时工作目录的**父目录**，超出范围会被拒绝并且不会创建目录。这是因为工作目录决定了插件加载路径（`<workdir>/handlers/*.py`）和子进程的读写范围。若确实需要切换到其它位置，用 `TG_SIGNER_WEBUI_WORKDIR_ROOTS` 指定允许的根目录（多个根用系统路径分隔符分隔）：
+
+```sh
+export TG_SIGNER_WEBUI_WORKDIR_ROOTS=/srv/tg-signer:/mnt/backup
+tg-signer webgui
+```
+
+「大模型连接」页的 API Key 只回显掩码（如 `****1234`），不会把明文密钥返回给浏览器。保存时**留空或保持回显值不变**即代表不修改已有密钥；「测试连通性」在密钥留空时使用服务端已保存的密钥。
+
 ### 自动化规则（automation）
 
 使用 `tg-signer automation` 统一管理消息监控、转发与自动回复等自动化规则。

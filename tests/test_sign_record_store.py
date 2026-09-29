@@ -1,5 +1,8 @@
 import json
 import sqlite3
+import threading
+
+import pytest
 
 from tg_signer.sign_record_store import SignRecordStore
 
@@ -138,3 +141,80 @@ def test_sign_record_store_skips_ambiguous_legacy_json(tmp_path):
     assert summary.migrated_files == 0
     assert summary.migrated_records == 0
     assert summary.skipped_files == [record_file]
+
+
+# ---------------------------------------------------------------------------
+# 并发写:WebUI 进程与多个任务子进程会同时写同一份 data.sqlite3
+# ---------------------------------------------------------------------------
+
+
+# 8 x 200 是这个缺陷的复现强度:轮次太低(如 30)时旧实现也能侥幸通过,
+# 测试就失去判别力。代价是两条用例合计约 20s,属于有意承担的回归成本。
+_CONCURRENT_WRITERS = 8
+_CONCURRENT_ROUNDS = 200
+
+
+def _run_concurrent_upserts(workdir, writers: int, rounds: int, warmup: bool):
+    """并发写 workdir 下的 data.sqlite3,返回每个写者捕获到的异常。"""
+    if warmup:
+        SignRecordStore(workdir).upsert_record("warmup", "u", "2026-01-01", "t")
+
+    errors: list[str] = []
+    start = threading.Barrier(writers)
+
+    def worker(index: int) -> None:
+        store = SignRecordStore(workdir)
+        start.wait()
+        try:
+            for round_index in range(rounds):
+                store.upsert_record(
+                    f"task{round_index % 5}",
+                    f"user{index}",
+                    f"2026-09-{round_index % 28 + 1:02d}",
+                    "2026-09-29T06:00:00+08:00",
+                    account=f"acc{index}",
+                )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{type(exc).__name__}: {exc}")
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(writers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    return errors
+
+
+@pytest.mark.parametrize("warmup", [False, True], ids=["cold", "initialized"])
+def test_concurrent_upserts_never_raise_database_is_locked(tmp_path, warmup):
+    """并发写不得抛 `database is locked`。
+
+    冷启动的场景尤其重要:多个进程同时从 delete 切向 WAL 时,SQLite 对失败者
+    直接返回 SQLITE_BUSY 而不进 busy handler。历史上这里 8 线程有 5~6 个失败,
+    且 sqlite3.Error 不是 OSError,会一路逃逸出 normal_run 打死整个签到任务。
+    """
+    errors = _run_concurrent_upserts(
+        tmp_path / ".signer",
+        writers=_CONCURRENT_WRITERS,
+        rounds=_CONCURRENT_ROUNDS,
+        warmup=warmup,
+    )
+    assert errors == []
+
+
+def test_connect_enables_wal_and_busy_timeout(tmp_path):
+    store = SignRecordStore(tmp_path / ".signer")
+    with store._connect() as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] > 0
+
+
+def test_wal_switch_failure_is_tolerated(monkeypatch):
+    """并发切换 WAL 时 SQLITE_BUSY 必须被吞掉,不能中断连接。"""
+
+    class FakeConn:
+        def execute(self, sql):
+            if "journal_mode" in sql:
+                raise sqlite3.OperationalError("database is locked")
+
+    SignRecordStore._enable_wal(FakeConn())

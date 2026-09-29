@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
 from tg_signer.config import AutomationConfig, BaseJSONConfig, SignConfigV3
 from tg_signer.sign_record_store import SignRecordStore
+from tg_signer.utils import resolve_under, resolve_within
 
 ConfigKind = Literal["signer"]
 
@@ -22,6 +23,10 @@ NameGenKind = Literal["signer", "automation"]
 NAME_PREFIXES: dict[NameGenKind, str] = {"signer": "sign", "automation": "auto"}
 
 DEFAULT_WORKDIR = Path(os.environ.get("TG_SIGNER_WORKDIR", ".signer"))
+# 允许 WebUI 切换工作目录的根白名单(多个根用 os.pathsep 分隔)。未设置时
+# 只允许初始工作目录的父目录 —— 否则 POST /api/state 既是一个任意目录创建
+# 原语,也会让「插件加载」指向非预期的 <workdir>/handlers/*.py。
+WORKDIR_ROOTS_ENV = "TG_SIGNER_WEBUI_WORKDIR_ROOTS"
 LOG_DIR = Path("logs")
 DEFAULT_LOG_FILE = LOG_DIR / "tg-signer.log"
 # 与 tg_signer.webui.runner.DEFAULT_LOG_FILE_NAME 保持一致,统一主日志文件名
@@ -66,7 +71,11 @@ def _config_root(kind: ConfigKind, workdir: Optional[Path | str]) -> Path:
 
 
 def _config_path(kind: ConfigKind, name: str, workdir: Optional[Path | str]) -> Path:
-    return _config_root(kind, workdir) / name / "config.json"
+    """`<root>/<name>/config.json`;`name` 越界时抛 `ValueError`。
+
+    读写删三个动作都走这里,所以路径校验只需要在这一层做一次。
+    """
+    return resolve_under(_config_root(kind, workdir), name) / "config.json"
 
 
 def list_task_names(
@@ -106,7 +115,7 @@ def resolve_automation_config_file(
     name: str, workdir: Optional[Path | str] = None
 ) -> Optional[Path]:
     """返回 automations/<name>/ 下第一个存在的配置文件。"""
-    root = get_workdir(workdir) / "automations" / name
+    root = resolve_under(get_workdir(workdir) / "automations", name)
     for file_name in ("config.json", "config.yaml", "config.yml"):
         candidate = root / file_name
         if candidate.is_file():
@@ -163,7 +172,8 @@ def save_automation_config(
         cfg, _from_old, err = AutomationConfig.load_checked(data)
         if cfg is None:
             raise ValueError(err or "配置校验失败")
-    config_file = get_workdir(workdir) / "automations" / name / "config.json"
+    config_dir = resolve_under(get_workdir(workdir) / "automations", name)
+    config_file = config_dir / "config.json"
     config_file.parent.mkdir(parents=True, exist_ok=True)
     with open(config_file, "w", encoding="utf-8") as fp:
         json.dump(cfg.to_jsonable(), fp, ensure_ascii=False, indent=2)
@@ -171,6 +181,8 @@ def save_automation_config(
 
 
 def delete_automation_config(name: str, workdir: Optional[Path | str] = None) -> Path:
+    # resolve_automation_config_file 内部已做路径校验,非法名称在这里就会抛错,
+    # 不会走到下面的 rmtree。
     config_file = resolve_automation_config_file(name, workdir)
     if config_file is None:
         raise FileNotFoundError(
@@ -444,19 +456,27 @@ def list_log_files(log_dir: Optional[Path | str] = None) -> List[Path]:
     return sorted(p for p in base.glob("*.log") if p.is_file())
 
 
-def _resolve_log_path(log_path: Optional[Path | str] = None) -> Path:
-    if log_path:
-        path = Path(log_path).expanduser()
-        if not path.is_absolute() and path.parent == Path("."):
-            return LOG_DIR / path
-        return path
-    return DEFAULT_LOG_FILE
+def _resolve_log_path(
+    log_path: Optional[Path | str] = None, log_dir: Optional[Path | str] = None
+) -> Path:
+    """解析日志路径,只允许 ``log_dir`` 下的文件。
+
+    前端会把 ``/api/logs/files`` 返回的绝对路径回传,所以这里不能只收文件名;
+    但也不能像以前那样原样返回 —— 否则 ``?path=<任意绝对路径>`` 就是一个任意
+    文件读取原语(可读到 ``*.session_string`` / ``.openai_config.json``)。
+    """
+    root = Path(log_dir) if log_dir else LOG_DIR
+    if not log_path:
+        return root / DEFAULT_LOG_FILE.name
+    return resolve_within(root, log_path)
 
 
 def load_logs(
-    limit: int = 200, log_path: Optional[Path | str] = None
+    limit: int = 200,
+    log_path: Optional[Path | str] = None,
+    log_dir: Optional[Path | str] = None,
 ) -> Tuple[Path, List[str]]:
-    path = _resolve_log_path(log_path)
+    path = _resolve_log_path(log_path, log_dir)
     return path, tail_file(path, limit=limit)
 
 
@@ -506,9 +526,34 @@ class UIState:
         self.workdir: Path = get_workdir(DEFAULT_WORKDIR)
         # 统一主日志:<workdir>/logs/<LOG_FILE_NAME>,与子进程共享同一份
         self.log_path: Path = self.workdir / "logs" / LOG_FILE_NAME
+        self._initial_workdir = self.workdir.resolve()
+
+    def allowed_workdir_roots(self) -> List[Path]:
+        """可切换到的根目录列表,每次都重新读取,便于测试与嵌入方调整。"""
+        raw = os.environ.get(WORKDIR_ROOTS_ENV, "").strip()
+        if raw:
+            roots = [Path(p).expanduser() for p in raw.split(os.pathsep) if p.strip()]
+        else:
+            roots = [self._initial_workdir.parent]
+        return [root.resolve() for root in roots]
+
+    def _check_workdir(self, target: Path) -> None:
+        roots = self.allowed_workdir_roots()
+        if any(target == root or root in target.parents for root in roots):
+            return
+        allowed = "、".join(str(root) for root in roots)
+        raise ValueError(
+            f"工作目录越界: {target};允许范围: {allowed}。"
+            f"如需切换至其它位置,请设置环境变量 {WORKDIR_ROOTS_ENV}"
+        )
 
     def set_workdir(self, path_str: str) -> None:
-        self.workdir = get_workdir(Path(path_str).expanduser())
+        candidate = Path(path_str).expanduser()
+        absolute = candidate if candidate.is_absolute() else Path.cwd() / candidate
+        # 先校验再 mkdir:否则越界路径会先被创建出来,构成目录创建原语。
+        # 用 resolve() 后的路径做包含性判断,顺带挡掉指向根之外的软链。
+        self._check_workdir(absolute.resolve())
+        self.workdir = get_workdir(candidate)
         self.log_path = self.workdir / "logs" / DEFAULT_LOG_FILE.name
 
 

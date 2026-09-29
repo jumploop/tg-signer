@@ -22,6 +22,8 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
+from tg_signer.utils import resolve_under
+
 # 与 webui.data.DEFAULT_LOG_FILE.name 保持一致,统一主日志文件名
 DEFAULT_LOG_FILE_NAME = "tg-signer.log"
 
@@ -113,12 +115,13 @@ def _unlock(fp) -> None:
 def _acquire_account_lock(workdir: Path, account: str) -> LockHandle:
     """抢占 <workdir>/<account>.lock 的独占锁。
 
-    失败抛 ``AccountLocked``;成功返回 ``LockHandle``,调用方需负责在子进程
-    退出 / stop / shutdown 时调用 ``release()``。
+    失败抛 ``AccountLocked``;账号名越界抛 ``ValueError``;成功返回
+    ``LockHandle``,调用方需负责在子进程退出 / stop / shutdown 时调用
+    ``release()``。
     """
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
-    lock_path = workdir / f"{account}.lock"
+    lock_path = resolve_under(workdir, account, suffix=".lock")
     # 确保文件存在且至少 1 字节(msvcrt.locking 需要)
     if not lock_path.exists():
         try:
@@ -263,6 +266,9 @@ def start(
     try:
         lock = _acquire_account_lock(workdir, account)
     except AccountLocked as exc:
+        return False, str(exc)
+    except ValueError as exc:
+        # 账号名不是单一路径分量,拒绝启动(否则锁文件 / session 会落到 workdir 之外)。
         return False, str(exc)
     except OSError as exc:
         return False, f"获取账号锁失败: {exc}"

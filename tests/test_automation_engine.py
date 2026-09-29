@@ -281,6 +281,38 @@ async def test_timer_schedule_next_override(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_timer_loop_survives_tick_exception(tmp_path):
+    """单次 tick 抛异常不得让轮询退出。
+
+    ``timer_loop`` 是 ``create_task`` 起的、无人 await:一旦抛出就只剩
+    "Task exception was never retrieved",进程照常存活但所有 timer 规则
+    永久不再触发 —— 典型的静默失效。
+    """
+    worker = make_worker(tmp_path)
+    ticks: list[int] = []
+
+    async def flaky_tick() -> None:
+        ticks.append(len(ticks))
+        if len(ticks) == 2:
+            raise OSError("模拟 state.save() 失败")
+
+    worker._tick_seconds = 0.01
+    worker._tick_timers = flaky_tick
+
+    task = asyncio.create_task(worker.timer_loop())
+    try:
+        deadline = asyncio.get_running_loop().time() + 5
+        while len(ticks) < 5 and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        assert not task.done(), "timer_loop 在异常后不应退出"
+        assert len(ticks) >= 5, f"异常之后轮询应继续,实际 tick 次数={len(ticks)}"
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
 async def test_on_edited_message_matches_message_trigger(tmp_path):
     """编辑消息应复用 message trigger 匹配链路。"""
     worker = make_worker(tmp_path)

@@ -33,6 +33,9 @@ class MigrationSummary:
 class SignRecordStore:
     DB_FILENAME = "data.sqlite3"
     SCHEMA_VERSION = 1
+    # sqlite3 默认只等 5s 就抛 `database is locked`;WebUI 进程与多个任务子进程
+    # 会同时读写同一份 data.sqlite3,冷启动建 schema 时这点时间远远不够。
+    BUSY_TIMEOUT_SECONDS = 30.0
 
     def __init__(self, workdir: str | Path):
         self.workdir = Path(workdir)
@@ -43,10 +46,25 @@ class SignRecordStore:
         return self.workdir / self.DB_FILENAME
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=self.BUSY_TIMEOUT_SECONDS)
         conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout={int(self.BUSY_TIMEOUT_SECONDS * 1000)}")
+        self._enable_wal(conn)
         self._ensure_schema(conn)
         return conn
+
+    @staticmethod
+    def _enable_wal(conn: sqlite3.Connection) -> None:
+        """尽力把日志模式切到 WAL(单写多读,跨进程友好)。
+
+        多个连接同时从 delete 模式切向 WAL 时,SQLite 对失败者会**直接返回
+        SQLITE_BUSY 而不调用 busy handler**,所以并发冷启动必然有输家。这里容忍
+        失败:下一次连接会重试,期间的并发由 busy_timeout 兜底。
+        """
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError:
+            pass
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:
         version = self._get_schema_version(conn)

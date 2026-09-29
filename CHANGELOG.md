@@ -2,6 +2,15 @@
 
 ## 版本变动日志
 ### 0.10.3
+- **安全修复**：`GET /api/logs?path=` 任意文件读取。此前该参数原样接受任意绝对路径，可直接读出 `<workdir>/*.session_string`、`.openai_config.json` 乃至 `~/.ssh/id_rsa`。现限定为只能读 `<workdir>/logs` 下的文件（前端回传的绝对路径仍然可用），越界返回 400。修复见 `docs/security_audit_2026-09-29.md`
+- **安全修复**：`account` 与配置名未归一化导致的目录穿越。`/api/accounts/logout`、`/api/accounts/send-code`、`/api/chats/fetch`、`/api/run/start` 传 `../x` 可在 workdir 之外创建锁文件、删改任意文件。现统一由 `tg_signer.utils.resolve_under()` 校验为单一路径分量，数据层与 HTTP 层一致拒绝
+- **安全修复**：WebGUI 绑定非回环地址且未设置授权码时改为拒绝启动（fail-closed）。此前 `--host 0.0.0.0` 会让上述接口在整个网络无鉴权开放，现在必须同时提供 `--auth-code` 或 `TG_SIGNER_GUI_AUTHCODE`
+- **安全修复**：`GET /api/llm-config` 明文回显 API Key。现只返回掩码（如 `****1234`），明文不再离开服务端；保存时「留空」或「原样回填掩码」都表示不修改已有密钥（前端即使把回显值原样提交也不会覆盖真实密钥），「测试连通性」在密钥留空时回退到服务端已保存的密钥
+- **安全修复**：`POST /api/state` 可把工作目录切到任意路径，既能任意建目录，又会让插件加载指向非预期目录（`<workdir>/handlers/*.py` 会被 `exec_module` 执行）。现限定为只能切到白名单根目录之下，默认是启动时工作目录的父目录，可用 `TG_SIGNER_WEBUI_WORKDIR_ROOTS`（`os.pathsep` 分隔）放宽；越界直接 400 且**不会创建目录**
+- **健壮性修复**：`data.sqlite3` 并发写入失败。多账号并存时连接不设 `timeout`/WAL，冷启动 6/8、稳态 5/8 线程抛 `database is locked`；而 `sqlite3.Error` 不是 `OSError`，会逃逸出 `normal_run` 的异常捕获把签到任务打死。现启用 `timeout=30s` + `busy_timeout` + WAL（并发切换 WAL 时的 `SQLITE_BUSY` 容错重试），并把 `persist_sign_record()` 的存储异常降级为警告
+- **健壮性修复**：Automation 的 `timer_loop` 无异常隔离，一次异常即让所有 timer 规则永久停摆且无告警。现循环体内部捕获异常继续轮询，并给 `create_task` 加完成回调记录异常退出
+- **健壮性修复**：`_call_telegram_api()` 的 FloodWait 退避在 `async with lock` 内部等待，而 FloodWait 常见数百秒，会把同一个 client 的所有任务（包括其它 chat 的签到）串行阻塞。现把退避移出锁外；限流间隔的等待仍留在锁内，保证并发调用继续被串行化
+- **健壮性修复**：大模型输出异常击穿签到主循环。`choose_option_by_image()` 遇到非 JSON / 缺 `option` 字段 / `option` 非整数 / 空 `content` 时抛 `KeyError`/`TypeError`，`get_reply()` 可能返回 `None`，两者都会打死整个任务。现分别收敛为 `-1` 与 `""`，并把 `sign_once()` 的异常捕获从 `errors.RPCError` 放宽为「单个 chat 失败只跳过该 chat」
 - WebUI「群组/频道 → 复制到配置」改为优先写入群组/频道的数字 ID（此前固定写 `@username`），仅在拿不到 ID 时才退回用户名
 - 修复 Automation 规则的 `chat_id` 为数字字符串时规则永不触发且不报错：`_match_chat` / `_normalize_user_id` 只对 `int` 做数字比较，字符串会落进 `@username` 分支。新增 `normalize_chat_ref()` 归一化纯数字字符串为 `int`（`@username` 保持字符串），并在 `MessageTriggerParams` / `TimerTriggerParams` / `StartupTriggerParams` / `FilterConfig` 上通过 `ChatRefsMixin` 于解析阶段统一处理
 - WebUI「复制到配置」为 Signer 配置自动填写群组任务名（优先标题、其次用户名）与随机 `random_seconds`（100~1000）；仅在新建时填写，编辑已有配置不覆盖用户已填的群组名与延迟

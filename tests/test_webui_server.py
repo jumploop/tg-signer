@@ -9,12 +9,14 @@
 from __future__ import annotations
 
 import copy
+import json
 import pathlib
 import re
 
 import pytest
 from fastapi.testclient import TestClient
 
+from tg_signer.webui import data as data_mod
 from tg_signer.webui import server
 
 SIGNER_PAYLOAD = {
@@ -35,8 +37,10 @@ SIGNER_PAYLOAD = {
 
 
 @pytest.fixture()
-def client(tmp_path):
+def client(tmp_path, monkeypatch):
     """每个测试使用独立工作目录，并在临时目录中启动应用。"""
+    # 可切换的工作目录默认只含初始工作目录的父目录，这里显式放开到 tmp_path。
+    monkeypatch.setenv(data_mod.WORKDIR_ROOTS_ENV, str(tmp_path))
     server.state.set_workdir(str(tmp_path))
     with TestClient(server.app) as test_client:
         yield test_client
@@ -56,6 +60,21 @@ def test_state_switch_workdir(client, tmp_path):
     resp = client.post("/api/state", json={"workdir": str(target)})
     assert resp.status_code == 200
     assert resp.json()["workdir"] == str(target)
+
+
+@pytest.mark.parametrize(
+    "relative",
+    ["../wb_outside_a", "../../wb_outside_b", "../wb_outside_c/nested"],
+)
+def test_state_rejects_workdir_outside_allowed_roots(client, tmp_path, relative):
+    """白名单之外的目录必须被拒，且不能被 mkdir 创建出来。"""
+    outside = (tmp_path / relative).resolve()
+    resp = client.post("/api/state", json={"workdir": str(outside)})
+    assert resp.status_code == 400, resp.json()
+    assert "越界" in resp.json()["detail"]
+    assert not outside.exists()
+    # 失败后工作目录保持不变
+    assert client.get("/api/state").json()["workdir"] == str(tmp_path)
 
 
 def test_config_template(client):
@@ -209,12 +228,12 @@ def test_records_and_users_empty(client):
     assert client.get("/api/users").json() == []
 
 
-def test_llm_config_roundtrip(client, monkeypatch):
+def test_llm_config_roundtrip(client, monkeypatch, tmp_path):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     resp = client.post(
         "/api/llm-config",
         json={
-            "api_key": "sk-test",
+            "api_key": "sk-test-abcdefgh",
             "base_url": "https://example.com/v1",
             "model": "gpt-4o-mini",
         },
@@ -223,14 +242,69 @@ def test_llm_config_roundtrip(client, monkeypatch):
 
     payload = client.get("/api/llm-config").json()
     assert payload["has_env"] is False
-    assert payload["config"]["api_key"] == "sk-test"
+    # 明文密钥不回显，只给尾部 4 位的掩码
+    assert payload["config"]["api_key"] == "****efgh"
+    assert "sk-test-abcdefgh" not in resp.text
     assert payload["config"]["base_url"] == "https://example.com/v1"
     assert payload["config"]["model"] == "gpt-4o-mini"
+
+    stored = (tmp_path / ".openai_config.json").read_text(encoding="utf-8")
+    assert "sk-test-abcdefgh" in stored
 
 
 def test_llm_config_rejects_empty_key(client):
     resp = client.post("/api/llm-config", json={"api_key": "   "})
     assert resp.status_code == 400
+
+
+def test_llm_config_keeps_stored_key_when_blank_or_masked(client, tmp_path):
+    """留空或原样回显掩码都表示「不修改密钥」，只更新其余字段。"""
+    client.post("/api/llm-config", json={"api_key": "sk-keep-12345678"})
+
+    for posted in ("", "****5678"):
+        resp = client.post(
+            "/api/llm-config",
+            json={"api_key": posted, "base_url": "https://changed/v1"},
+        )
+        assert resp.status_code == 200, resp.json()
+        assert resp.json()["api_key_unchanged"] is True
+
+    config = json.loads((tmp_path / ".openai_config.json").read_text("utf-8"))
+    assert config["api_key"] == "sk-keep-12345678"
+    assert config["base_url"] == "https://changed/v1"
+
+
+def test_llm_config_replaces_key_when_new_value_posted(client, tmp_path):
+    client.post("/api/llm-config", json={"api_key": "sk-old-12345678"})
+
+    resp = client.post("/api/llm-config", json={"api_key": "sk-new-87654321"})
+    assert resp.status_code == 200
+    assert resp.json()["api_key_unchanged"] is False
+
+    config = json.loads((tmp_path / ".openai_config.json").read_text("utf-8"))
+    assert config["api_key"] == "sk-new-87654321"
+
+
+def test_llm_config_test_endpoint_falls_back_to_stored_key(client, monkeypatch):
+    """前端回显掩码 / 留空时，连通性测试必须用服务端保存的真实密钥。"""
+    client.post("/api/llm-config", json={"api_key": "sk-stored-87654321"})
+
+    seen = {}
+
+    async def fake_test(api_key, base_url=None, model=None):
+        seen["api_key"] = api_key
+        return True, "ok"
+
+    monkeypatch.setattr(server, "test_openai_connection", fake_test)
+
+    for posted in ("", "****4321"):
+        resp = client.post("/api/llm-config/test", json={"api_key": posted})
+        assert resp.status_code == 200, resp.json()
+        assert seen["api_key"] == "sk-stored-87654321"
+
+    resp = client.post("/api/llm-config/test", json={"api_key": "sk-typed-00000000"})
+    assert resp.status_code == 200
+    assert seen["api_key"] == "sk-typed-00000000"
 
 
 def test_accounts_list_and_authorized(client, tmp_path):
@@ -280,6 +354,100 @@ def test_logs(client, tmp_path):
 
     files = client.get("/api/logs/files").json()["files"]
     assert any(str(f).endswith("tg-signer.log") for f in files)
+
+
+# ---------------------------------------------------------------------------
+# 越权 / 路径穿越（负向用例）
+#
+# 历史上 `/api/logs?path=` 是任意文件读取原语（能读到 *.session_string 与
+# .openai_config.json），`account` 与配置名则未归一化，可越界创建 / 删除文件。
+# ---------------------------------------------------------------------------
+
+
+def test_logs_rejects_path_outside_log_dir(client, tmp_path):
+    """只有 <workdir>/logs 下的文件可读，其余一律 400。"""
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "tg-signer.log").write_text("real\n", encoding="utf-8")
+
+    # workdir 根目录下的敏感文件（session / LLM key 都在这一层）
+    secret = tmp_path / "acc.session_string"
+    secret.write_text("SESSION-STRING-SECRET\n", encoding="utf-8")
+    # workdir 之外的文件
+    outside = tmp_path.parent / "tg_signer_audit_outside.log"
+    outside.write_text("OUTSIDE-SECRET\n", encoding="utf-8")
+
+    for target in (secret, outside, log_dir / ".." / "acc.session_string"):
+        resp = client.get("/api/logs", params={"path": str(target)})
+        assert resp.status_code == 400, f"{target} 未被拦截: {resp.json()}"
+        assert "SESSION-STRING-SECRET" not in resp.text
+        assert "OUTSIDE-SECRET" not in resp.text
+
+
+def test_logs_accepts_file_name_and_absolute_path_inside_log_dir(client, tmp_path):
+    """前端会回传 /api/logs/files 给出的绝对路径，这条正常路径必须仍然可用。"""
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    main_log = log_dir / "tg-signer.log"
+    main_log.write_text("line1\nline2", encoding="utf-8")
+
+    listed = client.get("/api/logs/files").json()["files"]
+    assert str(main_log) in listed
+
+    for value in ("tg-signer.log", str(main_log)):
+        resp = client.get("/api/logs", params={"path": value})
+        assert resp.status_code == 200, resp.json()
+        assert resp.json()["lines"] == ["line1", "line2"]
+
+
+_ACCOUNT_TRAVERSAL = ["../victim", "..\\victim", "..", ".", "", "a/b"]
+
+
+@pytest.mark.parametrize("account", _ACCOUNT_TRAVERSAL)
+def test_account_endpoints_reject_traversal(client, tmp_path, account):
+    """account 不是单一路径分量时必须 400，不能越界建 / 删 session 文件。"""
+    victim = tmp_path.parent / "victim.session"
+    victim.write_text("x", encoding="utf-8")
+
+    for resp in (
+        client.post("/api/accounts/logout", json={"account": account}),
+        client.post(
+            "/api/accounts/send-code", json={"account": account, "phone": "+1"}
+        ),
+        client.post("/api/chats/fetch", json={"account": account}),
+    ):
+        assert resp.status_code == 400, f"{account!r} 未被拦截: {resp.json()}"
+        assert "名称非法" in resp.json()["detail"]
+
+    assert victim.is_file()
+
+
+def test_run_start_rejects_traversal_and_creates_nothing_outside(client, tmp_path):
+    """run/start 的 account 穿越必须被拒，且不得在 workdir 之外留下锁文件。"""
+    resp = client.post(
+        "/api/run/start",
+        json={"kind": "signer", "tasks": ["t"], "account": "../evil"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is False
+    assert "名称非法" in resp.json()["message"]
+    assert sorted(p.name for p in tmp_path.parent.glob("evil.lock")) == []
+
+
+def test_config_endpoints_do_not_touch_outside_workdir(client, tmp_path):
+    """配置名穿越时不能被删除 / 写穿到 workdir 之外。
+
+    URL 里的 `..` 会被路由层先吃掉(405/404),彻底绕过路由的写法由
+    `test_webui_data.py` 在数据层逐名覆盖;这里保证的是「无论返回什么状态码,
+    workdir 之外都不会产生或丢失文件」。
+    """
+    for name in ("../victim", "..%2F..%2Fvictim", "evil"):
+        resp = client.delete(f"/api/configs/signer/{name}")
+        assert resp.status_code >= 400, resp.json()
+
+    outside = tmp_path.parent / "victim"
+    assert not outside.exists()
+    assert not (tmp_path.parent / "evil").exists()
 
 
 def test_auth_required_when_env_set(client, monkeypatch):

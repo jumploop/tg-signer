@@ -123,7 +123,10 @@ def test_child_process_stdout_visible_in_load_logs(
             time.sleep(0.05)
 
         # 4) 模拟 WebUI 日志页:用 data.load_logs 读主日志
-        resolved_path, lines = webui_data.load_logs(limit=1000, log_path=str(main_log))
+        #    log_dir 是读日志的允许根目录,由 server 层传入(state.log_path.parent)。
+        resolved_path, lines = webui_data.load_logs(
+            limit=1000, log_path=str(main_log), log_dir=main_log.parent
+        )
         assert resolved_path == main_log
         assert any(marker in line for line in lines), (
             f"load_logs did not surface child stdout; lines were:\n{lines!r}"

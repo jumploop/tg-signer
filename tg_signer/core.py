@@ -4,6 +4,7 @@ import logging
 import os
 import pathlib
 import random
+import sqlite3
 import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
@@ -474,11 +475,10 @@ class BaseUserWorker(Generic[ConfigT]):
                         loop.time() - last_called_at
                     )
                     if wait_for > 0:
+                        # 限流间隔必须在锁内等待,否则并发调用会挤在一起打出去。
                         await asyncio.sleep(wait_for)
                 try:
                     result = await call()
-                    _API_LAST_CALL_AT[key] = loop.time()
-                    return result
                 except errors.FloodWait as e:
                     _API_LAST_CALL_AT[key] = loop.time()
                     if not retry_on_floodwait or retries_left <= 0:
@@ -492,7 +492,12 @@ class BaseUserWorker(Generic[ConfigT]):
                         f"{operation} 触发 FloodWait，等待 {wait_seconds:.1f}s 后重试（剩余重试 {retries_left} 次）",
                         level="WARNING",
                     )
-                    await asyncio.sleep(wait_seconds)
+                else:
+                    _API_LAST_CALL_AT[key] = loop.time()
+                    return result
+            # 退避必须在锁外等待:FloodWait 常见数百秒,持锁等待会把同一
+            # client 的其它任务(包括其它 chat 的签到)全部串行阻塞。
+            await asyncio.sleep(wait_seconds)
 
     def ask_for_config(self):
         raise NotImplementedError
@@ -1106,13 +1111,19 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         self, sign_record: dict[str, str], sign_date: str, signed_at: str
     ) -> None:
         sign_record[sign_date] = signed_at
-        self.sign_record_store.upsert_record(
-            self.task_name,
-            str(self.user.id),
-            sign_date,
-            signed_at,
-            account=self._account,
-        )
+        try:
+            self.sign_record_store.upsert_record(
+                self.task_name,
+                str(self.user.id),
+                sign_date,
+                signed_at,
+                account=self._account,
+            )
+        except sqlite3.Error as exc:
+            # 签到记录只是一份审计留痕,写不进去也不应该让整个签到任务停摆
+            # (sqlite3.Error 不是 OSError,原先会一路逃逸出 normal_run)。
+            self.log(f"签到记录写入失败(已忽略): {exc}", level="WARNING")
+            logger.warning(exc, exc_info=True)
 
     async def sign_a_chat(
         self,
@@ -1186,8 +1197,10 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     route_key = await self.resolve_chat_route_key(chat)
                     self.context.sign_chats[route_key].append(chat)
                     await self.sign_a_chat(chat)
-                except errors.RPCError as _e:
-                    self.log(f"签到失败: {_e} \nchat: \n{chat}")
+                except Exception as _e:  # noqa: BLE001
+                    # 单个 chat 的失败(含大模型返回异常、动作链抛错)只跳过这个
+                    # chat;不能让它逃逸出 normal_run 把整个签到任务打死。
+                    self.log(f"签到失败: {_e} \nchat: \n{chat}", level="WARNING")
                     logger.warning(_e, exc_info=True)
                     continue
 

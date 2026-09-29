@@ -1,6 +1,7 @@
 import asyncio
 import json
 import pathlib
+import sqlite3
 from datetime import datetime, timezone
 from io import BytesIO
 from types import SimpleNamespace
@@ -24,6 +25,7 @@ from tg_signer.core import (
     get_client,
     readable_chat,
 )
+from tg_signer.sign_record_store import SignRecordStore
 
 
 class TestBaseUserWorker:
@@ -580,6 +582,30 @@ def test_user_signer_persist_sign_record_writes_sqlite_only_by_default(signer_fa
     assert not signer.sign_record_file.exists()
 
 
+def test_persist_sign_record_tolerates_storage_error(monkeypatch, signer_factory):
+    """记录写不进去只报警告,不能让整个签到任务停摆。
+
+    ``sqlite3.Error`` 不是 ``OSError``,历史上会一路逃逸出 ``normal_run`` 的
+    ``except (OSError, errors.Unauthorized)`` 把任务协程打死。
+    """
+    signer = signer_factory(task_name="linuxdo")
+    signer.user = SimpleNamespace(id=123456)
+    warnings: list[str] = []
+    signer.log = lambda msg, level="INFO", **kwargs: warnings.append(msg)
+
+    def boom(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    # sign_record_store 是 property,每次访问都新建实例,必须打在类上。
+    monkeypatch.setattr(SignRecordStore, "upsert_record", boom)
+    sign_record: dict[str, str] = {}
+
+    signer.persist_sign_record(sign_record, "2026-03-17", "2026-03-17T06:00:00+08:00")
+
+    assert sign_record == {"2026-03-17": "2026-03-17T06:00:00+08:00"}
+    assert warnings and "database is locked" in warnings[0]
+
+
 @pytest.mark.asyncio
 async def test_login_skips_topics_for_non_forum_supergroup(monkeypatch, signer_factory):
     import tg_signer.core as core
@@ -954,6 +980,49 @@ async def test_call_telegram_api_is_serialized_for_same_account(
     )
 
     assert max_active == 1
+
+
+@pytest.mark.asyncio
+async def test_floodwait_backoff_does_not_hold_api_lock(monkeypatch, signer_factory):
+    """FloodWait 退避必须在锁外等待。
+
+    持锁退避会把同一个 client 的所有任务（包括其它 chat 的签到）串行阻塞，
+    而 FloodWait 常见数百秒。同时确认限流间隔仍在锁内等待，否则并发调用会
+    挤在一起打出去。
+    """
+    import tg_signer.core as core
+
+    monkeypatch.setattr(core, "_API_MIN_INTERVAL_SECONDS", 10.0)
+    monkeypatch.setattr(core, "_API_FLOODWAIT_PADDING_SECONDS", 0.0)
+    monkeypatch.setattr(core, "_API_MAX_FLOODWAIT_RETRIES", 1)
+
+    signer = signer_factory()
+    records = []
+    real_sleep = core.asyncio.sleep
+
+    async def fake_sleep(seconds):
+        records.append((seconds, core._API_ASYNC_LOCKS[signer.app.key].locked()))
+        await real_sleep(0)
+
+    monkeypatch.setattr(core.asyncio, "sleep", fake_sleep)
+
+    calls = 0
+
+    async def flaky():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise core.errors.FloodWait(3600)
+        return "ok"
+
+    assert await signer._call_telegram_api("flood", flaky) == "ok"
+    assert calls == 2
+    # 第 1 次 sleep 是 FloodWait 退避，此时锁必须已释放
+    assert records[0][0] == 3600.0
+    assert records[0][1] is False
+    # 第 2 次 sleep 是限流间隔，仍在锁内等待（并发调用继续被串行化）
+    assert records[1][0] > 9
+    assert records[1][1] is True
 
 
 @pytest.mark.asyncio

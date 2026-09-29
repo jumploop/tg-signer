@@ -102,3 +102,60 @@ async def test_calculate_problem_handles_none_content(monkeypatch):
     monkeypatch.setattr(ai_tools, "get_openai_client", lambda **_kwargs: FakeClient())
     tools = AITools({"api_key": "sk-test"})
     assert await tools.calculate_problem("1+1=?") == ""
+
+
+class _FakeCompletions:
+    """把 completions.create 固定返回指定 content 的替身。"""
+
+    def __init__(self, content):
+        self._content = content
+
+    async def create(self, **_kwargs):
+        message = type("Message", (), {"content": self._content})()
+        choice = type("Choice", (), {"message": message})()
+        return type("Completion", (), {"choices": [choice]})()
+
+
+def _tools_with_content(monkeypatch, content):
+    client = type(
+        "Client",
+        (),
+        {"chat": type("Chat", (), {"completions": _FakeCompletions(content)})()},
+    )()
+    monkeypatch.setattr(ai_tools, "get_openai_client", lambda **_kwargs: client)
+    return ai_tools.AITools({"api_key": "sk-test", "model": "fake-model"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content",
+    [
+        None,  # content 为空
+        "",  # content 为空串
+        "我看不清这张图",  # 非 JSON
+        '{"reason": "随便选一个"}',  # 缺 option 字段
+        '{"option": "第一个"}',  # option 不是整数
+        "[1, 2, 3]",  # 顶层不是对象
+    ],
+)
+async def test_choose_option_by_image_returns_minus_one_on_bad_output(
+    monkeypatch, content
+):
+    """模型输出异常必须收敛成 -1,而不是把解析异常抛给签到主循环。"""
+    tools = _tools_with_content(monkeypatch, content)
+    result = await tools.choose_option_by_image(b"img", "q", [(0, "A"), (1, "B")])
+    assert result == -1
+
+
+@pytest.mark.asyncio
+async def test_choose_option_by_image_parses_option_field(monkeypatch):
+    tools = _tools_with_content(monkeypatch, '{"option": 1, "reason": "ok"}')
+    result = await tools.choose_option_by_image(b"img", "q", [(0, "A"), (1, "B")])
+    assert result == 1
+
+
+@pytest.mark.asyncio
+async def test_get_reply_returns_empty_string_when_content_missing(monkeypatch):
+    """content 为 None 时返回空串,避免把 None 传给 send_message。"""
+    tools = _tools_with_content(monkeypatch, None)
+    assert await tools.get_reply("prompt", "query") == ""
