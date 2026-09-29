@@ -1,6 +1,16 @@
 # Changelog / 版本变动日志
 
 ## 版本变动日志
+### 0.10.8
+- **fix: 日志页整页空白（v0.10.7 只修了表象）**：真正原因有两层。其一，`webui/runner.py` 为避免多个子进程的 `RotatingFileHandler` 互相截断，把任务日志写到 `<workdir>/logs/<kind>-<account>/tg-signer.log` 子目录，但 `data.list_log_files()` 用 `glob("*.log")` **不递归** —— 所有真正有内容的任务日志一个都列不出来。其二，顶层 `tg-signer.log` 靠 WebUI「运行」页启动任务时的 stdout 重定向写入，纯 CLI 签到时是 0 字节，前端默认选中逻辑正好落到它身上，页面显示「暂无日志内容」。现改为 `rglob` 递归列举 + 按「非空优先、mtime 倒序」排序，前端取第一个作为默认项；`/api/logs` 未指定 `path` 时同样回退到该最佳文件而非主日志
+- **fix: 子目录日志列得出来却读不了**：0.10.4 收紧 P1-1 任意文件读取时，`utils.resolve_within()` 只允许 `root` 的直接子项，导致 `logs/<kind>-<account>/tg-signer.log` 被 400「路径越界」拒绝。现新增 `utils.resolve_log_under()`：允许一层子目录，但强制 `.log` 后缀，越界与符号链接逃逸仍拒；`resolve_within` 本身不动（仍有其它调用方，放宽它等于把 `*.session_string` / `.openai_config.json` 重新暴露给 `?path=`）
+- WebUI 日志下拉框改为展示相对 `logs/` 的路径（如 `signer-demo/tg-signer.log`）而非纯文件名 —— 子目录日志与主日志同名，只显示文件名分不清谁是谁
+- 测试：新增 `test_list_log_files_includes_task_subdirectories`、`test_list_log_files_puts_non_empty_and_recent_first`、`test_load_logs_reads_task_log_in_one_level_subdirectory`、`test_load_logs_rejects_paths_outside_allowed_log_shape`（越深/越界/非 `.log` 三类负向）、`test_load_logs_without_path_falls_back_to_non_empty_log`、`test_logs_expose_task_logs_from_subdirectories`；`e2e/logs.mjs` 改为覆盖子目录日志场景
+- **安全修复**：WebUI 授权码爆破防护形同虚设。`require_auth()` 是全部受保护端点的依赖，但它只**检查**锁定状态、**从不记账**，`record_auth_failure()` 只挂在 `/api/auth/login` 上 —— 攻击者改打任意受保护端点携带猜测的 Bearer 即可完全绕开限流（实测 30 次错误请求无一被锁、计数存储始终为空）。现把记账移入 `require_auth()` 的错误分支，任何携带错误凭据的请求都参与「连续 5 次锁定 60 秒」计数
+- **安全修复**：锁定机制可被用于拒绝服务。失败计数是模块级全局单例，且登录端点「先锁后验」，导致锁定期内**正确的授权码同样被 429** —— 未认证者每 60 秒发 5 个错误请求（无需知道授权码）即可把合法用户永久锁在门外。现改为「先验后锁」：凭据正确直接放行（不受锁定期影响），错误才记账并触发限流；触发上限的那次请求也会直接返回 429（旧实现要等下一次请求才生效）
+- **安全加固**：授权码比较改用 `secrets.compare_digest()`（编码为 bytes 后比较，避免非 ASCII 输入触发 `TypeError`），消除字符串短路比较的时序侧信道
+- 测试语义同步：`test_auth_login_locks_out_after_max_attempts` 原本断言「锁定期内正确授权码也 429」，正是被推翻的 DoS 语义，已改写；新增 `test_protected_endpoints_record_auth_failures`（堵爆破绕过）、`test_correct_credential_is_exempt_from_lockout`（堵锁定 DoS）、`test_non_ascii_authorization_header_is_rejected_not_crash` 三条判别性用例
+
 ### 0.10.7
 - **fix: WebUI 日志页一进来就是空白**：`/api/logs/files` 按文件名升序返回，而前端取 `files[files.length - 1]` 作为默认选中项，恰好落到 `warn.log` 这类空文件上，页面直接显示「暂无日志内容」，看起来像日志功能整体失效。现改为优先选主日志 `tg-signer.log`，没有主日志时退回第一个；实测其它接口与渲染均正常，手动切换文件也能正常显示
 - 日志文件下拉框改为只显示文件名，不再展示完整绝对路径（绝对路径仍作为请求参数回传，不影响后端路径校验）

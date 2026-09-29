@@ -11,7 +11,7 @@ from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
 from tg_signer.config import AutomationConfig, BaseJSONConfig, SignConfigV3
 from tg_signer.sign_record_store import SignRecordStore
-from tg_signer.utils import resolve_under, resolve_within
+from tg_signer.utils import resolve_log_under, resolve_under
 
 ConfigKind = Literal["signer"]
 NameGenKind = Literal["signer", "automation"]
@@ -479,7 +479,25 @@ def list_log_files(log_dir: Optional[Path | str] = None) -> List[Path]:
     base = Path(log_dir) if log_dir else LOG_DIR
     if not base.is_dir():
         return []
-    return sorted(p for p in base.glob("*.log") if p.is_file())
+    # 必须递归:``webui/runner.py`` 把每个任务的子进程日志写到
+    # ``<workdir>/logs/<kind>-<account>/tg-signer.log``(每个子进程独立
+    # RotatingFileHandler,否则多个 handler 会互相截断同一个文件)。原来的
+    # ``glob("*.log")`` 只看顶层,于是所有真正有内容的任务日志都列不出来,
+    # 日志页只剩一个 0 字节的 ``tg-signer.log`` 顶着,表现为「整页空白」。
+    files = [p for p in base.rglob("*.log") if p.is_file()]
+
+    # 排序即「默认选中项」:非空的排前面,同级按 mtime 倒序,于是 ``files[0]``
+    # 就是最值得先看的那个。顶层 ``tg-signer.log`` 只有在 WebUI「运行」页启动过
+    # 任务后才有内容(靠 stdout 重定向写入),纯 CLI 签到时它是 0 字节 —— 按文件名
+    # 排序会正好把它排到中间并被选成默认值,于是页面显示「暂无日志内容」。
+    def _rank(path: Path) -> tuple:
+        try:
+            stat = path.stat()
+        except OSError:
+            return (1, 0.0, str(path))
+        return (0 if stat.st_size else 1, -stat.st_mtime, str(path))
+
+    return sorted(files, key=_rank)
 
 
 def _resolve_log_path(
@@ -490,11 +508,20 @@ def _resolve_log_path(
     前端会把 ``/api/logs/files`` 返回的绝对路径回传,所以这里不能只收文件名;
     但也不能像以前那样原样返回 —— 否则 ``?path=<任意绝对路径>`` 就是一个任意
     文件读取原语(可读到 ``*.session_string`` / ``.openai_config.json``)。
+
+    用 ``resolve_log_under`` 而非 ``resolve_within``:后者只允许直接子项,会把
+    ``logs/<kind>-<account>/tg-signer.log`` 判成越界(0.10.4 收紧 P1-1 时的连带
+    副作用),导致「文件能列出来但读不到」。``resolve_log_under`` 放宽到一层子目录
+    并强制 ``.log`` 后缀,任意文件读取面没有变大。
     """
     root = Path(log_dir) if log_dir else LOG_DIR
     if not log_path:
-        return root / DEFAULT_LOG_FILE.name
-    return resolve_within(root, log_path)
+        # 顶层 tg-signer.log 靠 stdout 重定向写入，纯 CLI 签到时是 0 字节；
+        # 直接默认到它就是「日志页整页空白」。改为回退到 list_log_files() 的
+        # 首个（非空 + 最新），没有任何日志文件时才回到主日志名。
+        files = list_log_files(root)
+        return files[0] if files else root / DEFAULT_LOG_FILE.name
+    return resolve_log_under(root, log_path)
 
 
 def load_logs(

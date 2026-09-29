@@ -1,6 +1,7 @@
 """Tests for tg_signer.webui.data module."""
 
 import json
+import os
 import re
 
 import pytest
@@ -82,6 +83,32 @@ def test_list_log_files_finds_all_logs(tmp_path):
     assert names == ["a.log", "b.log"]
 
 
+def test_list_log_files_includes_task_subdirectories(tmp_path):
+    """runner.py 把任务日志写到 logs/<kind>-<account>/ 下，非递归就全列不出来。"""
+    (tmp_path / "tg-signer.log").write_text("", encoding="utf-8")
+    sub = tmp_path / "signer-demo"
+    sub.mkdir()
+    (sub / "tg-signer.log").write_text("task output\n", encoding="utf-8")
+
+    found = data.list_log_files(tmp_path)
+    assert (sub / "tg-signer.log").resolve() in [p.resolve() for p in found]
+
+
+def test_list_log_files_puts_non_empty_and_recent_first(tmp_path):
+    """排序即默认选中项：空文件必须排在有内容的文件之后。"""
+    empty = tmp_path / "tg-signer.log"
+    empty.write_text("", encoding="utf-8")
+    older = tmp_path / "older.log"
+    older.write_text("old\n", encoding="utf-8")
+    newer = tmp_path / "newer.log"
+    newer.write_text("new\n", encoding="utf-8")
+    os.utime(older, (1000, 1000))
+    os.utime(newer, (2000, 2000))
+
+    found = data.list_log_files(tmp_path)
+    assert [p.name for p in found] == ["newer.log", "older.log", "tg-signer.log"]
+
+
 # ---------------------------------------------------------------------------
 # load_logs / _resolve_log_path：只能读 log_dir 下的文件
 # ---------------------------------------------------------------------------
@@ -109,6 +136,19 @@ def test_load_logs_defaults_to_main_log_file(tmp_path):
     assert lines[0] == "x"
 
 
+def test_load_logs_without_path_falls_back_to_non_empty_log(tmp_path):
+    """0 字节的主日志不该再是默认落点，否则日志页一进来就是「暂无日志内容」。"""
+    log_dir = tmp_path / "logs"
+    (log_dir / "signer-demo").mkdir(parents=True)
+    (log_dir / "tg-signer.log").write_text("", encoding="utf-8")
+    task_log = log_dir / "signer-demo" / "tg-signer.log"
+    task_log.write_text("task line\n", encoding="utf-8")
+
+    resolved, lines = data.load_logs(log_dir=log_dir)
+    assert resolved == task_log.resolve()
+    assert lines[0] == "task line"
+
+
 @pytest.mark.parametrize(
     "make_target",
     [
@@ -126,6 +166,36 @@ def test_load_logs_rejects_path_outside_log_dir(tmp_path, make_target):
 
     with pytest.raises(ValueError, match="路径越界"):
         data.load_logs(log_path=target, log_dir=log_dir)
+
+
+def test_load_logs_reads_task_log_in_one_level_subdirectory(tmp_path):
+    log_dir = tmp_path / "logs"
+    (log_dir / "signer-demo").mkdir(parents=True)
+    task_log = log_dir / "signer-demo" / "tg-signer.log"
+    task_log.write_text("task line\n", encoding="utf-8")
+
+    for value in ("signer-demo/tg-signer.log", str(task_log)):
+        resolved, lines = data.load_logs(limit=10, log_path=value, log_dir=log_dir)
+        assert resolved == task_log.resolve()
+        assert lines[0] == "task line"
+
+
+@pytest.mark.parametrize(
+    "relative",
+    ["signer-demo/nested/tg-signer.log", "../outside.log", "tg-signer.session_string"],
+    ids=["too-deep", "outside", "non-log-suffix"],
+)
+def test_load_logs_rejects_paths_outside_allowed_log_shape(tmp_path, relative):
+    """放宽到一层子目录后，越界/敏感文件/非 .log 仍必须被拒。"""
+    log_dir = tmp_path / "logs"
+    nested = log_dir / "signer-demo" / "nested"
+    nested.mkdir(parents=True)
+    (nested / "tg-signer.log").write_text("SECRET\n", encoding="utf-8")
+    (log_dir / "acc.session_string").write_text("SECRET\n", encoding="utf-8")
+    (tmp_path / "outside.log").write_text("SECRET\n", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        data.load_logs(log_path=log_dir / relative, log_dir=log_dir)
 
 
 # ---------------------------------------------------------------------------

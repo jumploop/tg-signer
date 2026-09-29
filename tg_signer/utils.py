@@ -302,6 +302,43 @@ def resolve_within(
     return resolved
 
 
+def resolve_log_under(
+    root: str | os.PathLike[str], path: str | os.PathLike[str]
+) -> pathlib.Path:
+    """把 ``path`` 解析为 ``root`` 下的 ``*.log``,最多允许一层子目录。
+
+    日志页需要同时支持两类路径:
+    - ``<workdir>/logs/tg-signer.log`` —— WebUI 主进程/主日志
+    - ``<workdir>/logs/<kind>-<account>/tg-signer.log`` —— 按任务隔离的子目录日志
+      (见 ``webui/runner.py``:每个子进程用独立 RotatingFileHandler,否则多个
+      handler 会互相截断同一个文件)
+
+    ``resolve_within`` 只允许直接子项,会把上面第二类全部判成「路径越界」,
+    于是子目录日志既列不出来也读不到。这里单独放宽到一层子目录,并额外要求
+    后缀是 ``.log``,而不是去动 ``resolve_within`` 本身 —— 后者还有其它调用方,
+    放宽它等于把 ``*.session_string`` / ``.openai_config.json`` 重新暴露给
+    ``?path=`` 参数。``resolve()`` 会展开符号链接,指向 root 之外的软链仍被拒。
+    """
+    raw = os.fspath(path)
+    if not raw or "\x00" in raw:
+        raise ValueError(f"路径非法: {raw!r}")
+    root_path = pathlib.Path(root).resolve()
+    candidate = pathlib.Path(raw).expanduser()
+    if candidate.is_absolute():
+        resolved = candidate.resolve()
+    else:
+        resolved = (root_path / candidate).resolve()
+    # 顶层 logs/x.log 的 parent 就是 root，子目录 logs/<kind>-<account>/x.log
+    # 的 parent 是 root 下的子目录；再深一层（parent.parent.parent）一律拒绝。
+    if resolved.parent != root_path and resolved.parent.parent != root_path:
+        raise ValueError(f"路径越界: {raw!r}")
+    # 先判越界再判后缀：workdir 根下的 *.session_string 属于越界，报「路径越界」
+    # 比报「仅允许读取 .log」更贴近真实原因。
+    if resolved.suffix.lower() != ".log":
+        raise ValueError(f"仅允许读取 .log 文件: {raw!r}")
+    return resolved
+
+
 def restrict_file_permissions(path: str | os.PathLike[str], mode: int = 0o600) -> bool:
     """把凭据文件收紧为「仅属主可读写」,返回是否实际生效。
 

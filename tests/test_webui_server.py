@@ -400,6 +400,28 @@ def test_logs_accepts_file_name_and_absolute_path_inside_log_dir(client, tmp_pat
         assert resp.json()["lines"] == ["line1", "line2"]
 
 
+def test_logs_expose_task_logs_from_subdirectories(client, tmp_path):
+    """runner.py 按 <kind>-<account> 分子目录写日志，列表与读取都必须覆盖它。
+
+    历史上 list_log_files() 用 glob 而非 rglob，且读取走只允许直接子项的
+    resolve_within()，导致任务日志既列不出来也读不到，日志页只剩一个 0 字节的
+    主日志顶着，表现为「整页空白」。
+    """
+    log_dir = tmp_path / "logs"
+    (log_dir / "signer-demo").mkdir(parents=True, exist_ok=True)
+    (log_dir / "tg-signer.log").write_text("", encoding="utf-8")
+    task_log = log_dir / "signer-demo" / "tg-signer.log"
+    task_log.write_text("task line\n", encoding="utf-8")
+
+    listed = client.get("/api/logs/files").json()["files"]
+    # 能列出来，且排在 0 字节主日志之前（前端取第一个作为默认选中项）。
+    assert listed[0] == str(task_log)
+
+    resp = client.get("/api/logs", params={"path": str(task_log)})
+    assert resp.status_code == 200, resp.json()
+    assert "task line" in resp.json()["lines"]
+
+
 _ACCOUNT_TRAVERSAL = ["../victim", "..\\victim", "..", ".", "", "a/b"]
 
 
@@ -530,19 +552,86 @@ def test_auth_login_clears_failures_under_lock(client, monkeypatch, reset_auth_s
 def test_auth_login_locks_out_after_max_attempts(
     client, monkeypatch, reset_auth_storage
 ):
-    """连续错误到上限后必须开始 429，即使随后提交正确授权码。"""
+    """连续错误到上限后，错误凭据开始 429；正确凭据不受锁定期影响。
+
+    旧版这里断言「锁定期内正确授权码也 429」—— 那正是把锁定变成
+    未认证者可用 DoS 原语（先锁后验）的语义，已在审计 P2-19 中推翻。
+    """
     monkeypatch.setenv(server.AUTH_CODE_ENV, "secret123")
-    for _ in range(server.auth_helpers.AUTH_MAX_ATTEMPTS):
+    for _ in range(server.auth_helpers.AUTH_MAX_ATTEMPTS - 1):
         resp = client.post("/api/auth/login", json={"code": "wrong"})
         assert resp.status_code == 200
         assert resp.json()["ok"] is False
 
-    locked = client.post("/api/auth/login", json={"code": "secret123"})
+    # 触发上限的那次请求直接 429（旧实现要到下一次才 429）。
+    locked = client.post("/api/auth/login", json={"code": "wrong"})
     assert locked.status_code == 429
     assert "尝试次数过多" in locked.json()["detail"]
 
-    # require_auth 也不能在锁定期间放行（即便带的是正确 Bearer）。
+    # 锁定期内：不带凭据 / 带错误凭据仍然 429。
     assert client.get("/api/state").status_code == 429
+
+    # 锁定期内：正确 Bearer 必须照常放行（先验后锁）。
+    assert (
+        client.get(
+            "/api/state", headers={"Authorization": "Bearer secret123"}
+        ).status_code
+        == 200
+    )
+
+    # 锁定期内：正确授权码登录放行，并清空失败计数解除锁定。
+    good_login = client.post("/api/auth/login", json={"code": "secret123"})
+    assert good_login.status_code == 200
+    assert good_login.json()["ok"] is True
+    assert client.get("/api/state").status_code == 401  # 锁已解除，回到未认证
+
+
+def test_protected_endpoints_record_auth_failures(
+    client, monkeypatch, reset_auth_storage
+):
+    """爆破防护必须覆盖受保护端点，而不是只有 /api/auth/login。
+
+    修复前：require_auth 只检查锁定、从不记账，攻击者改打任意受保护端点
+    携带猜测的 Bearer 即可完全绕开限流（实测 30 次错误请求无一被锁）。
+    """
+    monkeypatch.setenv(server.AUTH_CODE_ENV, "secret123")
+    attempts = server.auth_helpers.AUTH_MAX_ATTEMPTS
+    statuses = [
+        client.get(
+            "/api/state", headers={"Authorization": f"Bearer guess{i}"}
+        ).status_code
+        for i in range(attempts + 1)
+    ]
+    # 前 4 次正常 401；第 5 次（触发上限）起开始 429。
+    assert statuses[: attempts - 1] == [401] * (attempts - 1)
+    assert statuses[-2:] == [429, 429], "受保护端点上的错误凭据必须参与失败计数"
+
+
+def test_correct_credential_is_exempt_from_lockout(
+    client, monkeypatch, reset_auth_storage
+):
+    """「先验后锁」的核心承诺：正确凭据永远可用，锁定只约束错误凭据。"""
+    monkeypatch.setenv(server.AUTH_CODE_ENV, "secret123")
+    for _ in range(server.auth_helpers.AUTH_MAX_ATTEMPTS):
+        client.post("/api/auth/login", json={"code": "wrong"})
+
+    resp = client.get("/api/state", headers={"Authorization": "Bearer secret123"})
+    assert resp.status_code == 200, "正确 Bearer 不应受锁定期影响"
+
+
+def test_non_ascii_authorization_header_is_rejected_not_crash(
+    monkeypatch, reset_auth_storage
+):
+    """secrets.compare_digest 对含非 ASCII 的 str 会抛 TypeError（→ 500）。
+
+    因此比较前必须编码成 bytes：授权码本身可能包含任意字符，攻击者也可能
+    在 Authorization 头里塞非 ASCII。（httpx 客户端无法发送非 ASCII 头，
+    故直接调用 require_auth 验证服务端行为。）
+    """
+    monkeypatch.setenv(server.AUTH_CODE_ENV, "secret123")
+    with pytest.raises(server.HTTPException) as exc_info:
+        server.require_auth(authorization="Bearer 密码")
+    assert exc_info.value.status_code == 401
 
 
 def test_index_disables_cache_and_assets_are_immutable(client):

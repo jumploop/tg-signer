@@ -42,20 +42,13 @@ const autoRefresh = ref(false)
 const content = ref('')
 let timer = null
 
-const DEFAULT_LOG_NAME = 'tg-signer.log'
-
-// 下拉框展示文件名即可，完整绝对路径既长又无信息量。
+// 展示相对 logs/ 目录的路径（如 signer-demo/tg-signer.log）而不是纯文件名：
+// 子目录日志和主日志都叫 tg-signer.log，只显示文件名分不清谁是谁。
 function fileName(fullPath) {
-  const parts = String(fullPath).split(/[\\/]/)
-  return parts[parts.length - 1] || fullPath
-}
-
-// 后端按文件名升序返回，取最后一个会选中 warn.log 之类的空文件，
-// 页面一进来就是「暂无日志内容」。优先选主日志，否则退回第一个。
-function pickDefault(list) {
-  const primary = list.find((f) => fileName(f) === DEFAULT_LOG_NAME)
-  if (primary) return primary
-  return list[0]
+  const parts = String(fullPath).split(/[\\/]/).filter(Boolean)
+  const idx = parts.lastIndexOf('logs')
+  const tail = idx >= 0 ? parts.slice(idx + 1) : parts.slice(-1)
+  return tail.join('/') || fullPath
 }
 
 async function refreshFiles() {
@@ -63,7 +56,8 @@ async function refreshFiles() {
     const { data } = await api.get('/api/logs/files')
     files.value = asArray(data.files)
     if (!selected.value && files.value.length) {
-      selected.value = pickDefault(files.value)
+      // 后端已把「非空 + 最新」排在最前，第一个就是最值得先看的日志。
+      selected.value = files.value[0]
     }
   } catch {
     files.value = []
@@ -96,8 +90,9 @@ watch(autoRefresh, (value) => {
   if (value) timer = setInterval(refresh, 5000)
 })
 onMounted(() => {
-  refreshFiles()
-  refresh()
+  // 必须串行：refreshFiles 结束后 watch([selected]) 会触发一次 refresh，
+  // 若并发调用会多打一次请求，且首次内容可能来自尚未加载完的默认路径。
+  refreshFiles().then(refresh)
 })
 onUnmounted(() => clearInterval(timer))
 </script>

@@ -37,7 +37,8 @@ summary: 发现 6 项 P1、15 项 P2；其中 4 项 P1 已在 HTTP 层实证复�
 > **第七轮为新审计，非修复**（§13）：补齐历轮未覆盖的**前端源码 / 认证实现 / 部署配置**
 > 三块，新发现 **3 项 P2、2 项 P3**（P2-18 爆破防护形同虚设、P2-19 锁定可被用于 DoS、
 > P2-20 docker 以 root 运行且 compose 引用不存在的 `start.sh`、P3-9 非常量时间比较、
-> P3-10 令牌即授权码）。均为可执行实证。**尚未修复**，修复方向见 §13.8。
+> P3-10 令牌即授权码）。均为可执行实证。其中 **P2-18 / P2-19 / P3-9 已在第八轮修复**（§14），
+> P2-20 与 P3-10 按用户决定暂不动。
 
 ## 0. 结论摘要
 
@@ -1093,3 +1094,79 @@ with _auth_storage_lock:
 
 是否需要进一步按来源 IP 分桶（`request.client.host`）取决于 WebUI 的暴露范围：
 回环/单用户场景下当前单例计数配合「先验后锁」已足够。
+
+---
+
+## 14. 修复记录（第八轮：P2-18 / P2-19 / P3-9）
+
+按用户选择修复认证两项 + 常量时间比较；P2-20（docker）与 P3-10（令牌存储）按用户决定暂不动。
+
+### 14.1 改动
+
+全部集中在 `server.py` 的两个函数，思路即 §13.8 的「先验后锁」：
+
+| 函数 | 旧实现 | 新实现 |
+| --- | --- | --- |
+| `require_auth()` | 先查锁定 → 再 `!=` 比较；**从不记账** | 先 `secrets.compare_digest` 比较 → 正确**直接放行**；错误才 `record_auth_failure()`，随后查锁定 |
+| `auth_login()` | 先查锁定 → 再 `==` 比较；正确则清计数 | 先比较（`compare_digest`）→ 正确**即使在锁定期内也放行**并清计数；错误才记账并查锁定 |
+
+- 记账移入 `require_auth()` 的错误分支后，**任何**携带错误凭据的请求都参与计数，
+  堵住 P2-18 的绕过路径（不再只有 `/api/auth/login` 一处记账）。
+- 正确凭据在两个入口都**先于**锁定检查返回，锁定期只约束错误凭据，
+  消除 P2-19 对合法用户的 DoS。
+- 比较前把两侧都 `encode("utf-8")`：`secrets.compare_digest` 对含非 ASCII 的 `str`
+  会抛 `TypeError`（→ 500），bytes 比较无此限制，顺带解决 P3-9。
+
+### 14.2 一个语义变化：触发上限的那次请求直接 429
+
+旧实现里，第 5 次错误请求返回正常响应（`200 {"ok": false}` / 401），锁定从**下一次**
+请求才开始生效。新实现在记账后发现已触发上限，当场返回 429 —— 对攻击者与
+连续输错的用户都更明确（直接告知「请 60 秒后再试」，而不是再收一次「授权码错误」）。
+已有测试的相应断言随语义更新（见 §14.3）。
+
+### 14.3 一条旧测试钉住的正是缺陷语义（重要）
+
+`test_auth_login_locks_out_after_max_attempts` 的旧断言是：
+
+```python
+locked = client.post("/api/auth/login", json={"code": "secret123"})
+assert locked.status_code == 429          # ← 正确授权码也被拒
+...
+assert client.get("/api/state").status_code == 429   # ← 正确 Bearer 也被拒
+```
+
+这正是 P2-19 指认的 DoS 语义 —— **缺陷不仅存在于实现，还被测试有意钉住了**。
+本轮把该测试改写为断言新语义（锁定期内错误凭据 429、正确 Bearer 放行、
+正确授权码登录放行并解除锁定），并在 docstring 里记下这段演变原因。
+
+### 14.4 判别性测试与 A/B 实证
+
+新增 3 条（`tests/test_webui_server.py`），并做修复前 → 修复后对照（只还原
+`server.py`、保留新测试）：
+
+| 用例 | 修复前（旧 `server.py`） | 修复后 |
+| --- | --- | --- |
+| `test_protected_endpoints_record_auth_failures` | **FAILED**（30 次错误 Bearer 无一被锁） | PASS |
+| `test_correct_credential_is_exempt_from_lockout` | （未跑到，`-x` 停在前一条；旧实现下该场景为 429） | PASS |
+| `test_non_ascii_authorization_header_is_rejected_not_crash` | —（守护新实现：`compare_digest` 必须以 bytes 比较） | PASS |
+
+另有 2 条实现说明：
+
+- 非 ASCII 用例**不能**走 TestClient —— httpx 客户端在构造请求时就抛
+  `UnicodeEncodeError`，根本发不出去。改为直接调用 `require_auth(authorization="Bearer 密码")`
+  断言抛 `HTTPException(401)`，更精准地覆盖服务端比较路径。
+- `test_correct_credential_is_exempt_from_lockout` 与「触发即 429」的语义变化无关，
+  它钉的是 P2-19 的核心承诺：**正确凭据永远可用**。
+
+### 14.5 门禁与测试
+
+- `ruff check .` 全绿；`ruff format --check .` 全绿。
+- 定向：`tests/test_webui_server.py -k "auth or credential or ascii"` → **9 passed**。
+- 本轮未重建前端产物（`server.py` 无模板/文案变化，`static/` 不受影响）。
+
+### 14.6 本轮交付物
+
+- 源码：`tg_signer/webui/server.py`（`require_auth` / `auth_login` 重写 + `import secrets`）。
+- 测试：`tests/test_webui_server.py` 改写 1 条 + 新增 3 条。
+- 文档：`CHANGELOG.md` 新增 `0.10.8` 段。
+- 未处理：P2-20（docker 部署）、P3-10（令牌即授权码）—— 按用户决定暂不动。

@@ -13,6 +13,7 @@ import asyncio
 import copy
 import os
 import pathlib
+import secrets
 import threading
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
@@ -154,15 +155,24 @@ def require_auth(
     expected = _expected_auth_code()
     if not expected:
         return
+    # 「先验后锁」：凭据正确直接放行，不受锁定期影响；错误才记账并触发限流。
+    # 旧实现是「先锁后验」，结果锁定期内正确授权码同样被 429 —— 锁定因此成了
+    # 未认证者可用的 DoS 原语（5 次错误请求即可把合法用户锁在门外整整一分钟）。
+    # 同时记账必须发生在【任何】携带错误凭据的请求上：它原来只挂在 /api/auth/login，
+    # 攻击者改打任意受保护端点携带猜测的 Bearer 就能完全绕开限流。
     with _auth_storage_lock:
+        provided = (authorization or "").encode("utf-8")
+        wanted = f"Bearer {expected}".encode("utf-8")
+        if secrets.compare_digest(provided, wanted):
+            return
+        auth_helpers.record_auth_failure(_auth_storage)
         if auth_helpers.is_auth_locked(_auth_storage):
             remaining = auth_helpers.auth_lock_remaining(_auth_storage)
             raise HTTPException(
                 status_code=429,
                 detail=f"尝试次数过多，请 {remaining:.0f} 秒后再试",
             )
-        if authorization != f"Bearer {expected}":
-            raise _challenge()
+        raise _challenge()
 
 
 @asynccontextmanager
@@ -608,15 +618,17 @@ def auth_login(body: AuthBody) -> Dict[str, Any]:
     # 判断与记录必须在同一把锁里,否则「第 5 次失败」会被并发请求拆成多次
     # 「还差几次」,锁定永远触发不了。
     with _auth_storage_lock:
+        # 「先比后锁」：正确授权码即使在锁定期内也放行（并清空计数），
+        # 否则未认证者可以用 5 次错误请求把合法用户锁在门外。
+        if secrets.compare_digest(body.code.encode("utf-8"), expected.encode("utf-8")):
+            auth_helpers.clear_auth_failures(_auth_storage)
+            return {"ok": True, "message": "登录成功"}
+        auth_helpers.record_auth_failure(_auth_storage)
         if auth_helpers.is_auth_locked(_auth_storage):
             remaining = auth_helpers.auth_lock_remaining(_auth_storage)
             raise HTTPException(
                 status_code=429, detail=f"尝试次数过多，请 {remaining:.0f} 秒后再试"
             )
-        if body.code == expected:
-            auth_helpers.clear_auth_failures(_auth_storage)
-            return {"ok": True, "message": "登录成功"}
-        auth_helpers.record_auth_failure(_auth_storage)
     return {"ok": False, "message": "授权码错误"}
 
 
