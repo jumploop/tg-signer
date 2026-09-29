@@ -11,7 +11,7 @@
     </div>
     <div class="logs-controls">
       <el-select v-model="selected" placeholder="选择日志文件" class="log-file-select">
-        <el-option v-for="file in files" :key="file" :label="file" :value="file" />
+        <el-option v-for="file in files" :key="file" :label="fileName(file)" :value="file" />
       </el-select>
       <el-input-number v-model="limit" :min="50" :max="2000" :step="50" />
       <el-switch v-model="autoRefresh" active-text="自动刷新(5s)" />
@@ -42,12 +42,28 @@ const autoRefresh = ref(false)
 const content = ref('')
 let timer = null
 
+const DEFAULT_LOG_NAME = 'tg-signer.log'
+
+// 下拉框展示文件名即可，完整绝对路径既长又无信息量。
+function fileName(fullPath) {
+  const parts = String(fullPath).split(/[\\/]/)
+  return parts[parts.length - 1] || fullPath
+}
+
+// 后端按文件名升序返回，取最后一个会选中 warn.log 之类的空文件，
+// 页面一进来就是「暂无日志内容」。优先选主日志，否则退回第一个。
+function pickDefault(list) {
+  const primary = list.find((f) => fileName(f) === DEFAULT_LOG_NAME)
+  if (primary) return primary
+  return list[0]
+}
+
 async function refreshFiles() {
   try {
     const { data } = await api.get('/api/logs/files')
     files.value = asArray(data.files)
     if (!selected.value && files.value.length) {
-      selected.value = files.value[files.value.length - 1]
+      selected.value = pickDefault(files.value)
     }
   } catch {
     files.value = []

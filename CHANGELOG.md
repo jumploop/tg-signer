@@ -1,6 +1,11 @@
 # Changelog / 版本变动日志
 
 ## 版本变动日志
+### 0.10.7
+- **fix: WebUI 日志页一进来就是空白**：`/api/logs/files` 按文件名升序返回，而前端取 `files[files.length - 1]` 作为默认选中项，恰好落到 `warn.log` 这类空文件上，页面直接显示「暂无日志内容」，看起来像日志功能整体失效。现改为优先选主日志 `tg-signer.log`，没有主日志时退回第一个；实测其它接口与渲染均正常，手动切换文件也能正常显示
+- 日志文件下拉框改为只显示文件名，不再展示完整绝对路径（绝对路径仍作为请求参数回传，不影响后端路径校验）
+- 新增浏览器回归测试 `e2e/logs.mjs`，接入 `npm run test:e2e` 与 CI 的 e2e job
+
 ### 0.10.6
 - **fix: WebUI 升级后整页白屏**：`/` 与 `/assets/*` 此前都没有 `Cache-Control`，浏览器按 `Last-Modified` 做启发式缓存。Vite 每次构建按内容 hash 重命名 chunk（例如 `Configs-D3OhaQpj.js` -> `Configs-DeKRQTYv.js`），被缓存的旧 `index.html` 仍指向升级后已删除的 chunk，入口 JS 404 导致整页白屏。现 `index.html` 发 `Cache-Control: no-cache, must-revalidate` 强制回源校验，带 hash 的 chunk 发 `public, max-age=31536000, immutable` 长期缓存
 - 新增回归测试 `test_index_disables_cache_and_assets_are_immutable` 锁定上述两条缓存头
