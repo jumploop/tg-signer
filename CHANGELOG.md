@@ -23,6 +23,7 @@
 - **健壮性修复**：`sign_once` 闭包捕获外层循环的 `now`，跨轮次会串值；`_validate_sign_at()` 返回 `Optional[str]`，非法时会把 `None` 传进 `croniter` 抛 `TypeError`（且不在被捕获集合内）。现 `sign_at` 提前求值并在不可用时明确报错，`now` 改为参数传入
 - **健壮性修复**：WebUI 多处模块级可变状态被 FastAPI 线程池并发读写。`runner.py` 的进程 / 锁 / 任务名字典、`server.py` 的鉴权失败计数、`data.py` 的 logger 配置、`account.py` 的登录会话注册表现已各自加锁；其中鉴权「判断锁定 + 记一次失败」收进同一把锁，此前读-改-写分离可被并发绕过「连续 5 次锁定 60 秒」
 - **健壮性修复**：子进程日志路径不一致。此前只传 `--log-dir`，子进程按 CLI 的默认相对 `--log-file` 另建 `logs/`，且多个子进程的 `RotatingFileHandler` 并发轮转同一 `warn.log` / `error.log` 会互相截断。现显式传 `--log-file <workdir>/logs/<kind>-<account>/tg-signer.log`，每个子进程独立目录
+- **健壮性修复**：`data.sqlite3` 每次读写都漏关连接。`sqlite3.Connection` 的上下文管理器只提交/回滚事务、**不关闭连接**，而被沿用的 7 处 `with self._connect() as conn:` 都依赖它收尾，连接只能等 gc 兜底才释放（实测 30 次 `upsert_record()` 后仍有 30 个连接存活，`gc.collect()` 才归零）。单次调用看不出问题，多账号并发时会同时压着大量已打开的库与 WAL / `-shm` 句柄。现新增 `SignRecordStore._connection()` 把「事务 + 关闭」收敛为唯一入口（`finally: conn.close()`，事务语义与原先一致；`_connect()` 本身行为不变，仍返回裸连接），7 处调用点一并切换
 ### 0.10.3
 - WebUI「群组/频道 → 复制到配置」改为优先写入群组/频道的数字 ID（此前固定写 `@username`），仅在拿不到 ID 时才退回用户名
 - 修复 Automation 规则的 `chat_id` 为数字字符串时规则永不触发且不报错：`_match_chat` / `_normalize_user_id` 只对 `int` 做数字比较，字符串会落进 `@username` 分支。新增 `normalize_chat_ref()` 归一化纯数字字符串为 `int`（`@username` 保持字符串），并在 `MessageTriggerParams` / `TimerTriggerParams` / `StartupTriggerParams` / `FilterConfig` 上通过 `ChatRefsMixin` 于解析阶段统一处理

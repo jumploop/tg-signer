@@ -218,3 +218,89 @@ def test_wal_switch_failure_is_tolerated(monkeypatch):
                 raise sqlite3.OperationalError("database is locked")
 
     SignRecordStore._enable_wal(FakeConn())
+
+
+# ---------------------------------------------------------------------------
+# 连接生命周期:必须显式关闭,不能等 gc 兜底
+# ---------------------------------------------------------------------------
+
+
+def _track_connections(monkeypatch) -> list[sqlite3.Connection]:
+    """记录 `_connect()` 实际交付给调用方的连接,事后可检查其是否已关闭。"""
+    opened: list[sqlite3.Connection] = []
+    original = SignRecordStore._connect
+
+    def tracking_connect(self):
+        conn = original(self)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(SignRecordStore, "_connect", tracking_connect)
+    return opened
+
+
+def _assert_all_closed(connections: list[sqlite3.Connection]) -> None:
+    # sqlite3.Connection 没有 `closed` 属性,关闭后执行 SQL 抛
+    # ProgrammingError 是唯一可靠的探针。
+    for conn in connections:
+        with pytest.raises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
+
+
+def test_public_methods_close_their_connections(tmp_path, monkeypatch):
+    """每个公开方法用完都要关闭连接。
+
+    判别性:`with self._connect() as conn` 只提交/回滚事务、**不关闭连接**,
+    旧实现下这些连接此刻仍可执行 SQL,`_assert_all_closed` 会整体失败。
+    8 个线程 x 200 轮时,漏关会让进程同时压着大量库与 WAL/-shm 句柄。
+    """
+    store = SignRecordStore(tmp_path / ".signer")
+    opened = _track_connections(monkeypatch)
+
+    store.upsert_record("t", "u", "2026-09-01", "2026-09-01T06:00:00+08:00")
+    store.has_records("t", "u")
+    store.load_records("t", "u")
+    store.list_record_groups()
+    store.list_recent_records(limit=5)
+
+    assert len(opened) == 5
+    _assert_all_closed(opened)
+
+
+def test_migration_paths_close_their_connections(tmp_path, monkeypatch):
+    """带显式 commit 的迁移路径同样要关闭连接。"""
+    workdir = tmp_path / ".signer"
+    record_file = workdir / "signs" / "linuxdo" / "sign_record.json"
+    record_file.parent.mkdir(parents=True, exist_ok=True)
+    record_file.write_text(
+        json.dumps({"2026-03-17": "2026-03-17T06:00:00+08:00"}), encoding="utf-8"
+    )
+
+    store = SignRecordStore(workdir)
+    opened = _track_connections(monkeypatch)
+
+    assert store.import_json_file("linuxdo", "123456", record_file) == 1
+    assert store.migrate_all_json_records(legacy_user_id="123456").migrated_records == 1
+
+    assert len(opened) == 2
+    _assert_all_closed(opened)
+
+
+def test_connection_is_closed_even_when_the_body_raises(tmp_path, monkeypatch):
+    """方法体抛异常时连接也要关闭(finally 语义),否则失败路径会漏句柄。
+
+    判别性:只在正常出口关闭的实现会在这里留下未关闭的连接。
+    """
+    store = SignRecordStore(tmp_path / ".signer")
+    opened = _track_connections(monkeypatch)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(SignRecordStore, "_upsert_records", boom)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        store.upsert_record("t", "u", "2026-09-01", "2026-09-01T06:00:00+08:00")
+
+    assert len(opened) == 1
+    _assert_all_closed(opened)

@@ -1,8 +1,9 @@
+import contextlib
 import json
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Iterator, Optional
 
 
 @dataclass
@@ -52,6 +53,24 @@ class SignRecordStore:
         self._enable_wal(conn)
         self._ensure_schema(conn)
         return conn
+
+    @contextlib.contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        """打开一个用完即关的连接,事务语义与 `with conn` 一致。
+
+        `with sqlite3.connect(...) as conn` 只提交/回滚事务,**不关闭连接**。
+        所有调用点过去都写成 `with self._connect() as conn:`,于是每个连接
+        都要等 gc 兜底才释放:实测 30 次 upsert 后仍有 30 个连接存活。单次
+        调用看不出问题,但 8 个线程 x 200 轮时会同时压着大量已打开的库与
+        WAL/-shm 句柄。这里把「事务 + 关闭」收敛成唯一入口,调用点不再重复
+        承担关闭责任。
+        """
+        conn = self._connect()
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     @staticmethod
     def _enable_wal(conn: sqlite3.Connection) -> None:
@@ -166,7 +185,7 @@ class SignRecordStore:
         account: str | None = None,
         source: str = "runtime",
     ) -> None:
-        with self._connect() as conn:
+        with self._connection() as conn:
             self._upsert_records(
                 conn,
                 task_name,
@@ -178,7 +197,7 @@ class SignRecordStore:
             conn.commit()
 
     def has_records(self, task_name: str, user_id: str) -> bool:
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 """
                 SELECT 1
@@ -191,7 +210,7 @@ class SignRecordStore:
         return row is not None
 
     def load_records(self, task_name: str, user_id: str) -> dict[str, str]:
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 """
                 SELECT sign_date, signed_at
@@ -204,7 +223,7 @@ class SignRecordStore:
         return {row["sign_date"]: row["signed_at"] for row in rows}
 
     def list_record_groups(self) -> list[SignRecordGroup]:
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 """
                 SELECT task_name, user_id, sign_date, signed_at
@@ -248,7 +267,7 @@ class SignRecordStore:
         query.append("LIMIT ?")
         params.append(limit)
 
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute("\n".join(query), params).fetchall()
 
         return [
@@ -287,7 +306,7 @@ class SignRecordStore:
         records = self.load_json_records(path)
         if not records:
             return 0
-        with self._connect() as conn:
+        with self._connection() as conn:
             count = self._upsert_records(
                 conn,
                 task_name,
@@ -311,7 +330,7 @@ class SignRecordStore:
         if not signs_dir.is_dir():
             return summary
 
-        with self._connect() as conn:
+        with self._connection() as conn:
             for path in sorted(signs_dir.rglob("sign_record.json")):
                 resolved = self.resolve_record_target(
                     path, legacy_user_id=legacy_user_id
