@@ -6,7 +6,7 @@ import re
 from collections import OrderedDict, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Union
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple, Union
 
 from croniter import CroniterBadCronError, croniter
 from pyrogram import filters
@@ -36,6 +36,17 @@ from .handlers import (
 from .models import AutomationContext, Event, RuleStateStore
 
 logger = logging.getLogger("tg-signer")
+
+# 引擎实际驱动了哪些触发器类型。config 的 `TriggerConfig` 是 discriminated union，
+# 未知 type 在解析阶段就会被拒；但如果 config 那边新增了类型而这里没跟上，就会变成
+# 「配置合法、规则却永不触发」的静默失效。两边清单的一致性由
+# tests/test_automation_engine.py::test_engine_drives_every_declared_trigger_type 兜住。
+STARTUP_TRIGGER_TYPE = "startup"
+TIMER_TRIGGER_TYPE = "timer"
+MESSAGE_TRIGGER_TYPE = "message"
+SUPPORTED_TRIGGER_TYPES = frozenset(
+    {STARTUP_TRIGGER_TYPE, TIMER_TRIGGER_TYPE, MESSAGE_TRIGGER_TYPE}
+)
 
 
 class UserAutomation(BaseUserWorker[AutomationConfig]):
@@ -192,7 +203,7 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         startup_tasks = [
             asyncio.create_task(self.run_startup(rule))
             for rule in cfg.rules
-            if rule.enabled and self._has_trigger(rule, "startup")
+            if rule.enabled and self._has_trigger(rule, STARTUP_TRIGGER_TYPE)
         ]
         self.log(f"startup 任务数: {len(startup_tasks)}", level="DEBUG")
         # timer trigger 统一由轮询调度循环驱动。
@@ -210,6 +221,19 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         return any(trigger.type == trigger_type for trigger in rule.triggers)
 
     @staticmethod
+    def _iter_triggers(
+        rule: RuleConfig, trigger_type: str
+    ) -> Iterator[Tuple[int, TriggerConfig]]:
+        """按类型取出规则下的触发器，连同下标一起给出（`_trigger_id` 需要它）。
+
+        三条驱动路径都必须按类型筛选，收敛到这一处，避免每个循环各写一遍
+        `trigger.type != "..."` 而漏掉某个分支。
+        """
+        for index, trigger in enumerate(rule.triggers):
+            if trigger.type == trigger_type:
+                yield index, trigger
+
+    @staticmethod
     def _log_task_failure(task: asyncio.Task) -> None:
         """记录后台任务异常退出。
 
@@ -223,9 +247,7 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             logger.error("后台任务异常退出: %s", exc, exc_info=exc)
 
     async def run_startup(self, rule: RuleConfig) -> None:
-        for index, trigger in enumerate(rule.triggers):
-            if trigger.type != "startup":
-                continue
+        for index, trigger in self._iter_triggers(rule, STARTUP_TRIGGER_TYPE):
             trigger_params = trigger.params
             trigger_id = self._trigger_id(rule, trigger, index)
             self.log(
@@ -266,11 +288,8 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         for rule in cfg.rules:
             if not rule.enabled:
                 continue
-            for index, trigger in enumerate(rule.triggers):
-                if trigger.type != "timer":
-                    continue
-                timer_trigger = trigger
-                trigger_id = self._trigger_id(rule, trigger, index)
+            for index, timer_trigger in self._iter_triggers(rule, TIMER_TRIGGER_TYPE):
+                trigger_id = self._trigger_id(rule, timer_trigger, index)
                 next_run = self.state.get_trigger_next_run(rule.id, trigger_id)
                 if next_run is None:
                     # 首次见到该 trigger，计算并写入 next_run_at。
@@ -329,9 +348,7 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         for rule in cfg.rules:
             if not rule.enabled:
                 continue
-            for index, trigger in enumerate(rule.triggers):
-                if trigger.type != "message":
-                    continue
+            for index, trigger in self._iter_triggers(rule, MESSAGE_TRIGGER_TYPE):
                 if not self._match_message_trigger(trigger, message):
                     continue
                 if rule.filters and not self._match_filter(rule.filters, message):

@@ -5,11 +5,18 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from typing import get_args
 
 import pytest
 from pydantic import ValidationError
 
-from tg_signer.automation.engine import UserAutomation
+from tg_signer.automation.engine import (
+    MESSAGE_TRIGGER_TYPE,
+    STARTUP_TRIGGER_TYPE,
+    SUPPORTED_TRIGGER_TYPES,
+    TIMER_TRIGGER_TYPE,
+    UserAutomation,
+)
 from tg_signer.automation.handlers import register_builtin_handlers
 from tg_signer.automation.models import RuleStateStore
 from tg_signer.config import (
@@ -19,6 +26,7 @@ from tg_signer.config import (
     MessageTriggerConfig,
     RuleConfig,
     TimerTriggerConfig,
+    TriggerConfig,
 )
 
 
@@ -444,3 +452,51 @@ def test_trigger_rejects_legacy_flatten_fields():
                 "handlers": [{"handler": "send_text", "params": {"text": "ok"}}],
             }
         )
+
+
+# ---------------------------------------------------------------------------
+# 触发器类型清单：引擎与 config 必须一一对应
+# ---------------------------------------------------------------------------
+
+
+def test_engine_drives_every_declared_trigger_type():
+    """引擎支持的触发器类型必须与 config 声明的完全一致。
+
+    判别性：`TriggerConfig` 是 discriminated union，未知 type 在解析阶段就会被
+    拒（不会静默忽略）。真正的隐患是清单漂移 —— 只改 config 会变成「配置合法、
+    规则永不触发」，只改引擎则是死代码。任何一侧漏改，这条就会失败。
+    """
+    declared = set()
+    for trigger_cls in get_args(get_args(TriggerConfig)[0]):
+        declared |= set(get_args(trigger_cls.model_fields["type"].annotation))
+
+    assert declared == set(SUPPORTED_TRIGGER_TYPES)
+
+
+def test_iter_triggers_filter_by_type_keeps_the_original_index(tmp_path):
+    """按类型取触发器时必须保留原下标，否则 trigger_id 会漂移。
+
+    trigger_id 参与 state.json 里 next_run/last_run 的键，漂移会让已排期的
+    timer 规则全部错位。
+    """
+    worker = make_worker(tmp_path)
+    rule = RuleConfig(
+        id="r1",
+        triggers=[
+            MessageTriggerConfig(type="message", params={"chat_id": 1}),
+            TimerTriggerConfig(
+                type="timer", params={"chat_id": 2, "interval_seconds": 60}
+            ),
+            MessageTriggerConfig(type="message", params={"chat_id": 3}),
+        ],
+        handlers=[HandlerConfig(handler="send_text", params={"text": "hi"})],
+    )
+
+    message_indexes = [i for i, _t in worker._iter_triggers(rule, MESSAGE_TRIGGER_TYPE)]
+    assert message_indexes == [0, 2]
+
+    timer_pairs = list(worker._iter_triggers(rule, TIMER_TRIGGER_TYPE))
+    assert [i for i, _t in timer_pairs] == [1]
+    assert timer_pairs[0][1].params.chat_id == 2
+
+    assert list(worker._iter_triggers(rule, STARTUP_TRIGGER_TYPE)) == []

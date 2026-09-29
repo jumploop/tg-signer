@@ -249,7 +249,7 @@ def list_configs(kind: str, _: None = Depends(require_auth)) -> Dict[str, List[s
     if kind == "automation":
         # 只提供任务名列表供「任务运行」页选择;automation 配置编辑仍走 CLI。
         return {"names": data_mod.list_automation_names(state.workdir)}
-    if kind not in data_mod.CONFIG_META:
+    if not data_mod.uses_dir_layout(kind):
         raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")
     return {"names": data_mod.list_task_names(kind, state.workdir)}
 
@@ -272,7 +272,7 @@ def config_suggest_name(
     _: None = Depends(require_auth),
 ) -> Dict[str, str]:
     """为「群组/频道 → 复制到配置」生成一个未被占用的默认配置名。"""
-    if kind not in data_mod.NAME_PREFIXES:
+    if kind not in data_mod.CONFIG_KINDS:
         raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")
     chat = {"id": chat_id, "title": title, "username": username}
     return {"name": data_mod.generate_random_config_name(kind, chat, state.workdir)}
@@ -284,7 +284,7 @@ def get_config(kind: str, name: str, _: None = Depends(require_auth)) -> Dict[st
         if kind == "automation":
             entry = data_mod.load_automation_config(name, workdir=state.workdir)
         else:
-            if kind not in data_mod.CONFIG_META:
+            if not data_mod.uses_dir_layout(kind):
                 raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")
             entry = data_mod.load_config(kind, name, workdir=state.workdir)
     except HTTPException:
@@ -308,7 +308,7 @@ def save_config(
             data_mod.save_automation_config(name, payload, workdir=state.workdir)
             entry = data_mod.load_automation_config(name, workdir=state.workdir)
         else:
-            if kind not in data_mod.CONFIG_META:
+            if not data_mod.uses_dir_layout(kind):
                 raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")
             data_mod.save_config(kind, name, payload, workdir=state.workdir)
             entry = data_mod.load_config(kind, name, workdir=state.workdir)
@@ -327,7 +327,7 @@ def delete_config(
         if kind == "automation":
             data_mod.delete_automation_config(name, workdir=state.workdir)
         else:
-            if kind not in data_mod.CONFIG_META:
+            if not data_mod.uses_dir_layout(kind):
                 raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")
             data_mod.delete_config(kind, name, workdir=state.workdir)
     except HTTPException:

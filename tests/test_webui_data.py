@@ -5,6 +5,7 @@ import re
 
 import pytest
 
+from tg_signer.config import AutomationConfig, SignConfigV3
 from tg_signer.webui import data
 
 
@@ -12,6 +13,59 @@ def test_log_file_name_matches_runner():
     # 与 tg_signer.webui.runner.DEFAULT_LOG_FILE_NAME 一致
     assert data.LOG_FILE_NAME == "tg-signer.log"
     assert data.DEFAULT_LOG_FILE.name == data.LOG_FILE_NAME
+
+
+# ---------------------------------------------------------------------------
+# 配置类型元数据：一张表管全部
+# ---------------------------------------------------------------------------
+
+
+def test_config_kinds_covers_every_kind_name_can_generate():
+    """凡是能自动命名的 kind 都必须在表里有条目。
+
+    判别性：以前目录名/配置类在 `CONFIG_META`、随机名前缀在 `NAME_PREFIXES`，
+    `automation` 只存在于后者；两张表漏一张就是运行期 KeyError。
+    """
+    from typing import get_args
+
+    for kind in get_args(data.NameGenKind):
+        assert kind in data.CONFIG_KINDS, f"{kind} 缺少元数据条目"
+        assert data.CONFIG_KINDS[kind].name_prefix
+
+
+def test_only_signer_kind_has_a_signs_directory(tmp_path):
+    assert data.CONFIG_KINDS["signer"].dir_name == "signs"
+    assert data.CONFIG_KINDS["signer"].cfg_cls is SignConfigV3
+    assert data.CONFIG_KINDS["automation"].dir_name is None
+    assert data.CONFIG_KINDS["automation"].cfg_cls is AutomationConfig
+
+
+def test_config_root_rejects_kinds_without_a_directory(tmp_path):
+    """没有目录布局的 kind 走 `_config_root` 必须显式报错，不能静默拼出错误路径。"""
+    assert data._config_root("signer", tmp_path) == tmp_path / "signs"
+    with pytest.raises(ValueError, match="automation"):
+        data._config_root("automation", tmp_path)
+
+
+def test_uses_dir_layout_excludes_automation():
+    """目录守卫不能退化成成员判断。
+
+    这是合并两张表时最容易踩的坑：`automation` 现在也在 `CONFIG_KINDS` 里，
+    若守卫写成成员判断，就会把它放行到一个并不存在的 `signs/` 目录上
+    （`server.py` 的 4 处「不支持的配置类型」守卫依赖这个区分）。
+    """
+    assert data.uses_dir_layout("signer") is True
+    assert data.uses_dir_layout("automation") is False
+    assert data.uses_dir_layout("unknown") is False
+
+
+def test_generated_name_prefix_comes_from_the_shared_table(tmp_path):
+    assert data.generate_random_config_name("signer", workdir=tmp_path).startswith(
+        data.CONFIG_KINDS["signer"].name_prefix + "_"
+    )
+    assert data.generate_random_config_name("automation", workdir=tmp_path).startswith(
+        data.CONFIG_KINDS["automation"].name_prefix + "_"
+    )
 
 
 def test_list_log_files_returns_empty_when_dir_missing(tmp_path):

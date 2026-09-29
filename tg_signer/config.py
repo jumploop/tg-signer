@@ -151,18 +151,62 @@ class BaseJSONConfig(BaseModel):
         return instance, None
 
     def to_jsonable(self):
-        return self.model_dump(mode="json")
+        # `version` 是 ClassVar，不参与 `model_dump`。不显式补进去的话，磁盘上的
+        # 配置永远没有版本号，读取端也就无从按版本分发 —— 校验失败时只能报当前
+        # 版本的字段错误（一份缺 sign_text 的 V1 配置会被告知「缺 chats」）。
+        # 读取端对未知键是忽略的（pydantic 默认 extra="ignore"），所以让老版本
+        # 去读新配置也不受影响。
+        return {"version": self.version, **self.model_dump(mode="json")}
 
     @classmethod
     def to_current(cls, obj: Self):
         return obj
 
     @classmethod
+    def _known_versions(cls) -> Dict[Union[str, int], Type["BaseJSONConfig"]]:
+        """`cls` 及其所有祖先的 `{version: 类}` 映射。"""
+        found: Dict[Union[str, int], Type["BaseJSONConfig"]] = {}
+        stack: List[Type["BaseJSONConfig"]] = [cls]
+        seen: set[Type["BaseJSONConfig"]] = set()
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            found.setdefault(current.version, current)
+            stack.extend(current.olds or [])
+        return found
+
+    @classmethod
+    def _declared_version_error(cls, d: dict, declared) -> Optional[str]:
+        """优先报「配置自己声明的那个版本」的字段错误。"""
+        target = cls._known_versions().get(declared)
+        if target is None or target is cls:
+            return None
+        _instance, target_err = target._validate(d)
+        return target_err
+
+    @classmethod
     def load_checked(cls, d: dict) -> Tuple[Optional[Self], bool, Optional[str]]:
-        """与 load() 相同，但额外返回校验失败原因，供界面展示字段明细。"""
-        instance, err = cls._validate(d)
-        if instance is not None:
-            return instance, False, None
+        """与 load() 相同，但额外返回校验失败原因，供界面展示字段明细。
+
+        配置若声明了 `version`，就以它为分发依据；未声明时维持原来的「先试当前
+        版本，再沿 olds 链回溯」。
+        """
+        declared = d.get("version") if isinstance(d, dict) else None
+        # 声明了版本且不是自己 → 先不试自己。否则在「字段恰好都兼容」时会被当成
+        # 更高版本直接接受，从而跳过低版本 -> 高版本的重建：例如一份 V2 配置的
+        # chats 同时带了 actions，老逻辑会按 V3 接受并保留手写的 actions，而正确
+        # 做法是按 V2 迁移、用 sign_text 重建 actions。
+        try_self_first = declared is None or declared == cls.version
+
+        if try_self_first:
+            instance, err = cls._validate(d)
+            if instance is not None:
+                return instance, False, None
+        else:
+            err = None
+
         for old in cls.olds or []:
             # 递归走 old 自己的 olds，否则 V3 -> V2 -> V1 这条链会在 V2 处断掉，
             # 导致 V1 老配置永远无法迁移。
@@ -173,6 +217,15 @@ class BaseJSONConfig(BaseModel):
                 return old.to_current(old_inst), True, None
             except (ValidationError, TypeError) as exc:
                 return None, False, format_validation_error(exc)
+
+        if not try_self_first:
+            # 声明的版本没走通 → 回落到试自己。不能因为一个写错的 version 就拒掉
+            # 以前能正常读取的配置。
+            instance, err = cls._validate(d)
+            if instance is not None:
+                return instance, False, None
+            err = cls._declared_version_error(d, declared) or err
+
         return None, False, err
 
     @classmethod

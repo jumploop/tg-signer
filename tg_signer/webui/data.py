@@ -14,14 +14,28 @@ from tg_signer.sign_record_store import SignRecordStore
 from tg_signer.utils import resolve_under, resolve_within
 
 ConfigKind = Literal["signer"]
-
-CONFIG_META: dict[ConfigKind, Tuple[str, type[BaseJSONConfig]]] = {
-    "signer": ("signs", SignConfigV3),
-}
-
-# 随机配置名支持 automation,但它没有 CONFIG_META 条目(不走 signs/ 目录)。
 NameGenKind = Literal["signer", "automation"]
-NAME_PREFIXES: dict[NameGenKind, str] = {"signer": "sign", "automation": "auto"}
+
+
+@dataclass(frozen=True)
+class ConfigKindMeta:
+    """一种配置类型的元数据。
+
+    这些信息原先散在两处：`CONFIG_META` 管「目录名 + 配置类」，`NAME_PREFIXES`
+    管「随机名前缀」，而 `automation` 只出现在后者（它不按 signs/ 布局存储）。
+    新增一种配置类型必须记得同时改两张表，漏一张就是运行期 KeyError。收敛成一张
+    表后，缺哪个字段一眼可见。
+    """
+
+    cfg_cls: type[BaseJSONConfig]
+    name_prefix: str
+    dir_name: Optional[str] = None  # None 表示不走 <workdir>/<dir>/<name>/ 布局
+
+
+CONFIG_KINDS: dict[NameGenKind, ConfigKindMeta] = {
+    "signer": ConfigKindMeta(SignConfigV3, "sign", "signs"),
+    "automation": ConfigKindMeta(AutomationConfig, "auto"),
+}
 
 DEFAULT_WORKDIR = Path(os.environ.get("TG_SIGNER_WORKDIR", ".signer"))
 # 允许 WebUI 切换工作目录的根白名单(多个根用 os.pathsep 分隔)。未设置时
@@ -65,10 +79,21 @@ def get_workdir(workdir: Optional[Path | str] = None) -> Path:
     return base
 
 
+def uses_dir_layout(kind: str) -> bool:
+    """该 kind 是否走 ``<workdir>/<dir_name>/<name>/config.json`` 布局。
+
+    `automation` 也在 `CONFIG_KINDS` 里，但不走这个布局，所以「不支持的配置类型」
+    守卫不能只做成员判断，否则会把 automation 放行到一个并不存在的目录上。
+    """
+    meta = CONFIG_KINDS.get(kind)
+    return meta is not None and meta.dir_name is not None
+
+
 def _config_root(kind: ConfigKind, workdir: Optional[Path | str]) -> Path:
-    base = get_workdir(workdir)
-    dir_name, _ = CONFIG_META[kind]
-    return base / dir_name
+    meta = CONFIG_KINDS[kind]
+    if meta.dir_name is None:  # automation 走 automations/ 之外的自有布局
+        raise ValueError(f"{kind} 不按目录布局存储配置")
+    return get_workdir(workdir) / meta.dir_name
 
 
 def _config_path(kind: ConfigKind, name: str, workdir: Optional[Path | str]) -> Path:
@@ -248,7 +273,7 @@ def generate_random_config_name(
     - 末尾 ``<hex>`` 来自 ``secrets.token_hex``;16 位 hex 命名空间足够大,
       与已有配置冲突的概率可忽略。
     """
-    prefix = NAME_PREFIXES[kind]
+    prefix = CONFIG_KINDS[kind].name_prefix
     seed = ""
     if chat:
         seed = str(
@@ -275,7 +300,7 @@ def load_config(
     config_file = _config_path(kind, name, workdir)
     if not config_file.is_file():
         raise FileNotFoundError(f"配置不存在: {config_file}")
-    cfg_cls = CONFIG_META[kind][1]
+    cfg_cls = CONFIG_KINDS[kind].cfg_cls
     with open(config_file, "r", encoding="utf-8") as fp:
         raw = json.load(fp)
     cfg, from_old, err = cfg_cls.load_checked(raw)
@@ -296,7 +321,7 @@ def save_config(
     content: Dict[str, Any] | str | BaseJSONConfig,
     workdir: Optional[Path | str] = None,
 ) -> Path:
-    cfg_cls = CONFIG_META[kind][1]
+    cfg_cls = CONFIG_KINDS[kind].cfg_cls
     if isinstance(content, BaseJSONConfig):
         cfg = content
     else:

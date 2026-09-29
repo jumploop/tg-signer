@@ -203,8 +203,8 @@ class _AccountLoginSession:
                     pass
         finally:
             try:
-                tg_core._CLIENT_INSTANCES.pop(self.client.key, None)
-                tg_core._CLIENT_REFS.pop(self.client.key, None)
+                # 走 core 的唯一回收入口，不再直接戳它的私有容器。
+                tg_core.forget_client(self.client.key)
                 self.loop.call_soon_threadsafe(self.loop.stop)
                 self.thread.join(timeout=5)
             except Exception:  # noqa: BLE001

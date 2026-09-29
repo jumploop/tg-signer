@@ -321,6 +321,85 @@ async def test_client_context_manager_ignores_connection_error_during_stop(
     assert key not in core._CLIENT_INSTANCES
 
 
+# ---------------------------------------------------------------------------
+# 模块级状态回收：收敛到 forget_client() 这一个入口
+# ---------------------------------------------------------------------------
+
+
+def _patch_client_lifecycle(monkeypatch):
+    import tg_signer.core as core
+
+    async def fake_start(self):
+        self._started = True
+
+    async def fake_stop(self):
+        self._started = False
+
+    monkeypatch.setattr(core.Client, "start", fake_start)
+    monkeypatch.setattr(core.Client, "stop", fake_stop)
+
+
+@pytest.mark.asyncio
+async def test_client_exit_reclaims_rate_limit_timestamp(monkeypatch, tmp_path):
+    """引用归零即无在途调用，限流时间戳应当顺手回收。"""
+    import tg_signer.core as core
+
+    _patch_client_lifecycle(monkeypatch)
+
+    client = get_client(name="acct", workdir=tmp_path)
+    key = client.key
+    async with client:
+        core._API_LAST_CALL_AT[key] = 1.0
+
+    assert key not in core._API_LAST_CALL_AT
+
+
+@pytest.mark.asyncio
+async def test_forget_client_clears_cache_but_keeps_the_mutex_lock(
+    monkeypatch, tmp_path
+):
+    """模块外回收 client 状态必须走 `forget_client()`，且不能清掉互斥锁。
+
+    判别性：若把 `_CLIENT_ASYNC_LOCKS[key]` 一并清掉，并发的 `__aenter__` 会
+    各自新建一把锁、同时进入临界区，引用计数与 start()/stop() 都会被重复执行。
+    """
+    import tg_signer.core as core
+
+    _patch_client_lifecycle(monkeypatch)
+
+    client = get_client(name="acct", workdir=tmp_path)
+    key = client.key
+    async with client:
+        assert core._CLIENT_REFS[key] == 1
+
+    assert key in core._CLIENT_ASYNC_LOCKS
+
+    core._API_LAST_CALL_AT[key] = 1.0
+    core.forget_client(key)
+
+    assert key not in core._CLIENT_INSTANCES
+    assert key not in core._CLIENT_REFS
+    assert key not in core._API_LAST_CALL_AT
+    assert key in core._CLIENT_ASYNC_LOCKS
+
+
+@pytest.mark.asyncio
+async def test_forget_client_is_idempotent(monkeypatch, tmp_path):
+    """WebUI 关闭登录会话与 TTL 回收可能都触发，重复调用必须安全。"""
+    import tg_signer.core as core
+
+    _patch_client_lifecycle(monkeypatch)
+
+    client = get_client(name="acct", workdir=tmp_path)
+    key = client.key
+
+    core.forget_client(key)
+    core.forget_client(key)
+
+    assert key not in core._CLIENT_INSTANCES
+    assert key not in core._CLIENT_REFS
+
+
 @pytest.mark.asyncio
 async def test_login_bootstrap_is_shared_between_concurrent_workers(
     monkeypatch, signer_factory

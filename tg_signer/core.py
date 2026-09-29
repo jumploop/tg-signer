@@ -236,6 +236,27 @@ RouteKey = tuple[ChatId, Optional[int]]
 get_timezone = _get_timezone
 
 
+def forget_client(key: str) -> None:
+    """清掉某个 key 的 client 缓存与配套状态。
+
+    这是模块外（如 WebUI 关闭登录会话）回收 client 状态的**唯一入口**：调用方
+    不该再去戳 `_CLIENT_INSTANCES` 这类私有容器，否则一旦新增状态就会漏清理。
+
+    只应在一个 client 已停止、且确定不再有人持有时调用。
+
+    刻意**不清理** `_CLIENT_ASYNC_LOCKS` / `_LOGIN_ASYNC_LOCKS` /
+    `_API_ASYNC_LOCKS`：这三把锁是该 key 互斥的唯一凭据，一旦清掉，并发的
+    `__aenter__` 会各自新建一把锁，双方同时进入临界区，引用计数与 `start()` /
+    `stop()` 都会被重复执行。这些锁按 key 数量有界，保留它们才是正确的。
+
+    `_LOGIN_USERS` 同样保留：它是「本会话已初始化」的缓存，清掉会导致重新
+    `get_me` / `get_dialogs` 并重写 `latest_chats.json`，代价高于收益。
+    """
+    _CLIENT_INSTANCES.pop(key, None)
+    _CLIENT_REFS.pop(key, None)
+    _API_LAST_CALL_AT.pop(key, None)
+
+
 class Client(SafeGetForumTopics, BaseClient):
     def __init__(self, name: str, *args, **kwargs):
         key = kwargs.pop("key", None)
@@ -284,6 +305,9 @@ class Client(SafeGetForumTopics, BaseClient):
                 except ConnectionError:
                     pass
                 _CLIENT_INSTANCES.pop(self.key, None)
+                # 引用归零即没有任何在途调用，限流时间戳已无意义，顺手回收，
+                # 避免 _API_LAST_CALL_AT 随账号数无界增长。
+                _API_LAST_CALL_AT.pop(self.key, None)
 
     @property
     def session_string_file(self):
