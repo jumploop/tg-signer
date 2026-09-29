@@ -33,6 +33,11 @@ summary: 发现 6 项 P1、15 项 P2；其中 4 项 P1 已在 HTTP 层实证复�
 > `security_audit_2026-09-29.html` 是与本文件同步的状态看板。
 > **§3 仍有 4 项未处理**：P3-2（handler params 契约）与 P3-8（连接复用）按用户决定不动，
 > P3-5（`core.py` 拆分）与 P3-7（前端产物入库）建议不做 —— 逐项理由见 §3.1。
+>
+> **第七轮为新审计，非修复**（§13）：补齐历轮未覆盖的**前端源码 / 认证实现 / 部署配置**
+> 三块，新发现 **3 项 P2、2 项 P3**（P2-18 爆破防护形同虚设、P2-19 锁定可被用于 DoS、
+> P2-20 docker 以 root 运行且 compose 引用不存在的 `start.sh`、P3-9 非常量时间比较、
+> P3-10 令牌即授权码）。均为可执行实证。**尚未修复**，修复方向见 §13.8。
 
 ## 0. 结论摘要
 
@@ -901,3 +906,190 @@ E  AssertionError: 以下产物的 LLM 配置界面未体现「留空表示不�
 - 产物：`tg_signer/webui/static/`（14 个 chunk 改名 + `index.html`）。
 - 测试：`tests/test_webui_server.py` 新增 1 条。
 - 文档：`CHANGELOG.md` 的 `0.10.4` 段新增 1 条「界面体验」。
+
+---
+
+## 13. 审计记录（第七轮：未覆盖区域 — 认证实现 / 前端源码 / 部署配置）
+
+本轮**不是修复轮，是新一轮审计**。前六轮把 `tg_signer/` 的 Python 源码（安全 / 健壮性 /
+可扩展性）基本抽干，而 §6 明确列出的三块**未覆盖区域**里，`docker/` 部署配置与
+`webui/frontend/src/` 前端源码从未被审过（第六轮只碰了 `LlmConfig.vue` 的界面体验）。
+本轮补齐这两块，并对 WebUI 认证实现做了系统核查 + 可执行实证。
+
+**结论：新发现 3 项 P2、2 项 P3；另复验 2 项 P1 修复仍然生效，4 个面系统核查通过。**
+
+### 13.1 发现一览
+
+| 编号     | 等级 | 位置                       | 一句话                                                     |
+| ------ | -- | ------------------------ | ------------------------------------------------------- |
+| P2-18  | 中高 | `server.py:151-165`      | 爆破防护形同虚设：失败计数只在 `/api/auth/login` 记账，受保护端点不记账          |
+| P2-19  | 中高 | `server.py:157-165`      | 锁定是全局单例且「先锁后验」：未认证者 5 次请求即可让整个 API 面 429 达 60 秒         |
+| P2-20  | 中   | `docker/*`               | 容器以 root 运行 + 整目录 bind mount；`docker-compose.yml` 引用了仓库中不存在的 `start.sh` |
+| P3-9   | 低  | `server.py:164, 616`     | 授权码比较非常量时间（`==` / `!=`），可做逐字节时序侧信道                       |
+| P3-10  | 低  | `frontend/src/api.js:50` | 令牌即授权码本身，明文存 `localStorage`、永不过期、无法单独吊销                 |
+
+P2-18 与 P2-19 是**同一处设计的两面**，叠加后使这个「防护」既不挡攻击者、又能被攻击者用来打别人。
+
+### 13.2 P2-18　爆破防护形同虚设：受保护端点不记账
+
+**位置**：`server.py:151-165`（`require_auth`，作为全部受保护端点的依赖）
+对比 `server.py:603-620`（`auth_login`，唯一调用 `record_auth_failure` 的地方）
+
+`require_auth` 会检查 `is_auth_locked()`，但**它自己从不记账**：
+
+```python
+def require_auth(authorization: Optional[str] = Header(default=None)) -> None:
+    expected = _expected_auth_code()
+    if not expected:
+        return
+    with _auth_storage_lock:
+        if auth_helpers.is_auth_locked(_auth_storage):      # 只看，不记账
+            raise HTTPException(429, ...)
+        if authorization != f"Bearer {expected}":           # 猜错也只返回 401
+            raise _challenge()                              # ← 没有 record_auth_failure
+```
+
+于是攻击者只要**不走登录端点**，改用任意受保护端点携带猜测的 `Bearer`，就完全绕开限流。
+
+**实证**（同一进程内两条路径对照）：
+
+```
+=== 路径 1：正经走 /api/auth/login 爆破 ===
+状态码序列: [200, 200, 200, 200, 200, 429, 429]          ← 第 6 次被锁
+锁定状态: {'auth_failed_attempts': 0, 'auth_locked_until': 25908.7}
+
+=== 路径 2：绕开登录端点，直接打受保护端点爆破 ===
+状态码序列: [401, 401, 401, 401, 401, 401, 401, 401, 401, 401, 401, 401, 401,
+             401, 401, 401, 401, 401, 401, 401, 401, 401, 401, 401, 401, 401,
+             401, 401, 401, 401]                            ← 30 次全是 401
+出现 429（被锁）: False
+失败计数存储: {}（空 = 从未记账）
+```
+
+**影响**：授权码是**唯一的**认证凭据，猜中即等于完整控制（账号登录/注销、读日志、
+拉起任务、改配置、读 LLM 密钥掩码）。没有限流意味着可无限次在线猜测；而 `P2-19`
+又让限流本身不可用。**当前实现下，WebUI 的非回环部署实际上只剩授权码本身的空间
+复杂度在挡。**
+
+### 13.3 P2-19　锁定可被用于 DoS：全局单例 + 「先锁后验」
+
+**位置**：`server.py:157-165`；计数存储 `_auth_storage` 是模块级**单个** dict
+（`server.py:36`），不是按会话/按来源 IP。
+
+两个独立问题叠在一起：
+
+1. **全局单例**：任何人触发锁定，锁的是**所有人**。
+2. **先锁后验**：`auth_login` 先判 `is_auth_locked()` 再比对授权码，所以锁定期内
+   **正确的授权码同样被拒**。
+
+**实证**：
+
+```
+=== 攻击者用 5 次错误登录锁死服务 ===
+第 5 次后锁定剩余: 60.0 秒
+
+=== 合法用户拿着正确授权码，此刻也被拒 ===
+正确码登录 -> 429 {'detail': '尝试次数过多，请 60 秒后再试'}
+正确 Bearer 访问 /api/state -> 429 {'detail': '尝试次数过多，请 60 秒后再试'}
+
+=== 持正确令牌的合法用户，整个 API 面被锁 60s ===
+  /api/accounts      -> 429
+  /api/logs/files    -> 429
+  /api/run           -> 429
+```
+
+**影响**：未认证攻击者每 60 秒发 5 个 `/api/auth/login` 请求（无需知道授权码），
+即可让 WebUI 对**所有人**永久不可用。这比不做限流更糟：不做限流只是防不住爆破，
+而这个实现**额外**提供了一个廉价的远程拒绝服务原语。
+
+### 13.4 P2-20　docker 部署配置
+
+三份 Dockerfile（`Dockerfile` / `CN.Dockerfile` / `GHCR.Dockerfile`）**均无 `USER`**，
+容器默认以 root 运行。`docker-compose.yml`：
+
+```yaml
+    volumes:
+      - $PWD:/opt/tg-signer          # 把整个仓库（含 .signer/ 会话与配置）挂进容器
+    command: ["/bin/bash", "start.sh"]
+```
+
+| 问题                      | 说明                                                                                     |
+| ----------------------- | -------------------------------------------------------------------------------------- |
+| root 运行                 | 无 `USER` 指令；容器内进程对 bind mount 有完整写权限，配合工作目录挂载等于把宿主仓库交给容器内任意进程                     |
+| 整目录挂载                   | `$PWD:/opt/tg-signer` 把 `.signer/`（含 `*.session`、`.openai_config.json`）一并挂入                |
+| `start.sh` 不存在于仓库       | `command` 依赖它，但仓库里没有该文件（靠挂载的宿主目录提供）→ compose **开箱即失败**                                |
+| GHCR 镜像的 0.0.0.0 + 无 AUTHCODE | `CMD tg-signer webgui --host 0.0.0.0 --port 8080`，镜像未注入 `TG_SIGNER_GUI_AUTHCODE`。行为**正确**（`main()` 会 fail-closed 退出），但缺文档/示例，用户会以为镜像坏了 |
+
+前两项是纵深防御问题（`P1-2` 已在应用层做了路径约束，见 §13.6），后两项是可用性/文档问题。
+
+### 13.5 P3-9 / P3-10　认证的两个加固点
+
+**P3-9　非常量时间比较**：`body.code == expected`（`server.py:616`）与
+`authorization != f"Bearer {expected}"`（`server.py:164`）都是 Python 原生字符串比较，
+遇首个不同字符即短路返回，理论上构成逐字节时序侧信道。经 HTTP 测量需要大量样本，
+实际可利用性低，但修复成本极低：改用 `secrets.compare_digest()`。
+
+**P3-10　令牌即授权码、明文存 `localStorage`**：`api.js:50` 把授权码**本身**写进
+`localStorage`（key `tg_signer_auth_token`），`api.js:10` 在每次请求上以
+`Authorization: Bearer` 发出。三处影响：
+
+- 一次 XSS 或共用设备即可长期窃取，且 `localStorage` 无会话级生命周期；
+- 凭据是**长期共享密钥**（环境变量），**无法单独吊销**——只能改环境变量重启；
+- 服务端不记录/不校验任何会话状态，等于「知道授权码」= 「永远是合法用户」。
+
+这是「个人工具 + 回环/内网」定位下的合理取舍，但**只要按 §13.4 的 GHCR 镜像方式绑
+`0.0.0.0` 暴露，它的风险等级就随暴露面上升**。若维持现状，建议至少在 README 明确
+「授权码等同于账号控制权，请当密码保管」。
+
+### 13.6 复验：历轮修复仍然生效
+
+审计发现需随代码演进复验。本轮复跑了报告开篇的两条 P1 实证脚本（关闭鉴权、
+复现原始攻击条件）：
+
+| 项     | 复现输入                                          | 当前结果                                       |
+| ----- | --------------------------------------------- | ------------------------------------------ |
+| P1-1  | `GET /api/logs?path=<仓库外绝对路径>`                | **400** `路径越界: '...\\Temp\\audit_secret_r7.txt'` |
+| P1-2  | `POST /api/run/start {"account": "../evil"}`  | **200** `{"ok": false, "message": "名称非法: '../evil'"}`，`workdir` 外无产物 |
+
+另外发现一处**报告未记载的纵深防御**：`data.py:566-583` 的 `_check_workdir()` 给
+`set_workdir` 加了根白名单（`WORKDIR_ROOTS_ENV`，默认含仓库根），并在 `mkdir` **之前**
+做包含性判断（注释明确写了「否则越界路径会先被创建出来，构成目录创建原语」）。
+本轮复验时正是它挡住了把 workdir 设到临时目录——这条防线值得保留。
+
+### 13.7 本轮系统核查通过的面（未发现问题）
+
+不是只挑到一处就收工，以下几项做了穷举/全量核查，结论为干净：
+
+| 核查项                | 方法                                                     | 结果                                    |
+| ------------------ | ------------------------------------------------------ | ------------------------------------- |
+| API 鉴权覆盖           | 反射 `app.routes`，逐个在 `dependant` 里找 `require_auth`     | 27 个 `/api` 路由**全部**有依赖；仅 `/api/auth/status`、`/api/auth/login` 例外（设计如此） |
+| 前端 XSS / 注入面       | 全量 grep `v-html` / `innerHTML` / `eval` / `new Function` / `console.` | 全部 **0 命中**                            |
+| 前端路径参数编码           | 检查所有 `` api.get/post/delete(`…${}…`) ``             | 配置名的 3 处（GET/POST/DELETE）**一致**使用 `encodeURIComponent`；`kind` 为内部常量 |
+| Python 命令执行 / 反序列化 | grep `shell=True` / `os.system` / `eval` / `exec` / `pickle.load` | 全部 **0 命中**（插件 `exec_module` 属设计内的用户自有目录） |
+| `httpx` 超时         | 检查全部调用点                                                | `handlers.py:65-71` 有 `timeout=10`     |
+| 事件循环阻塞           | 检查 `async def` 端点内部调用                                  | `test_openai_connection` 用 `AsyncOpenAI`，非阻塞 |
+
+### 13.8 修复方向建议（供决策，本轮未改代码）
+
+P2-18 与 P2-19 的正确修法不是「把 `record_auth_failure` 挪进 `require_auth`」——
+那样会让携带过期令牌的正常前端（每次请求都带 Bearer）快速把自己锁死，
+把 P2-19 的 DoS 从「攻击者主动触发」变成「日常自伤」。建议**先验后锁**：
+
+```python
+# 思路：先判凭据，凭据正确直接放行（不受锁定影响）；错误才记账并触发限流。
+with _auth_storage_lock:
+    if not secrets.compare_digest(authorization or "", f"Bearer {expected}"):
+        auth_helpers.record_auth_failure(_auth_storage)   # 记账移到错误分支
+        if auth_helpers.is_auth_locked(_auth_storage):
+            raise HTTPException(429, ...)
+        raise _challenge()
+# 凭据正确 → 直接放行，锁定期内合法用户不受影响
+```
+
+要点：① 记账发生在**任何**携带错误凭据的请求上（堵住 P2-18 的绕过）；
+② 正确的凭据**跳过**锁定检查（消除 P2-19 对合法用户的 DoS）；
+③ 用 `secrets.compare_digest` 顺带解决 P3-9。
+`auth_login` 同样按「先比后记」调整即可。
+
+是否需要进一步按来源 IP 分桶（`request.client.host`）取决于 WebUI 的暴露范围：
+回环/单用户场景下当前单例计数配合「先验后锁」已足够。

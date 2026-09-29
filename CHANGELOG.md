@@ -1,6 +1,10 @@
 # Changelog / 版本变动日志
 
 ## 版本变动日志
+### 0.10.5
+- **仅文档更新，无代码变更**：`docs/security_audit_2026-09-29.md` 新增第七轮审计（§13），补齐历轮未覆盖的前端源码 / WebUI 认证实现 / docker 部署配置三块，新发现 3 项 P2、2 项 P3（P2-18 爆破防护形同虚设、P2-19 锁定可被用于 DoS、P2-20 docker 以 root 运行且 compose 引用不存在的 `start.sh`、P3-9 授权码非常量时间比较、P3-10 令牌即授权码）。本版本未修复这些发现，修复方向见 §13.8
+- 同时复验两项 P1 修复仍然生效（`/api/logs?path=` 越界返回 400；`account` 目录穿越被 `resolve_under()` 拒绝），并记录了 `data.py:_check_workdir()` 这处此前未记载的纵深防御
+
 ### 0.10.4
 - **安全修复**：`GET /api/logs?path=` 任意文件读取。此前该参数原样接受任意绝对路径，可直接读出 `<workdir>/*.session_string`、`.openai_config.json` 乃至 `~/.ssh/id_rsa`。现限定为只能读 `<workdir>/logs` 下的文件（前端回传的绝对路径仍然可用），越界返回 400。修复见 `docs/security_audit_2026-09-29.md`
 - **安全修复**：`account` 与配置名未归一化导致的目录穿越。`/api/accounts/logout`、`/api/accounts/send-code`、`/api/chats/fetch`、`/api/run/start` 传 `../x` 可在 workdir 之外创建锁文件、删改任意文件。现统一由 `tg_signer.utils.resolve_under()` 校验为单一路径分量，数据层与 HTTP 层一致拒绝

@@ -81,16 +81,17 @@
   <div class="meta">
     <span>2026-09-29</span><span>·</span>
     <span>六轮修复：P1 全部 + P2 全部 15 项 + P3 4 项 + 1 项附带发现 + 1 项界面体验</span><span>·</span>
+    <span>第七轮<strong>审计</strong>（未覆盖区）：新发现 3 P2 / 2 P3，待决策</span><span>·</span>
     <span>范围：<code>tg_signer/</code> 27 文件 / 7401 行</span><span>·</span>
     <span>对应版本 <code>0.10.4</code></span>
   </div>
 </header>
 
 <div class="grid g3">
-  <div class="card ok">
+  <div class="card risk2">
     <div class="k">安全</div>
-    <div class="v" style="color:var(--ok)">P1 + P2 已清零</div>
-    <div class="d">P1 安全 3 项、P2 安全 5 项全部修复并回归</div>
+    <div class="v" style="color:var(--p2)">P1、P2 原 5 项已清零</div>
+    <div class="d">P1 安全 3 项、P2 安全 5 项全部修复并回归；第七轮审计新增 <strong>P2-18 / P2-19</strong>（认证限流）<strong>未修</strong></div>
   </div>
   <div class="card ok">
     <div class="k">健壮性</div>
@@ -100,11 +101,11 @@
   <div class="card risk2">
     <div class="k">规范 / 可扩展性</div>
     <div class="v" style="color:var(--p2)">良好 / 中等</div>
-    <div class="d">ruff 全绿；插件设计正确；P3 已修 4 项（版本号参与分发、触发器清单收敛等），余 4 项按用户决定或建议不做</div>
+    <div class="d">ruff 全绿；插件设计正确；P3 已修 4 项（版本号参与分发、触发器清单收敛等），余 4 项按用户决定或建议不做；第七轮审计新增 P3-9 / P3-10 待决策</div>
   </div>
 </div>
 
-<h2>修复进度<span class="badge">P1 6/6 · P2 15/15 · P3 4/8</span></h2>
+<h2>修复进度<span class="badge">P1 6/6 · P2 15/15 · P3 4/8 · 第七轮审计新发现 3 P2 + 2 P3 待决策</span></h2>
 
 <div class="grid g3">
   <div class="card ok">
@@ -769,8 +770,173 @@ async with lock:
   且在上一次全量中是通过的，判定为环境假失败；本轮的全量数字因此不作数，需在新一轮重跑。</p>
 </div>
 
+<h2>第七轮审计（未覆盖区域：认证实现 / 前端源码 / 部署配置）<span class="badge warnb">本轮为审计，未修复 · 待决策</span></h2>
+
+<p class="note">本轮<strong>不是修复轮</strong>。前六轮把 <code>tg_signer/</code> 的 Python 源码基本抽干，
+而「未覆盖区域」里的 <code>docker/</code> 部署配置与 <code>webui/frontend/src/</code> 前端源码从未被审过
+（第六轮只碰了 <code>LlmConfig.vue</code> 的界面体验）。本轮补齐这两块，并对认证实现做系统核查 + 可执行实证。
+<strong>新发现 3 项 P2、2 项 P3</strong>；另复验 2 项 P1 修复仍然生效、6 个面系统核查通过。</p>
+
+<div class="grid g3">
+  <div class="card risk2">
+    <div class="k">P2</div>
+    <div class="v" style="color:var(--p2)">3 项</div>
+    <div class="d">P2-18 爆破绕过 · P2-19 锁定 DoS · P2-20 docker 部署</div>
+  </div>
+  <div class="card risk2">
+    <div class="k">P3</div>
+    <div class="v" style="color:var(--p2)">2 项</div>
+    <div class="d">P3-9 非常量时间比较 · P3-10 令牌即授权码</div>
+  </div>
+  <div class="card ok">
+    <div class="k">复验 / 核查</div>
+    <div class="v" style="color:var(--ok)">P1 ×2 仍生效</div>
+    <div class="d">另 6 个面（鉴权覆盖、XSS 面、路径编码、命令执行、超时、事件循环）核查干净</div>
+  </div>
+</div>
+
+<div class="finding p2">
+  <h3>P2-18　爆破防护形同虚设：受保护端点不记账 <span class="pill p2">P2 中高</span></h3>
+  <div class="loc">tg_signer/webui/server.py:151-165（<code>require_auth</code>） · 对比 :603-620（<code>auth_login</code>）</div>
+  <p><code>require_auth</code> 是<strong>全部受保护端点</strong>的依赖，它会<strong>检查</strong>锁定状态，
+  但<strong>自己从不记账</strong> —— <code>record_auth_failure()</code> 只在 <code>/api/auth/login</code> 里被调用。
+  于是攻击者只要不走登录端点、改用任意受保护端点携带猜测的 <code>Bearer</code>，就完全绕开限流。</p>
+  <pre><code>def require_auth(authorization = Header(default=None)) -&gt; None:
+    if not expected:
+        return
+    with _auth_storage_lock:
+        if auth_helpers.is_auth_locked(_auth_storage):   <span class="cmt"># 只看，不记账</span>
+            raise HTTPException(429, ...)
+        if authorization != f"Bearer {expected}":        <span class="cmt"># 猜错也只返回 401</span>
+            raise _challenge()                           <span class="bad"># ← 没有 record_auth_failure</span></code></pre>
+  <div class="split">
+    <div class="block"><span class="cmt">=== 路径 1：正经走 /api/auth/login 爆破 ===</span>
+状态码序列: [200,200,200,200,200,429,429]   <span class="good">← 第 6 次被锁</span>
+锁定状态: {'auth_failed_attempts': 0,
+           'auth_locked_until': 25908.7}</div>
+    <div class="block"><span class="cmt">=== 路径 2：绕开登录端点，直接打受保护端点 ===</span>
+状态码序列: [401 × 30]                    <span class="bad">← 30 次全是 401</span>
+出现 429（被锁）: False
+失败计数存储: {}（空 = 从未记账）</div>
+  </div>
+  <p><strong>影响</strong>：授权码是<strong>唯一的</strong>认证凭据，猜中即等于完整控制（账号登录/注销、读日志、
+  拉起任务、改配置、读 LLM 密钥掩码）。没有限流意味着可无限次在线猜测。</p>
+</div>
+
+<div class="finding p2">
+  <h3>P2-19　锁定可被用于 DoS：全局单例 + 「先锁后验」 <span class="pill p2">P2 中高</span></h3>
+  <div class="loc">tg_signer/webui/server.py:157-165 · 计数存储 <code>_auth_storage</code>（<code>server.py:36</code>）是模块级单个 dict</div>
+  <p>两个独立问题叠在一起：① <strong>全局单例</strong> —— 任何人触发锁定，锁的是<strong>所有人</strong>；
+  ② <strong>先锁后验</strong> —— <code>auth_login</code> 先判 <code>is_auth_locked()</code> 再比对授权码，
+  所以锁定期内<strong>正确的授权码同样被拒</strong>。</p>
+  <div class="block"><span class="cmt">=== 攻击者用 5 次错误登录锁死服务 ===</span>
+第 5 次后锁定剩余: 60.0 秒
+
+<span class="cmt">=== 合法用户拿着正确授权码，此刻也被拒 ===</span>
+正确码登录        -&gt; 429 {'detail': '尝试次数过多，请 60 秒后再试'}
+正确 Bearer /api/state -&gt; 429
+
+<span class="cmt">=== 持正确令牌的合法用户，整个 API 面被锁 60s ===</span>
+  /api/accounts   -&gt; 429
+  /api/logs/files -&gt; 429
+  /api/run        -&gt; 429</div>
+  <p><strong>影响</strong>：未认证攻击者每 60 秒发 5 个 <code>/api/auth/login</code> 请求（无需知道授权码），
+  即可让 WebUI 对<strong>所有人</strong>永久不可用。这比不做限流更糟：不做限流只是防不住爆破，
+  而这个实现<strong>额外</strong>提供了一个廉价的远程拒绝服务原语。</p>
+  <p><strong>P2-18 与 P2-19 是同一处设计的两面</strong>：叠加后这个「防护」既不挡攻击者、又能被攻击者用来打别人。</p>
+</div>
+
+<div class="finding p2">
+  <h3>P2-20　docker 部署配置 <span class="pill p2">P2 中</span></h3>
+  <div class="loc">docker/Dockerfile · CN.Dockerfile · GHCR.Dockerfile · docker-compose.yml</div>
+  <p>三份 Dockerfile <strong>均无 <code>USER</code></strong>，容器默认以 root 运行。compose 里：</p>
+  <div class="block">    volumes:
+      - $PWD:/opt/tg-signer     <span class="cmt"># 整个仓库（含 .signer/ 会话与配置）挂进容器</span>
+    command: ["/bin/bash", "start.sh"]   <span class="bad"># start.sh 不在仓库中</span></div>
+  <table>
+    <thead><tr><th style="width:210px">问题</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>root 运行</td><td>无 <code>USER</code> 指令；容器内进程对 bind mount 有完整写权限，配合工作目录挂载等于把宿主仓库交给容器内任意进程</td></tr>
+      <tr><td>整目录挂载</td><td><code>$PWD:/opt/tg-signer</code> 把 <code>.signer/</code>（含 <code>*.session</code>、<code>.openai_config.json</code>）一并挂入</td></tr>
+      <tr><td><code>start.sh</code> 不存在</td><td><code>command</code> 依赖它，但仓库里没有该文件（靠挂载的宿主目录提供）→ compose <strong>开箱即失败</strong></td></tr>
+      <tr><td>GHCR 镜像 0.0.0.0 + 无 AUTHCODE</td><td><code>CMD tg-signer webgui --host 0.0.0.0 --port 8080</code>，镜像未注入 <code>TG_SIGNER_GUI_AUTHCODE</code>。行为<strong>正确</strong>（<code>main()</code> 会 fail-closed 退出），但缺文档/示例，用户会以为镜像坏了</td></tr>
+    </tbody>
+  </table>
+  <p>前两项是纵深防御问题（应用层已在 P1-2 做了路径约束），后两项是可用性/文档问题。</p>
+</div>
+
+<div class="finding p2">
+  <h3>P3-9 / P3-10　认证的两个加固点 <span class="pill p3">P3 低</span></h3>
+  <div class="loc">server.py:164, 616 · frontend/src/api.js:50</div>
+  <p><strong>P3-9 非常量时间比较</strong>：<code>body.code == expected</code> 与
+  <code>authorization != f"Bearer {expected}"</code> 都是原生字符串比较，遇首个不同字符即短路，理论上构成逐字节时序侧信道。
+  经 HTTP 测量需大量样本，实际可利用性低，但修复成本极低 —— 改用 <code>secrets.compare_digest()</code>。</p>
+  <p><strong>P3-10 令牌即授权码、明文存 <code>localStorage</code></strong>：<code>api.js:50</code> 把授权码<strong>本身</strong>
+  写进 <code>localStorage</code>，<code>api.js:10</code> 在每次请求上以 <code>Authorization: Bearer</code> 发出。
+  三处影响：① 一次 XSS 或共用设备即可长期窃取，<code>localStorage</code> 无会话级生命周期；
+  ② 凭据是长期共享密钥（环境变量），<strong>无法单独吊销</strong>；③ 服务端不记录任何会话状态，
+  等于「知道授权码」=「永远是合法用户」。这是「个人工具 + 回环/内网」定位下的合理取舍，
+  但<strong>只要按 P2-20 的 GHCR 方式绑 0.0.0.0 暴露，风险等级就随暴露面上升</strong>。</p>
+</div>
+
+<div class="finding ok">
+  <h3>复验：历轮修复仍然生效 <span class="pill ok">回归通过</span></h3>
+  <div class="loc">复跑报告开篇的两条 P1 实证脚本（关闭鉴权、复现原始攻击条件）</div>
+  <table>
+    <thead><tr><th style="width:70px">项</th><th>复现输入</th><th>当前结果</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pill p1">P1-1</span></td><td><code>GET /api/logs?path=&lt;仓库外绝对路径&gt;</code></td><td><strong>400</strong> <code>路径越界: '...\\Temp\\audit_secret_r7.txt'</code></td></tr>
+      <tr><td><span class="pill p1">P1-2</span></td><td><code>POST /api/run/start {"account": "../evil"}</code></td><td><strong>200</strong> <code>{"ok": false, "message": "名称非法: '../evil'"}</code>，workdir 外无产物</td></tr>
+    </tbody>
+  </table>
+  <p>另外发现一处<strong>报告未记载的纵深防御</strong>：<code>data.py:566-583</code> 的 <code>_check_workdir()</code>
+  给 <code>set_workdir</code> 加了根白名单（<code>WORKDIR_ROOTS_ENV</code>），并在 <code>mkdir</code> <strong>之前</strong>
+  做包含性判断 —— 本轮复验时正是它挡住了把 workdir 设到临时目录。这条防线值得保留。</p>
+</div>
+
+<div class="finding ok">
+  <h3>系统核查通过的六个面 <span class="pill ok">未发现问题</span></h3>
+  <div class="loc">不是只挑到一处就收工 · 穷举/全量核查</div>
+  <table>
+    <thead><tr><th style="width:170px">核查项</th><th>方法</th><th style="width:230px">结果</th></tr></thead>
+    <tbody>
+      <tr><td>API 鉴权覆盖</td><td>反射 <code>app.routes</code>，逐个在 <code>dependant</code> 里找 <code>require_auth</code></td><td>27 个 <code>/api</code> 路由<strong>全部</strong>有依赖；仅 2 个 auth 端点例外（设计如此）</td></tr>
+      <tr><td>前端 XSS / 注入面</td><td>全量 grep <code>v-html</code> / <code>innerHTML</code> / <code>eval</code> / <code>console.</code></td><td>全部 <strong>0 命中</strong></td></tr>
+      <tr><td>前端路径参数编码</td><td>检查所有 <code>api.get/post/delete(`…${}…`)</code></td><td>配置名 3 处<strong>一致</strong>用 <code>encodeURIComponent</code></td></tr>
+      <tr><td>命令执行 / 反序列化</td><td>grep <code>shell=True</code> / <code>os.system</code> / <code>eval</code> / <code>pickle.load</code></td><td>全部 <strong>0 命中</strong>（插件 <code>exec_module</code> 属设计内）</td></tr>
+      <tr><td><code>httpx</code> 超时</td><td>检查全部调用点</td><td><code>handlers.py:65-71</code> 有 <code>timeout=10</code></td></tr>
+      <tr><td>事件循环阻塞</td><td>检查 <code>async def</code> 端点内部调用</td><td><code>test_openai_connection</code> 用 <code>AsyncOpenAI</code>，非阻塞</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="finding env">
+  <h3>修复方向建议（P2-18 / P2-19，本轮未改代码） <span class="pill env">待决策</span></h3>
+  <div class="loc">core idea：把「先锁后验」换成「先验后锁」</div>
+  <p>正确修法<strong>不是</strong>「把 <code>record_auth_failure</code> 挪进 <code>require_auth</code>」——
+  那样会让携带过期令牌的正常前端（每次请求都带 Bearer）快速把自己锁死，把 P2-19 的 DoS
+  从「攻击者主动触发」变成「日常自伤」。建议<strong>先验后锁</strong>：</p>
+  <pre><code><span class="cmt"># 思路：先判凭据，凭据正确直接放行（不受锁定影响）；错误才记账并触发限流。</span>
+with _auth_storage_lock:
+    if not secrets.compare_digest(authorization or "", f"Bearer {expected}"):
+        auth_helpers.record_auth_failure(_auth_storage)   <span class="good"># 记账移到错误分支</span>
+        if auth_helpers.is_auth_locked(_auth_storage):
+            raise HTTPException(429, ...)
+        raise _challenge()
+<span class="good"># 凭据正确 → 直接放行，锁定期内合法用户不受影响</span></code></pre>
+  <p>要点：① 记账发生在<strong>任何</strong>携带错误凭据的请求上（堵住 P2-18 的绕过）；
+  ② 正确的凭据<strong>跳过</strong>锁定检查（消除 P2-19 对合法用户的 DoS）；
+  ③ 用 <code>secrets.compare_digest</code> 顺带解决 P3-9。<code>auth_login</code> 同样按「先比后记」调整即可。</p>
+  <p>是否进一步按来源 IP 分桶（<code>request.client.host</code>）取决于暴露范围：回环/单用户场景下
+  当前单例计数配合「先验后锁」已足够。</p>
+</div>
+
 <h2>剩余未处理</h2>
 <ul>
+  <li><strong>第七轮新发现尚未修复（本轮为审计轮）</strong>：<span class="pill p2">P2-18</span>
+    爆破绕过 · <span class="pill p2">P2-19</span> 锁定 DoS · <span class="pill p2">P2-20</span> docker 部署 ·
+    <span class="pill p3">P3-9</span> 非常量时间比较 · <span class="pill p3">P3-10</span> 令牌即授权码。
+    修复方向已给出（见上「修复方向建议」），<strong>待用户决策</strong>。</li>
   <li><strong>P3 余 4 项</strong>：P3-2（handler params 契约）与 P3-8（连接复用）<strong>按用户决定不动</strong>；
     P3-5（<code>core.py</code> 拆分）与 P3-7（前端产物入库）<strong>建议不做</strong> —— 逐项理由见上「P3 可扩展性」。</li>
   <li><strong>环境限制的处置</strong>：沙箱内 WAL 不可用、CLI 启动超时偏紧 —— 已确认按「原样保留 + 文档记录」处理，
@@ -785,7 +951,7 @@ async with lock:
 </ul>
 
 <footer>
-  完整明细（P1/P2 全表、根因分析、可扩展性评估、复现脚本、六轮修复记录、环境限制实证数据）
+  完整明细（P1/P2 全表、根因分析、可扩展性评估、复现脚本、六轮修复记录 + 第七轮审计、环境限制实证数据）
   见 <code>docs/security_audit_2026-09-29.md</code>
 </footer>
 
