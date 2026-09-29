@@ -89,6 +89,28 @@ def test_switch_workdir_rebinds_log_file_to_new_dir(client, tmp_path, monkeypatc
     assert reported.read_text(encoding="utf-8", errors="ignore"), "日志没有写进新目录"
 
 
+def test_workdir_is_logged_on_startup_and_switch(client, tmp_path):
+    """后端实际使用的目录必须打进日志，便于线上核对「基础设置」的显示值。"""
+    log_file = tmp_path / "logs" / data_mod.LOG_FILE_NAME
+    assert log_file.is_file(), f"前置条件：启动日志未创建: {log_file}"
+    startup = log_file.read_text(encoding="utf-8", errors="ignore")
+    assert "WebUI 工作目录[启动]" in startup, "启动时未打印 workdir"
+    assert f"workdir={tmp_path}" in startup, "启动日志中的 workdir 与实际不符"
+    assert "是否绝对路径=True" in startup
+
+    target = tmp_path / "other"
+    resp = client.post("/api/state", json={"workdir": str(target)})
+    assert resp.status_code == 200
+
+    new_log = target / "logs" / data_mod.LOG_FILE_NAME
+    for handler in logging.getLogger("tg-signer").handlers:
+        handler.flush()
+    content = new_log.read_text(encoding="utf-8", errors="ignore")
+    assert f"WebUI 工作目录[切换 {tmp_path} ->]" in content
+    assert f"workdir={target}" in content
+    assert f"log_path={new_log}" in content
+
+
 @pytest.mark.parametrize(
     "relative",
     ["../wb_outside_a", "../../wb_outside_b", "../wb_outside_c/nested"],

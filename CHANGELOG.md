@@ -1,6 +1,11 @@
 # Changelog / 版本变动日志
 
 ## 版本变动日志
+### 0.10.11
+- **feat: 把后端实际使用的工作目录打进日志**：`server._log_workdir()` 在服务启动与 `POST /api/state` 切换工作目录时各写一行 `WebUI 工作目录[启动|切换 旧 ->]: workdir=... | log_path=... | cwd=... | 是否绝对路径=...`，写入 `<workdir>/logs/tg-signer.log`。此前「基础设置」显示的目录与后端实际读写的目录只能靠猜，现在 grep 这一行即可核对
+- 背景：代码侧已确认后端只有 `state.workdir` 一个数据源，不存在「显示 A 实际读 B」的双数据源问题。剩余最可能的成因是线上 Python 进程未随 `git pull` 重启（静态产物每请求读磁盘，后端代码在内存里），故提供可观测手段
+- 测试：新增 `test_workdir_is_logged_on_startup_and_switch`（覆盖启动行与切换行，断言 workdir / log_path 与实际一致）
+
 ### 0.10.10
 - **fix: 切换工作目录后，基础设置显示的「主日志路径」与实际写入位置不一致**：日志 handler 在进程启动时按当时的 workdir 绑定（`server._setup_logger()`），`POST /api/state` 切换目录后只改了 `state.workdir` / `state.log_path`，没有重绑 handler。结果是页面显示新目录的 `log_path`，日志却仍写进旧目录，**新目录的 `logs/` 甚至根本不会被创建** —— 切到全新目录时日志页必然空白，基础设置显示的主日志路径也成了假路径。现 `set_state()` 在切换后重新调用 `_setup_webui_logger(state.workdir)`
 - 已核对：所有读写接口（配置、自动化、签到记录、用户信息、群组、账号登录、日志）均显式传入 `state.workdir` / `state.log_path.parent`，不存在回落到 `data.LOG_DIR`（相对 `logs`）的情况

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 import os
 import pathlib
 import secrets
@@ -98,6 +99,25 @@ def _expected_auth_code() -> Optional[str]:
 def _setup_logger() -> None:
     """把 WebUI 自身日志落到 <workdir>/logs/tg-signer.log。"""
     data_mod._setup_webui_logger(state.workdir)
+    _log_workdir("启动")
+
+
+def _log_workdir(event: str) -> None:
+    """把后端实际使用的目录打进日志。
+
+    页面「基础设置」显示的就是 ``state.workdir``，但历史上出现过「显示的目录
+    和实际读写的目录不是同一个」的情况（v0.10.9 之前的相对路径 400、
+    v0.10.10 之前切换目录后日志仍写旧目录）。把后端真正在用的路径落到日志里，
+    线上排查时不必再靠猜 —— 直接看这一行即可。
+    """
+    logging.getLogger("tg-signer").info(
+        "WebUI 工作目录[%s]: workdir=%s | log_path=%s | cwd=%s | 是否绝对路径=%s",
+        event,
+        state.workdir,
+        state.log_path,
+        os.getcwd(),
+        state.workdir.is_absolute(),
+    )
 
 
 class StateBody(BaseModel):
@@ -243,12 +263,14 @@ def get_state(_: None = Depends(require_auth)) -> Dict[str, Any]:
 @app.post("/api/state")
 def set_state(body: StateBody, _: None = Depends(require_auth)) -> Dict[str, str]:
     try:
+        previous = str(state.workdir)
         state.set_workdir(body.workdir)
         # 日志 handler 是进程启动时按当时的 workdir 绑定的，不重绑的话
         # /api/state 显示的 log_path 已经是新目录，实际日志却仍写进旧目录 ——
         # 基础设置页显示的「主日志路径」就成了假路径，而新目录的 logs/ 根本
         # 不会被创建（切到一个全新目录时日志页直接空白）。
         data_mod._setup_webui_logger(state.workdir)
+        _log_workdir(f"切换 {previous} ->")
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"切换工作目录失败: {exc}")
     return {"workdir": str(state.workdir), "log_path": str(state.log_path)}
