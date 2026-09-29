@@ -422,6 +422,35 @@ def test_logs_expose_task_logs_from_subdirectories(client, tmp_path):
     assert "task line" in resp.json()["lines"]
 
 
+def test_logs_work_with_relative_workdir(client, tmp_path, monkeypatch):
+    """默认 workdir 是相对的 ``.signer``，这正是线上 400 的触发条件。
+
+    之前 get_workdir() 原样返回相对路径，UIState.log_path 变成
+    ``.signer/logs/tg-signer.log``；前端把它回传给 /api/logs，
+    resolve_log_under() 按「相对 logs/ 根目录」再次拼接 → 必然越界 → 400
+    → 页面空白。已有用例都传绝对路径 tmp_path，所以从未覆盖到这条路径。
+    """
+    monkeypatch.chdir(tmp_path)
+    server.state.set_workdir(".signer")
+
+    log_dir = tmp_path / ".signer" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "tg-signer.log").write_text("", encoding="utf-8")
+    task_log = log_dir / "signer-demo" / "tg-signer.log"
+    task_log.parent.mkdir(parents=True, exist_ok=True)
+    task_log.write_text("task line\n", encoding="utf-8")
+
+    listed = client.get("/api/logs/files").json()["files"]
+    assert listed, "相对 workdir 下也必须能列到日志"
+    for item in listed:
+        assert item == str(pathlib.Path(item).resolve()), f"返回了相对路径: {item}"
+        resp = client.get("/api/logs", params={"path": item})
+        assert resp.status_code == 200, f"{item} 读取失败: {resp.json()}"
+
+    # 不指定 path 的默认读取也必须落到有内容的文件上。
+    assert "task line" in client.get("/api/logs").json()["lines"]
+
+
 _ACCOUNT_TRAVERSAL = ["../victim", "..\\victim", "..", ".", "", "a/b"]
 
 

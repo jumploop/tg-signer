@@ -90,9 +90,11 @@ watch(autoRefresh, (value) => {
   if (value) timer = setInterval(refresh, 5000)
 })
 onMounted(() => {
-  // 必须串行：refreshFiles 结束后 watch([selected]) 会触发一次 refresh，
-  // 若并发调用会多打一次请求，且首次内容可能来自尚未加载完的默认路径。
-  refreshFiles().then(refresh)
+  // 串行：先拿文件列表。选中项一旦被赋值，watch([selected]) 会自己去取内容；
+  // 只有在没有任何日志文件时才需要这里兜底再取一次。
+  refreshFiles().then(() => {
+    if (!selected.value) refresh()
+  })
 })
 onUnmounted(() => clearInterval(timer))
 </script>

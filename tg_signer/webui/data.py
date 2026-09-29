@@ -76,7 +76,11 @@ class SignRecord:
 def get_workdir(workdir: Optional[Path | str] = None) -> Path:
     base = Path(workdir) if workdir else DEFAULT_WORKDIR
     base.mkdir(parents=True, exist_ok=True)
-    return base
+    # 必须返回绝对路径。DEFAULT_WORKDIR 默认是相对的 ``.signer``，若原样返回，
+    # UIState.log_path 就是 ``.signer/logs/tg-signer.log``：日志接口把它当作
+    # 「相对 logs/ 根目录」再次拼接，resolve_log_under() 必然判定越界，/api/logs
+    # 与 /api/logs/files 往返一次就全部 400 —— 表现为「日志文件有内容但页面空白」。
+    return base.resolve()
 
 
 def uses_dir_layout(kind: str) -> bool:
@@ -608,6 +612,20 @@ class UIState:
         self._check_workdir(absolute.resolve())
         self.workdir = get_workdir(candidate)
         self.log_path = self.workdir / "logs" / DEFAULT_LOG_FILE.name
+
+    def init_workdir(self, path_str: str) -> None:
+        """按 CLI ``--workdir`` 设定初始工作目录。
+
+        与 :meth:`set_workdir` 的区别是不走 ``allowed_workdir_roots`` 白名单：
+        那条白名单约束的是「通过 WebUI 切工作目录」这个远程动作，而 CLI 操作者
+        本来就拥有该机器的完整文件权限，不构成越权。同时要更新
+        ``_initial_workdir``，否则工作目录选择器的可选根仍是旧默认值。
+        """
+        candidate = Path(path_str).expanduser()
+        absolute = candidate if candidate.is_absolute() else Path.cwd() / candidate
+        self.workdir = get_workdir(absolute)
+        self.log_path = self.workdir / "logs" / DEFAULT_LOG_FILE.name
+        self._initial_workdir = self.workdir.resolve()
 
 
 # configure_logger 会先 clear() 全局 logger 的 handlers 再重建,而 WebUI 的

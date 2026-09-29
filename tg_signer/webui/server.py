@@ -586,7 +586,9 @@ def read_logs(
     try:
         resolved, lines = data_mod.load_logs(
             limit=limit,
-            log_path=path if path is not None else str(state.log_path),
+            # 传 None 而不是 str(state.log_path)：让 _resolve_log_path 回退到
+            # 「非空 + 最新」的那个文件，而不是常常是 0 字节的主日志。
+            log_path=path,
             # 只允许读 <workdir>/logs 下的文件,挡住任意文件读取。
             log_dir=state.log_path.parent,
         )
@@ -679,12 +681,17 @@ if STATIC_DIR.is_dir() and (STATIC_DIR / "assets").is_dir():
 def main(
     host: str = None,
     port: int = None,
+    workdir: str = None,
 ) -> None:
     """启动后端服务：``tg-signer webgui`` 入口。"""
     import uvicorn
 
     host = host or "127.0.0.1"
     port = int(port or 8080)
+    # 之前 webgui 子命令完全不理会全局 --workdir，WebUI 永远读 CWD 下的
+    # ``.signer``：CLI 明明指定了工作目录，日志却在别处，页面自然什么都没有。
+    if workdir:
+        state.init_workdir(str(workdir))
     if host not in LOOPBACK_HOSTS and not _expected_auth_code():
         # fail-closed：监听非回环地址意味着整个网络都能访问这些接口
         # （账号登录/注销、读日志、拉起任务），没有授权码等同于无鉴权开放。

@@ -639,7 +639,9 @@ def migrate_sign_records(obj, legacy_user_id: str | None, delete_json: bool):
     envvar="TG_SIGNER_GUI_AUTHCODE",
     help="授权码，也可通过环境变量`TG_SIGNER_GUI_AUTHCODE`设置。若存在则访问界面时需要正确输入。",
 )
+@click.pass_obj
 def webgui(
+    obj,
     host: str = None,
     port: int = None,
     auth_code: str = None,
@@ -648,4 +650,4 @@ def webgui(
 
     if auth_code:
         os.environ[AUTH_CODE_ENV] = auth_code
-    main(host=host, port=port)
+    main(host=host, port=port, workdir=obj["workdir"])

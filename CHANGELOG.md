@@ -1,6 +1,13 @@
 # Changelog / 版本变动日志
 
 ## 版本变动日志
+### 0.10.9
+- **fix: 日志页仍然空白（v0.10.8 的真正根因）**：`get_workdir()` 原样返回传入的路径，而 `DEFAULT_WORKDIR` 默认是相对的 `.signer`，于是 `UIState.log_path` 变成相对路径 `.signer/logs/tg-signer.log`。`/api/logs/files` 把这个相对路径发给前端，前端再原样回传给 `/api/logs`，`resolve_log_under()` 按「相对 logs/ 根目录」再拼一次 → 必然越界 → **400** → 前端 `catch` 把内容清空。实测默认 workdir 下 `/api/logs`（连不带 `path` 的默认请求）也是 400，整页永远空白。现 `get_workdir()` 统一返回绝对路径
+- **fix: `tg-signer webgui` 完全无视全局 `--workdir`**：`webgui` 子命令只把 host/port 传给 `main()`，没接 `ctx.obj["workdir"]`，WebUI 永远读 CWD 下的 `.signer`。CLI 指定了工作目录、日志却在别处时，页面当然什么都没有。现 `main()` 新增 `workdir` 参数，内部调用 `UIState.init_workdir()`（不走 WebUI 的工作目录白名单 —— 那条白名单约束的是远程切换动作，CLI 操作者本就拥有该机器的完整文件权限）
+- `/api/logs` 未指定 `path` 时不再强行回落到主日志，改为交给 `_resolve_log_path()` 选「非空 + 最新」的文件
+- 前端：文件列表加载后若已自动选中文件，不再额外重复请求一次日志
+- 此前所有日志用例都传绝对路径 `tmp_path`，从未覆盖「相对 workdir」这条线上真实路径 —— 这也是前两轮修复全部落空的原因。新增 `test_logs_work_with_relative_workdir`（已验证：回退 `get_workdir()` 即失败）、`tests/test_cli_webgui_workdir.py::test_webgui_passes_workdir_to_main`
+
 ### 0.10.8
 - **fix: 日志页整页空白（v0.10.7 只修了表象）**：真正原因有两层。其一，`webui/runner.py` 为避免多个子进程的 `RotatingFileHandler` 互相截断，把任务日志写到 `<workdir>/logs/<kind>-<account>/tg-signer.log` 子目录，但 `data.list_log_files()` 用 `glob("*.log")` **不递归** —— 所有真正有内容的任务日志一个都列不出来。其二，顶层 `tg-signer.log` 靠 WebUI「运行」页启动任务时的 stdout 重定向写入，纯 CLI 签到时是 0 字节，前端默认选中逻辑正好落到它身上，页面显示「暂无日志内容」。现改为 `rglob` 递归列举 + 按「非空优先、mtime 倒序」排序，前端取第一个作为默认项；`/api/logs` 未指定 `path` 时同样回退到该最佳文件而非主日志
 - **fix: 子目录日志列得出来却读不了**：0.10.4 收紧 P1-1 任意文件读取时，`utils.resolve_within()` 只允许 `root` 的直接子项，导致 `logs/<kind>-<account>/tg-signer.log` 被 400「路径越界」拒绝。现新增 `utils.resolve_log_under()`：允许一层子目录，但强制 `.log` 后缀，越界与符号链接逃逸仍拒；`resolve_within` 本身不动（仍有其它调用方，放宽它等于把 `*.session_string` / `.openai_config.json` 重新暴露给 `?path=`）
