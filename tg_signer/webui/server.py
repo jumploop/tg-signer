@@ -244,6 +244,11 @@ def get_state(_: None = Depends(require_auth)) -> Dict[str, Any]:
 def set_state(body: StateBody, _: None = Depends(require_auth)) -> Dict[str, str]:
     try:
         state.set_workdir(body.workdir)
+        # 日志 handler 是进程启动时按当时的 workdir 绑定的，不重绑的话
+        # /api/state 显示的 log_path 已经是新目录，实际日志却仍写进旧目录 ——
+        # 基础设置页显示的「主日志路径」就成了假路径，而新目录的 logs/ 根本
+        # 不会被创建（切到一个全新目录时日志页直接空白）。
+        data_mod._setup_webui_logger(state.workdir)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"切换工作目录失败: {exc}")
     return {"workdir": str(state.workdir), "log_path": str(state.log_path)}

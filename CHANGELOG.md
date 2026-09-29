@@ -1,6 +1,11 @@
 # Changelog / 版本变动日志
 
 ## 版本变动日志
+### 0.10.10
+- **fix: 切换工作目录后，基础设置显示的「主日志路径」与实际写入位置不一致**：日志 handler 在进程启动时按当时的 workdir 绑定（`server._setup_logger()`），`POST /api/state` 切换目录后只改了 `state.workdir` / `state.log_path`，没有重绑 handler。结果是页面显示新目录的 `log_path`，日志却仍写进旧目录，**新目录的 `logs/` 甚至根本不会被创建** —— 切到全新目录时日志页必然空白，基础设置显示的主日志路径也成了假路径。现 `set_state()` 在切换后重新调用 `_setup_webui_logger(state.workdir)`
+- 已核对：所有读写接口（配置、自动化、签到记录、用户信息、群组、账号登录、日志）均显式传入 `state.workdir` / `state.log_path.parent`，不存在回落到 `data.LOG_DIR`（相对 `logs`）的情况
+- 测试：新增 `test_switch_workdir_rebinds_log_file_to_new_dir`（已验证：回退 `set_state()` 的重绑即失败）
+
 ### 0.10.9
 - **fix: 日志页仍然空白（v0.10.8 的真正根因）**：`get_workdir()` 原样返回传入的路径，而 `DEFAULT_WORKDIR` 默认是相对的 `.signer`，于是 `UIState.log_path` 变成相对路径 `.signer/logs/tg-signer.log`。`/api/logs/files` 把这个相对路径发给前端，前端再原样回传给 `/api/logs`，`resolve_log_under()` 按「相对 logs/ 根目录」再拼一次 → 必然越界 → **400** → 前端 `catch` 把内容清空。实测默认 workdir 下 `/api/logs`（连不带 `path` 的默认请求）也是 400，整页永远空白。现 `get_workdir()` 统一返回绝对路径
 - **fix: `tg-signer webgui` 完全无视全局 `--workdir`**：`webgui` 子命令只把 host/port 传给 `main()`，没接 `ctx.obj["workdir"]`，WebUI 永远读 CWD 下的 `.signer`。CLI 指定了工作目录、日志却在别处时，页面当然什么都没有。现 `main()` 新增 `workdir` 参数，内部调用 `UIState.init_workdir()`（不走 WebUI 的工作目录白名单 —— 那条白名单约束的是远程切换动作，CLI 操作者本就拥有该机器的完整文件权限）

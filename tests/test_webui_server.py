@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import pathlib
 import re
 
@@ -60,6 +61,32 @@ def test_state_switch_workdir(client, tmp_path):
     resp = client.post("/api/state", json={"workdir": str(target)})
     assert resp.status_code == 200
     assert resp.json()["workdir"] == str(target)
+
+
+def test_switch_workdir_rebinds_log_file_to_new_dir(client, tmp_path, monkeypatch):
+    """基础设置显示的「主日志路径」必须是日志真正写入的位置。
+
+    日志 handler 在进程启动时按当时的 workdir 绑定；切换工作目录后
+    /api/state 报的是新路径，日志却仍写进旧目录，新目录的 logs/ 甚至不会被
+    创建 —— 页面显示的路径成了假路径，切到全新目录时日志页直接空白。
+    """
+    old_log = tmp_path / "logs" / data_mod.LOG_FILE_NAME
+    assert old_log.parent.is_dir(), "前置条件：启动时应已建好旧 logs 目录"
+
+    target = tmp_path / "other"
+    resp = client.post("/api/state", json={"workdir": str(target)})
+    assert resp.status_code == 200
+    reported = pathlib.Path(resp.json()["log_path"])
+
+    # configure_logger 的默认 logger 名是 "tg-signer"（连字符）。
+    logger = logging.getLogger("tg-signer")
+    logger.warning("probe-after-switch")
+    for handler in logger.handlers:
+        handler.flush()
+
+    assert reported == target / "logs" / data_mod.LOG_FILE_NAME
+    assert reported.parent.is_dir(), f"切换后 logs 目录未创建: {reported}"
+    assert reported.read_text(encoding="utf-8", errors="ignore"), "日志没有写进新目录"
 
 
 @pytest.mark.parametrize(
