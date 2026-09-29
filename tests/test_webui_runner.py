@@ -48,9 +48,12 @@ def test_build_command_signer_single_task(monkeypatch, tmp_path):
     assert cmd[1:4] == ["-m", "tg_signer", "--workdir"]
     assert "--account" in cmd
     assert "--session_dir" in cmd
-    assert "--log-dir" in cmd
-    # 不再为每个任务单独传 --log-file,统一到主日志
-    assert "--log-file" not in cmd
+    # 子进程日志按 (kind, account) 隔离:不隔离的话 CLI 的 --log-file 默认值是
+    # 相对路径 logs/tg-signer.log,子进程会在自己 cwd 下另建一份 logs/,而
+    # warn.log / error.log 又被所有子进程共享、并发轮转互相截断。
+    child_log_dir = tmp_path / "logs" / "signer-acc1"
+    assert cmd[cmd.index("--log-dir") + 1] == str(child_log_dir)
+    assert cmd[cmd.index("--log-file") + 1] == str(child_log_dir / "tg-signer.log")
     assert cmd[-2:] == ["run", "my_sign"]
 
 
@@ -81,9 +84,16 @@ def test_build_command_kinds_proxy_and_invalid(monkeypatch, tmp_path):
         "a1",
         "a2",
     ]
-    # proxy 仍正常拼接
-    cmd = runner.build_command("signer", "s1", tmp_path, "a", proxy="socks5://x:1")
-    assert cmd[cmd.index("--proxy") :] == ["--proxy", "socks5://x:1", "run", "s1"]
+    # 代理凭据不进 argv:同机可以用 ps / 任务管理器读到 --proxy 的明文密码,
+    # 所以改由 TG_PROXY 环境变量传给子进程(CLI 的 --proxy 声明了 envvar)。
+    cmd = runner.build_command("signer", "s1", tmp_path, "a")
+    assert "--proxy" not in cmd
+    assert not any("socks5://" in part for part in cmd)
+    monkeypatch.delenv("TG_PROXY", raising=False)
+    assert "TG_PROXY" not in runner.build_env(None)
+    assert runner.build_env("socks5://user:pass@127.0.0.1:1080")["TG_PROXY"] == (
+        "socks5://user:pass@127.0.0.1:1080"
+    )
     with pytest.raises(ValueError):
         runner.build_command("unknown", "t", tmp_path, "a")
     # 空任务列表报错
@@ -340,7 +350,7 @@ def test_start_closes_log_fp_after_popen(monkeypatch, tmp_path):
         def wait(self, timeout=None):
             return 0
 
-    def fake_popen(cmd, stdout=None, stderr=None):
+    def fake_popen(cmd, stdout=None, stderr=None, env=None):
         captured["stdout"] = stdout
         captured["stderr"] = stderr
         return _FakeChild()
@@ -372,7 +382,7 @@ def test_start_reaps_child_on_early_exit(monkeypatch, tmp_path):
             waited["called"] = True
             return 1
 
-    def fake_popen(cmd, stdout=None, stderr=None):
+    def fake_popen(cmd, stdout=None, stderr=None, env=None):
         return _FakeChild()
 
     monkeypatch.setattr(runner.subprocess, "Popen", fake_popen)
@@ -385,3 +395,71 @@ def test_start_reaps_child_on_early_exit(monkeypatch, tmp_path):
     # 不应留在 _PROCESSES / _LOCKS 里
     assert "signer:acc" not in runner._PROCESSES
     assert "signer:acc" not in runner._LOCKS
+
+
+def test_start_passes_proxy_via_env_not_argv(monkeypatch, tmp_path):
+    """代理凭据必须走 TG_PROXY 环境变量,不能出现在子进程 argv 里。
+
+    ``--proxy socks5://user:pass@host`` 同机可被 ``ps`` / 任务管理器读到明文密码,
+    而 CLI 的 ``--proxy`` 本就声明了 ``envvar="TG_PROXY"``,用环境变量传递即可。
+    """
+    captured = {}
+
+    class _FakeChild:
+        pid = 4242
+
+        def poll(self):
+            return None  # 仍在运行 -> 成功路径
+
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_popen(cmd, stdout=None, stderr=None, env=None):
+        captured["cmd"] = cmd
+        captured["env"] = env
+        return _FakeChild()
+
+    monkeypatch.setattr(runner.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(runner, "_STARTUP_GRACE_SECONDS", 0.0)
+    monkeypatch.delenv("TG_PROXY", raising=False)
+
+    proxy = "socks5://user:secret@127.0.0.1:1080"
+    ok, msg = runner.start("signer", "t_proxy", tmp_path, "acc", proxy)
+    assert ok, msg
+
+    assert "--proxy" not in captured["cmd"]
+    assert not any("socks5://" in part for part in captured["cmd"])
+    assert captured["env"]["TG_PROXY"] == proxy
+    runner._forget("signer:acc")
+
+
+def test_start_isolates_child_log_dir(monkeypatch, tmp_path):
+    """子进程日志目录按 (kind, account) 隔离,避免多进程轮转同一份 warn/error。"""
+    captured = {}
+
+    class _FakeChild:
+        pid = 4243
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_popen(cmd, stdout=None, stderr=None, env=None):
+        captured["cmd"] = cmd
+        return _FakeChild()
+
+    monkeypatch.setattr(runner.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(runner, "_STARTUP_GRACE_SECONDS", 0.0)
+
+    ok, msg = runner.start("automation", "t_log", tmp_path, "acc")
+    assert ok, msg
+    child_log_dir = tmp_path / "logs" / "automation-acc"
+    assert captured["cmd"][captured["cmd"].index("--log-dir") + 1] == str(child_log_dir)
+    assert captured["cmd"][captured["cmd"].index("--log-file") + 1] == str(
+        child_log_dir / runner.DEFAULT_LOG_FILE_NAME
+    )
+    # WebUI 侧的聚合主日志仍是 <workdir>/logs/<DEFAULT_LOG_FILE_NAME>
+    assert (tmp_path / "logs" / runner.DEFAULT_LOG_FILE_NAME).is_file()
+    runner._forget("automation:acc")

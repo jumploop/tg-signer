@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -27,6 +28,10 @@ from tg_signer.utils import resolve_under
 # 与 webui.data.DEFAULT_LOG_FILE.name 保持一致,统一主日志文件名
 DEFAULT_LOG_FILE_NAME = "tg-signer.log"
 
+# 下面三个字典由 FastAPI 的线程池并发读写(每个请求一个线程),所有读写都必须
+# 经过 _STATE_LOCK。用 RLock 而不是 Lock:_forget() 会被已经持锁的调用方再次
+# 进入。锁只覆盖字典操作本身,不覆盖 _STARTUP_GRACE_SECONDS 这类阻塞等待。
+_STATE_LOCK = threading.RLock()
 _PROCESSES: Dict[str, subprocess.Popen] = {}
 # 账号级文件锁: key = process_key(kind, account) -> 持有锁的文件对象。
 # 子进程退出 / runner.stop / runner.shutdown_all 时必须释放,否则同账号
@@ -143,10 +148,12 @@ def _acquire_account_lock(workdir: Path, account: str) -> LockHandle:
 
 def _forget(key: str) -> None:
     """清理 key 对应的进程 / 锁 / 任务名,并释放锁。"""
-    _PROCESSES.pop(key, None)
-    _TASK_NAMES.pop(key, None)
-    lock = _LOCKS.pop(key, None)
+    with _STATE_LOCK:
+        _PROCESSES.pop(key, None)
+        _TASK_NAMES.pop(key, None)
+        lock = _LOCKS.pop(key, None)
     if lock is not None:
+        # 释放文件锁放到字典锁之外:release() 里有系统调用,不该拖住其它查询。
         lock.release()
 
 
@@ -165,18 +172,30 @@ def build_command(
     tasks: Union[str, List[str]],
     workdir: Path | str,
     account: str,
-    proxy: Optional[str] = None,
 ) -> List[str]:
     """构造启动子进程的 CLI 命令。
 
     ``tasks`` 接受单任务名(str)或任务列表(List[str])。所有任务共享一个
     子进程,通过 ``asyncio.gather`` 并发运行(共享 Client / 同一 SQLite 会话)。
+
+    两点刻意为之:
+
+    - **代理不进 argv**。``--proxy socks5://user:pass@host`` 同机可被 ``ps`` /
+      任务管理器读到明文凭据,改由 :func:`build_env` 通过 ``TG_PROXY`` 传入
+      (CLI 的 ``--proxy`` 本就声明了 ``envvar="TG_PROXY"``)。
+    - **日志目录按子进程隔离**。原来只传 ``--log-dir`` 而不传 ``--log-file``,
+      CLI 的 ``--log-file`` 默认值是相对路径 ``logs/tg-signer.log``,于是子进程
+      会在自己的 cwd 下另建一份 ``logs/``,而 ``warn.log`` / ``error.log`` 又被
+      所有子进程共享 —— 多个 RotatingFileHandler 并发轮转会互相截断。现在把
+      两个路径都指到 ``<workdir>/logs/<kind>-<account>/``。WebUI 侧看到的聚合
+      日志仍由 stdout 重定向到 ``<workdir>/logs/<DEFAULT_LOG_FILE_NAME>`` 提供。
     """
     if isinstance(tasks, str):
         tasks = [tasks]
     if not tasks:
         raise ValueError("至少需要一个任务名")
     workdir = Path(workdir)
+    child_log_dir = resolve_under(workdir / "logs", f"{kind}-{account}")
     cmd = [
         sys.executable,
         "-m",
@@ -188,10 +207,10 @@ def build_command(
         "--session_dir",
         str(workdir),
         "--log-dir",
-        str(workdir / "logs"),
+        str(child_log_dir),
+        "--log-file",
+        str(child_log_dir / DEFAULT_LOG_FILE_NAME),
     ]
-    if proxy:
-        cmd += ["--proxy", proxy]
     if kind == "signer":
         cmd += ["run", *tasks]
     elif kind == "automation":
@@ -199,6 +218,14 @@ def build_command(
     else:
         raise ValueError(f"不支持的运行类型: {kind}")
     return cmd
+
+
+def build_env(proxy: Optional[str] = None) -> Dict[str, str]:
+    """子进程环境:代理凭据只经 ``TG_PROXY`` 传递,不落进 argv。"""
+    env = dict(os.environ)
+    if proxy:
+        env["TG_PROXY"] = proxy
+    return env
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +236,9 @@ def build_command(
 def running_tasks() -> Dict[str, bool]:
     """返回 {process_key: is_running},并清理已退出条目。"""
     result: Dict[str, bool] = {}
-    for key, proc in list(_PROCESSES.items()):
+    with _STATE_LOCK:
+        snapshot = list(_PROCESSES.items())
+    for key, proc in snapshot:
         if proc.poll() is None:
             result[key] = True
         else:
@@ -221,16 +250,20 @@ def running_tasks() -> Dict[str, bool]:
 def running_task_names() -> Dict[str, List[str]]:
     """返回 {process_key: 任务名列表},仅包含仍在运行的进程。"""
     result: Dict[str, List[str]] = {}
-    for key, proc in list(_PROCESSES.items()):
+    with _STATE_LOCK:
+        snapshot = list(_PROCESSES.items())
+        names = {key: list(_TASK_NAMES.get(key, [])) for key, _ in snapshot}
+    for key, proc in snapshot:
         if proc.poll() is None:
-            result[key] = list(_TASK_NAMES.get(key, []))
+            result[key] = names[key]
     return result
 
 
 def status(kind: str, account: str) -> bool:
     """``(kind, account)`` 对应的子进程是否仍在运行。"""
     key = process_key(kind, account)
-    proc = _PROCESSES.get(key)
+    with _STATE_LOCK:
+        proc = _PROCESSES.get(key)
     if proc is None:
         return False
     if proc.poll() is not None:
@@ -257,8 +290,10 @@ def start(
     if not tasks:
         return False, "需要至少一个任务名"
     key = process_key(kind, account)
-    proc = _PROCESSES.get(key)
-    if proc is not None and proc.poll() is None:
+    with _STATE_LOCK:
+        proc = _PROCESSES.get(key)
+        running = proc is not None and proc.poll() is None
+    if running:
         return False, f"账号 {account} 的 {kind} 任务已在运行 (PID {proc.pid})"
     workdir = Path(workdir)
 
@@ -277,7 +312,7 @@ def start(
     try:
         workdir.mkdir(parents=True, exist_ok=True)
         log_dir.mkdir(parents=True, exist_ok=True)
-        cmd = build_command(kind, tasks, workdir, account, proxy)
+        cmd = build_command(kind, tasks, workdir, account)
         main_log = log_dir / DEFAULT_LOG_FILE_NAME
         log_fp = open(main_log, "a", encoding="utf-8")
     except OSError as exc:
@@ -287,7 +322,9 @@ def start(
         lock.release()
         return False, str(exc)
     try:
-        child = subprocess.Popen(cmd, stdout=log_fp, stderr=log_fp)
+        child = subprocess.Popen(
+            cmd, stdout=log_fp, stderr=log_fp, env=build_env(proxy)
+        )
     except OSError as exc:
         log_fp.close()
         lock.release()
@@ -312,16 +349,18 @@ def start(
             f"{task_disp} 启动后立即退出(exit code={rc}),请检查 session 与参数"
         )
 
-    _PROCESSES[key] = child
-    _LOCKS[key] = lock
-    _TASK_NAMES[key] = list(tasks)
+    with _STATE_LOCK:
+        _PROCESSES[key] = child
+        _LOCKS[key] = lock
+        _TASK_NAMES[key] = list(tasks)
     task_disp = tasks[0] if len(tasks) == 1 else f"{len(tasks)} 个任务"
     return True, f"{kind} 任务 {task_disp} 已启动 (PID {child.pid})"
 
 
 def stop(kind: str, account: str) -> Tuple[bool, str]:
     key = process_key(kind, account)
-    proc = _PROCESSES.get(key)
+    with _STATE_LOCK:
+        proc = _PROCESSES.get(key)
     if proc is None or proc.poll() is not None:
         _forget(key)
         return False, f"账号 {account} 的 {kind} 任务未在运行"
@@ -331,6 +370,8 @@ def stop(kind: str, account: str) -> Tuple[bool, str]:
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait(timeout=5)
+    # 只有确认子进程已退出(或已被 kill)才释放账号锁:锁一释放,新进程就会
+    # 去打开同一份 <account>.session,而旧进程若还活着就是两个写者。
     _forget(key)
     return True, f"账号 {account} 的 {kind} 任务已停止"
 
@@ -343,7 +384,9 @@ def shutdown_all(timeout: float = 5.0) -> List[str]:
     stopped process keys.
     """
     stopped: List[str] = []
-    for key, proc in list(_PROCESSES.items()):
+    with _STATE_LOCK:
+        snapshot = list(_PROCESSES.items())
+    for key, proc in snapshot:
         if proc.poll() is None:
             try:
                 proc.terminate()

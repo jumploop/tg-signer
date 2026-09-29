@@ -5,6 +5,7 @@ import json
 import pathlib
 import shutil
 import threading
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from pyrogram import errors
@@ -13,6 +14,12 @@ from tg_signer import core as tg_core
 from tg_signer.core import Client, chat_to_dict, get_api_config, get_client, get_proxy
 from tg_signer.utils import resolve_under
 
+# 每账号一个登录会话,会话内持有一个 daemon 线程 + 独立 event loop + 一个
+# Client。用户 send_code 之后中途放弃(关页面 / 不发验证码)时这些资源没人回收,
+# 所以给会话加 TTL,由下一次调用顺手淘汰。
+LOGIN_SESSION_TTL_SECONDS = 10 * 60
+# LOGIN_SESSIONS 由 FastAPI 线程池并发读写(每个请求一个线程),所有访问都要过锁。
+_LOGIN_SESSIONS_LOCK = threading.Lock()
 LOGIN_SESSIONS: Dict[str, "_AccountLoginSession"] = {}
 _ACCOUNT_USERS_FILE = "webui_accounts.json"
 
@@ -98,6 +105,7 @@ class _AccountLoginSession:
         self.workdir = pathlib.Path(workdir)
         # 下面的 get_client 会把账号名拼进 session 文件路径,先校验一次。
         _account_path(account, self.workdir)
+        self.created_at = time.monotonic()
         self.phone = ""
         self.phone_code_hash: Optional[str] = None
         self.loop = asyncio.new_event_loop()
@@ -181,6 +189,11 @@ class _AccountLoginSession:
             return "error", str(exc)
 
     def close(self) -> None:
+        # 先从注册表摘掉自己(加锁),再做阻塞式的线程 / loop 收尾(不加锁:
+        # 这里可能要等 5 秒,不该把整张注册表锁住)。
+        with _LOGIN_SESSIONS_LOCK:
+            if LOGIN_SESSIONS.get(self.account) is self:
+                LOGIN_SESSIONS.pop(self.account, None)
         # 彻底停掉 client 并清 core 缓存,避免下次同账号登录时拿到绑定旧 loop 的 client
         try:
             if self.thread.is_alive():
@@ -196,7 +209,6 @@ class _AccountLoginSession:
                 self.thread.join(timeout=5)
             except Exception:  # noqa: BLE001
                 pass
-            LOGIN_SESSIONS.pop(self.account, None)
 
     async def _close_client(self) -> None:
         try:
@@ -206,19 +218,46 @@ class _AccountLoginSession:
             pass
 
 
+def prune_login_sessions() -> List[str]:
+    """关闭并移除超过 TTL 的登录会话,返回被回收的账号名。
+
+    回收动作(关闭 client / 停线程)会阻塞,所以先加锁把过期条目从注册表摘出来,
+    再在锁外逐个 ``close()``;``close()`` 自己也会去摘注册表,此处要保证幂等。
+    """
+    now = time.monotonic()
+    with _LOGIN_SESSIONS_LOCK:
+        expired = [
+            account
+            for account, session in LOGIN_SESSIONS.items()
+            if now - session.created_at > LOGIN_SESSION_TTL_SECONDS
+        ]
+        sessions = [LOGIN_SESSIONS.pop(account, None) for account in expired]
+    closed: List[str] = []
+    for account, session in zip(expired, sessions, strict=True):
+        if session is not None:
+            session.close()
+            closed.append(account)
+    return closed
+
+
 def send_login_code(account: str, phone: str, workdir) -> Tuple[str, str]:
-    existing = LOGIN_SESSIONS.get(account)
+    prune_login_sessions()
+    with _LOGIN_SESSIONS_LOCK:
+        existing = LOGIN_SESSIONS.pop(account, None)
     if existing is not None:
         existing.close()
     session = _AccountLoginSession(account, pathlib.Path(workdir))
-    LOGIN_SESSIONS[account] = session
+    with _LOGIN_SESSIONS_LOCK:
+        LOGIN_SESSIONS[account] = session
     return session.send_code(phone)
 
 
 def complete_login(
     account: str, code: str, password: Optional[str] = None
 ) -> Tuple[str, str]:
-    session = LOGIN_SESSIONS.get(account)
+    prune_login_sessions()
+    with _LOGIN_SESSIONS_LOCK:
+        session = LOGIN_SESSIONS.get(account)
     if session is None:
         return "error", "登录会话不存在，请重新发起登录"
     status, message = session.complete(code, password)

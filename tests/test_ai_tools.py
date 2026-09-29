@@ -1,5 +1,7 @@
 """Tests for tg_signer.ai_tools.OpenAIConfigManager."""
 
+from pathlib import Path
+
 import pytest
 
 from tg_signer import ai_tools
@@ -159,3 +161,21 @@ async def test_get_reply_returns_empty_string_when_content_missing(monkeypatch):
     """content 为 None 时返回空串,避免把 None 传给 send_message。"""
     tools = _tools_with_content(monkeypatch, None)
     assert await tools.get_reply("prompt", "query") == ""
+
+
+def test_save_config_restricts_file_permissions(tmp_path, monkeypatch):
+    """落盘后要把 .openai_config.json 收紧到仅属主可读写。
+
+    文件里是明文 API Key,默认 umask 常见 0644,同机其他用户可直接读到。
+    """
+    calls = []
+
+    def _spy(path, mode=0o600):
+        calls.append((Path(path), mode))
+        return True
+
+    monkeypatch.setattr(ai_tools, "restrict_file_permissions", _spy)
+
+    OpenAIConfigManager(tmp_path).save_config("sk-test", model="gpt-4o-mini")
+
+    assert calls == [(tmp_path / ".openai_config.json", 0o600)]

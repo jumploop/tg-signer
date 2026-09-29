@@ -3,6 +3,7 @@ import os
 import re
 import secrets
 import shutil
+import threading
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -557,6 +558,12 @@ class UIState:
         self.log_path = self.workdir / "logs" / DEFAULT_LOG_FILE.name
 
 
+# configure_logger 会先 clear() 全局 logger 的 handlers 再重建,而 WebUI 的
+# 请求线程随时可能正在写日志(handler 被清空的瞬间记录会掉进 lastResort)。
+# 串行化配置动作,避免和正在输出的线程抢同一个 logger。
+_logger_setup_lock = threading.Lock()
+
+
 def _setup_webui_logger(workdir: Path) -> None:
     """Configure file logging for the WebUI process itself.
 
@@ -567,4 +574,5 @@ def _setup_webui_logger(workdir: Path) -> None:
 
     log_dir = workdir / "logs"
     log_file = log_dir / LOG_FILE_NAME
-    configure_logger(log_level="INFO", log_dir=log_dir, log_file=log_file)
+    with _logger_setup_lock:
+        configure_logger(log_level="INFO", log_dir=log_dir, log_file=log_file)

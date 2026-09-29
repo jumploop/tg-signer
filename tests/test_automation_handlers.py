@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from tg_signer.automation.handlers import (
     extract_regex,
     load_plugins,
     random_pick,
+    render_template,
     schedule_next,
 )
 from tg_signer.automation.models import AutomationContext, Event, RuleStateStore
@@ -269,3 +271,106 @@ def test_load_plugins_registers_handlers(tmp_path):
     from tg_signer.automation.handlers import get_handler
 
     assert get_handler("plugin_hello") is not None
+
+
+# ---------------------------------------------------------------------------
+# P2 修复:模板取值收敛(禁止 dunder 属性链 / 下标)+ 配置正则的边界护栏
+# ---------------------------------------------------------------------------
+
+
+def _render_ctx(tmp_path):
+    state = RuleStateStore(tmp_path / "state.json", logging.getLogger("test"))
+    return AutomationContext(
+        vars={},
+        state=state,
+        client=None,
+        logger=logging.getLogger("test"),
+        worker=DummyWorker(),
+        workdir=tmp_path,
+    )
+
+
+def _render_event(text="hi"):
+    return Event(
+        type="message",
+        chat_id=123,
+        message=SimpleNamespace(text=text, id=7, chat=SimpleNamespace(id=123)),
+        now=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        trigger_id="t1",
+        rule_id="r1",
+    )
+
+
+def test_render_template_substitutes_documented_placeholders(tmp_path):
+    """文档化的占位符必须继续可用。"""
+    ctx = _render_ctx(tmp_path)
+    event = _render_event()
+    assert render_template("说: {message.text}", event, ctx) == "说: hi"
+    assert render_template("chat={chat_id}", event, ctx) == "chat=123"
+    assert render_template("topic={message.chat.id}", event, ctx) == "topic=123"
+
+
+def test_render_template_keeps_unknown_placeholders_verbatim(tmp_path):
+    ctx = _render_ctx(tmp_path)
+    assert render_template("{nope}", _render_event(), ctx) == "{nope}"
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "{message.__class__.__mro__}",
+        "{message.__class__.__init__.__globals__}",
+        "{message.__class__.__init__.__globals__[logging]}",
+        "{event.message.__class__.__init__.__globals__}",
+        "{message.__dict__}",
+        "{message._private}",
+        "{message.chat[id]}",
+        "{message.chat.id.extra.deeper}",
+    ],
+)
+def test_render_template_refuses_attribute_chain_escapes(tmp_path, template):
+    """模板不能顺着属性链 / 下标读到模块全局变量之类的东西。
+
+    渲染失败时返回原样文本(既有行为),关键是不能把 ``__globals__`` 的内容渲染出来。
+    """
+    ctx = _render_ctx(tmp_path)
+    rendered = render_template(template, _render_event(), ctx)
+    assert rendered == template
+    assert "module" not in str(rendered)
+
+
+@pytest.mark.asyncio
+async def test_extract_regex_skips_oversized_pattern(tmp_path):
+    ctx = _render_ctx(tmp_path)
+    await extract_regex(_render_event(), ctx, {"pattern": "a" * 1000, "var": "x"})
+    assert "x" not in ctx.vars
+
+
+@pytest.mark.asyncio
+async def test_extract_regex_skips_catastrophic_pattern(tmp_path):
+    """嵌套无上限量词要被跳过,而不是真的去匹配到把事件循环卡死。"""
+    ctx = _render_ctx(tmp_path)
+    event = _render_event(text="a" * 2000 + "!")
+    await asyncio.wait_for(
+        extract_regex(event, ctx, {"pattern": r"(a+)+$", "var": "x"}), timeout=3
+    )
+    assert "x" not in ctx.vars
+
+
+@pytest.mark.asyncio
+async def test_blacklist_filter_skips_catastrophic_pattern(tmp_path):
+    ctx = _render_ctx(tmp_path)
+    event = _render_event(text="a" * 2000 + "!")
+    result = await asyncio.wait_for(
+        blacklist_filter(event, ctx, {"regex": r"(a+)+$"}), timeout=3
+    )
+    assert result == "continue"
+
+
+@pytest.mark.asyncio
+async def test_blacklist_filter_skips_invalid_regex(tmp_path):
+    ctx = _render_ctx(tmp_path)
+    result = await blacklist_filter(
+        _render_event(), ctx, {"regex": "(unclosed", "keywords": []}
+    )
+    assert result == "continue"

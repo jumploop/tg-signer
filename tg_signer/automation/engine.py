@@ -25,6 +25,7 @@ from tg_signer.config import (
     normalize_chat_ref,
 )
 from tg_signer.core import BaseUserWorker, get_now
+from tg_signer.utils import safe_regex_search
 
 from .handlers import (
     get_handler,
@@ -455,7 +456,12 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             return value in text
         if rule == "regex":
             flags = 0 if not filter_cfg.ignore_case else re.IGNORECASE
-            return re.search(value, text, flags=flags) is not None
+            try:
+                return safe_regex_search(value, text, flags=flags) is not None
+            except ValueError as exc:
+                # 配置里的正则非法/超长:当成「不匹配」而不是抛异常打断整条规则链。
+                self.log(f"filters.text_rule: {exc}", level="WARNING")
+                return False
         return False
 
     def _match_user(

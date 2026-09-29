@@ -12,7 +12,7 @@ from typing_extensions import Required, TypedDict
 if TYPE_CHECKING:
     from openai import AsyncOpenAI  # 在性能弱的机器上导入openai包实在有些慢
 
-from tg_signer.utils import UserInput, print_to_user
+from tg_signer.utils import UserInput, print_to_user, restrict_file_permissions
 
 DEFAULT_MODEL = "gpt-4o"
 
@@ -55,6 +55,8 @@ class OpenAIConfigManager:
         config = OpenAIConfig(api_key=api_key, base_url=base_url, model=model)
         with open(config_file, "w", encoding="utf-8") as fp:
             json.dump(config, fp, ensure_ascii=False, indent=2)
+        # 文件里是明文 API Key,收紧到仅属主可读写(POSIX)。
+        restrict_file_permissions(config_file)
 
     def load_config(self) -> Optional[OpenAIConfig]:
         # 环境变量优先

@@ -4,6 +4,7 @@ import logging
 import os
 import random
 import re
+import string
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from pyrogram.types import Message
 
 from tg_signer.config import HttpCallback, SafeFormatDict, UDPForward
 from tg_signer.notification.server_chan import sc_send
+from tg_signer.utils import safe_regex_search
 
 from .models import AutomationContext, Event
 
@@ -69,6 +71,38 @@ async def http_api_callback(f: HttpCallback, message: Message):
         )
 
 
+# 模板里允许的最大属性层级:``{message.text}`` 是文档化用法,
+# ``{message.chat.title}`` 也保留,再深就没有正当理由了。
+_MAX_TEMPLATE_ATTR_DEPTH = 2
+
+
+class _SafeTemplateFormatter(string.Formatter):
+    """只允许 ``{name}`` 与 ``{name.attr[.attr]}`` 的基础模板语法。
+
+    ``str.format_map`` 默认允许任意属性链与下标取值,而 ``mapping`` 里放的是
+    真实的 Message / Event 对象,于是配置里写 ``{message.__class__.__mro__}``
+    或 ``{event.message.__class__.__init__.__globals__[httpx]}`` 就能读到本模块的
+    全局变量。这里收紧到:不允许下标、属性层级 <= 2、任何一段都不以下划线开头
+    —— 既保留文档化的 ``{message.text}``,又堵掉全部 dunder 逃逸路径。
+    """
+
+    def get_field(self, field_name, args, kwargs):
+        if "[" in field_name or "]" in field_name:
+            raise ValueError(f"模板不支持下标取值: {field_name!r}")
+        parts = field_name.split(".")
+        if len(parts) > _MAX_TEMPLATE_ATTR_DEPTH + 1:
+            raise ValueError(f"模板属性层级过深: {field_name!r}")
+        if any(not part or part.startswith("_") for part in parts):
+            raise ValueError(f"模板字段非法: {field_name!r}")
+        value, used = super().get_field(parts[0], args, kwargs)
+        for attr in parts[1:]:
+            value = getattr(value, attr)
+        return value, used
+
+
+_TEMPLATE_FORMATTER = _SafeTemplateFormatter()
+
+
 def render_template(text: Any, event: Event, ctx: AutomationContext) -> Any:
     if not isinstance(text, str):
         return text
@@ -84,7 +118,7 @@ def render_template(text: Any, event: Event, ctx: AutomationContext) -> Any:
         }
     )
     try:
-        return text.format_map(mapping)
+        return _TEMPLATE_FORMATTER.vformat(text, (), mapping)
     except Exception:  # noqa: BLE001
         return text
 
@@ -338,7 +372,11 @@ async def extract_regex(
     if text is None:
         text = message_text(event.message)
     flags = re.IGNORECASE if params.get("ignore_case", True) else 0
-    match = re.search(pattern, text, flags=flags)
+    try:
+        match = safe_regex_search(pattern, text, flags=flags)
+    except ValueError as exc:
+        ctx.log(f"extract_regex: {exc}", level="WARNING")
+        return "continue"
     if not match:
         ctx.log("extract_regex: 未匹配到结果", level="DEBUG")
         return "continue"
@@ -414,11 +452,11 @@ async def blacklist_filter(
     if regex:
         try:
             flags = re.IGNORECASE if ignore_case else 0
-            if re.search(regex, text, flags=flags):
+            if safe_regex_search(regex, text, flags=flags):
                 ctx.log("blacklist_filter: regex 命中", level="DEBUG")
                 return "stop"
-        except re.error:
-            ctx.log("blacklist_filter: regex无效", level="WARNING")
+        except ValueError as exc:
+            ctx.log(f"blacklist_filter: {exc}", level="WARNING")
     return "continue"
 
 

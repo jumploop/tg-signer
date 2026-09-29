@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import json
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -144,6 +145,64 @@ def test_match_filter_variants(tmp_path):
     assert worker._match_filter(FilterConfig(text_rule="all"), msg)
     assert not worker._match_filter(
         FilterConfig(text_rule="contains", text_value=""), msg
+    )
+
+
+def test_match_filter_invalid_regex_does_not_break_rule_chain(tmp_path):
+    """非法正则只应被判为「不匹配」，不能抛异常打断整条规则链。"""
+    worker = make_worker(tmp_path)
+    msg = DummyMessage(text="Hello World", chat=DummyChat(id=1))
+
+    # 修复前：re.error 直接冒泡出 _match_filter；修复后：捕获并返回 False。
+    assert not worker._match_filter(
+        FilterConfig(text_rule="regex", text_value="("), msg
+    )
+
+
+def test_match_filter_catastrophic_regex_is_rejected_fast(tmp_path):
+    """灾难性回溯正则应被形态检查拦下，而不是把事件循环卡住若干秒。"""
+    worker = make_worker(tmp_path)
+    # 24 个 a 后跟非匹配字符：朴素 re.search(r"(a+)+$", ...) 需约 2s。
+    msg = DummyMessage(text="a" * 24 + "!", chat=DummyChat(id=1))
+
+    started = time.monotonic()
+    matched = worker._match_filter(
+        FilterConfig(text_rule="regex", text_value=r"(a+)+$"), msg
+    )
+    elapsed = time.monotonic() - started
+
+    assert matched is False
+    assert elapsed < 1.0, f"正则护栏未生效，耗时 {elapsed:.3f}s"
+
+
+def test_match_filter_oversized_regex_is_rejected(tmp_path):
+    """超长 pattern 应被整体拒绝，即使它本来能匹配。
+
+    这里刻意构造一个「前 12 字符就足以命中、但总长超过 512」的正则：
+    没有长度护栏时会返回 True（并可能付出长耗时回溯），加了护栏后必须为 False。
+    """
+    worker = make_worker(tmp_path)
+    msg = DummyMessage(text="Hello World", chat=DummyChat(id=1))
+    huge = "Hello World|" + "z" * 510
+    assert len(huge) > 512
+
+    assert not worker._match_filter(
+        FilterConfig(text_rule="regex", text_value=huge), msg
+    )
+
+
+def test_match_filter_caps_regex_subject_length(tmp_path):
+    """超长正文按上限截断后匹配：上限内命中、上限外不命中。"""
+    worker = make_worker(tmp_path)
+    pattern = FilterConfig(text_rule="regex", text_value="NEEDLE")
+
+    # 关键词在上限内 → 命中。
+    assert worker._match_filter(
+        pattern, DummyMessage(text="NEEDLE" + "x" * 9000, chat=DummyChat(id=1))
+    )
+    # 关键词被推到上限之外（8KB 之后）→ 截断后不再命中，避免无上限的回溯开销。
+    assert not worker._match_filter(
+        pattern, DummyMessage(text="x" * 9000 + "NEEDLE", chat=DummyChat(id=1))
     )
 
 

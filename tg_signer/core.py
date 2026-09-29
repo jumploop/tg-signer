@@ -59,7 +59,7 @@ from tg_signer.config import (
 from ._kurigram import SafeGetForumTopics
 from .ai_tools import AITools, OpenAIConfigManager
 from .sign_record_store import SignRecordStore
-from .utils import UserInput, get_now, print_to_user
+from .utils import UserInput, get_now, print_to_user, restrict_file_permissions
 from .utils import get_timezone as _get_timezone
 
 logger = logging.getLogger("tg-signer")
@@ -261,7 +261,15 @@ class Client(SafeGetForumTopics, BaseClient):
                 try:
                     await self.start()
                 except ConnectionError:
+                    # 无法连接不代表「不可用」:调用方会通过后续 API 调用报错,
+                    # 而 OSError/ConnectionError 在 normal_run 里本就是可重试的。
                     pass
+                except BaseException:
+                    # start() 抛其它异常时必须回滚计数。否则该 key 的引用计数
+                    # 永久漂移为 1:后续 __aenter__ 会跳过 start()(误判为已在
+                    # 运行),__aexit__ 还会去 stop() 一个从未启动的 client。
+                    _CLIENT_REFS[self.key] -= 1
+                    raise
             return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -284,6 +292,8 @@ class Client(SafeGetForumTopics, BaseClient):
     async def save_session_string(self):
         with open(self.session_string_file, "w") as fp:
             fp.write(await self.export_session_string())
+        # session_string 等同于账号登录态,落盘后收紧到仅属主可读写(POSIX)。
+        restrict_file_permissions(self.session_string_file)
 
     def load_session_string(self):
         logger.info("Loading session_string from local file.")
@@ -299,10 +309,29 @@ class Client(SafeGetForumTopics, BaseClient):
             os.remove(self.session_string_file)
 
 
+DEFAULT_API_ID = 611335
+DEFAULT_API_HASH = "d524b414d21f4d37f08684c1df41ac9c"
+_api_default_warned = False
+
+
 def get_api_config():
-    api_id = int(os.environ.get("TG_API_ID", 611335))
-    api_hash = os.environ.get("TG_API_HASH", "d524b414d21f4d37f08684c1df41ac9c")
-    return api_id, api_hash
+    """返回 ``(api_id, api_hash)``。
+
+    未设置 ``TG_API_ID`` / ``TG_API_HASH`` 时回退到内置的示例凭据 —— 那是所有
+    未配置用户共享的同一个 Telegram 应用(配额共用、风控互相关联)。这里只做
+    一次强提示而不 fail-fast,避免打断已经在跑的既有部署。
+    """
+    global _api_default_warned
+    api_id_env = os.environ.get("TG_API_ID")
+    api_hash_env = os.environ.get("TG_API_HASH")
+    if (not api_id_env or not api_hash_env) and not _api_default_warned:
+        _api_default_warned = True
+        logger.warning(
+            "未设置 TG_API_ID/TG_API_HASH,正在使用内置示例凭据。该凭据为所有"
+            "未配置用户共享,存在配额耗尽与风控关联风险,建议改用自建应用凭据"
+            "(https://my.telegram.org)。"
+        )
+    return int(api_id_env or DEFAULT_API_ID), api_hash_env or DEFAULT_API_HASH
 
 
 def get_proxy(proxy: str = None):
@@ -392,6 +421,7 @@ class BaseUserWorker(Generic[ConfigT]):
         self.loop = self.app.loop
         self.user: Optional[User] = None
         self._config = None
+        self._ai_tools: Optional[AITools] = None
         self.context = self.ensure_ctx()
 
     def ensure_ctx(self):
@@ -843,7 +873,15 @@ class BaseUserWorker(Generic[ConfigT]):
         return cfg
 
     def get_ai_tools(self):
-        return AITools(self.ensure_ai_cfg())
+        """返回本 worker 复用的 :class:`AITools`。
+
+        原先每次调用都新建 AITools(内含一个 httpx 连接池),而
+        ``_reply_by_calculation_problem`` / ``_choose_option_by_image`` 是**每条
+        消息**调用一次 —— 等于每条消息泄漏一个连接池且从不 ``close()``。
+        """
+        if self._ai_tools is None:
+            self._ai_tools = AITools(self.ensure_ai_cfg())
+        return self._ai_tools
 
 
 class Waiter:
@@ -1189,8 +1227,18 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
 
         sign_record = self.load_sign_record()
         chat_ids = [c.chat_id for c in config.chats]
+        # sign_at 在 config 层已校验,这里再归一化一次以拿到规范化的表达式。
+        # 拿不到(None)时直接退出:否则会把 None 交给 croniter,抛出一个不在
+        # 捕获集合内的 TypeError,表现成难懂的崩溃而不是一句配置错误。
+        sign_at = self._validate_sign_at(config.sign_at)
+        if sign_at is None:
+            raise ValueError(
+                f"sign_at 配置非法,无法计算下次运行时间: {config.sign_at!r}"
+            )
 
-        async def sign_once():
+        async def sign_once(now: datetime):
+            # now 必须由参数传入而不是闭包捕获:闭包里读到的是外层 while 循环
+            # 每轮重新绑定的同名变量,一旦改成并发调用就会拿到别的时间点。
             for chat in config.chats:
                 route_key = None
                 try:
@@ -1216,7 +1264,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 return True
             _last_sign_at = datetime.fromisoformat(sign_record[last_date_str])
             self.log(f"上次执行时间: {_last_sign_at}")
-            _cron_it = croniter(self._validate_sign_at(config.sign_at), _last_sign_at)
+            _cron_it = croniter(sign_at, _last_sign_at)
             _next_run: datetime = _cron_it.next(datetime)
             if _next_run > now:
                 self.log("当前未到下次执行时间，无需执行")
@@ -1237,7 +1285,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     now_date_str = str(now.date())
                     self.context = self.ensure_ctx()
                     if need_sign(now_date_str):
-                        await sign_once()
+                        await sign_once(now)
 
             except (OSError, errors.Unauthorized) as e:
                 logger.exception(e)
@@ -1246,7 +1294,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
 
             if only_once:
                 break
-            cron_it = croniter(self._validate_sign_at(config.sign_at), now)
+            cron_it = croniter(sign_at, now)
             next_run: datetime = cron_it.next(datetime) + timedelta(
                 seconds=random.randint(0, int(config.random_seconds))
             )
@@ -1485,13 +1533,21 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 if message is None:
                     continue
                 self.context.waiting_message = message
-                ok = False
-                if isinstance(action, ClickKeyboardByTextAction):
-                    ok = await self._click_keyboard_by_text(action, message)
-                elif isinstance(action, ReplyByCalculationProblemAction):
-                    ok = await self._reply_by_calculation_problem(action, message)
-                elif isinstance(action, ChooseOptionByImageAction):
-                    ok = await self._choose_option_by_image(action, message, messages)
+                try:
+                    ok = False
+                    if isinstance(action, ClickKeyboardByTextAction):
+                        ok = await self._click_keyboard_by_text(action, message)
+                    elif isinstance(action, ReplyByCalculationProblemAction):
+                        ok = await self._reply_by_calculation_problem(action, message)
+                    elif isinstance(action, ChooseOptionByImageAction):
+                        ok = await self._choose_option_by_image(
+                            action, message, messages
+                        )
+                finally:
+                    # 必须无条件复位:动作处理抛异常时若不复位,waiting_message
+                    # 会残留成这条消息,使 on_edited_message 的等待循环对同 id 的
+                    # 编辑事件永远自旋下去(既不再处理编辑,也不报错)。
+                    self.context.waiting_message = None
                 if ok:
                     self.context.waiter.sub(route_key)
                     # 将消息ID对应value置为None，保证收到消息的编辑时消息所处的顺序

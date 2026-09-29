@@ -1,7 +1,7 @@
 # Changelog / 版本变动日志
 
 ## 版本变动日志
-### 0.10.3
+### 0.10.4
 - **安全修复**：`GET /api/logs?path=` 任意文件读取。此前该参数原样接受任意绝对路径，可直接读出 `<workdir>/*.session_string`、`.openai_config.json` 乃至 `~/.ssh/id_rsa`。现限定为只能读 `<workdir>/logs` 下的文件（前端回传的绝对路径仍然可用），越界返回 400。修复见 `docs/security_audit_2026-09-29.md`
 - **安全修复**：`account` 与配置名未归一化导致的目录穿越。`/api/accounts/logout`、`/api/accounts/send-code`、`/api/chats/fetch`、`/api/run/start` 传 `../x` 可在 workdir 之外创建锁文件、删改任意文件。现统一由 `tg_signer.utils.resolve_under()` 校验为单一路径分量，数据层与 HTTP 层一致拒绝
 - **安全修复**：WebGUI 绑定非回环地址且未设置授权码时改为拒绝启动（fail-closed）。此前 `--host 0.0.0.0` 会让上述接口在整个网络无鉴权开放，现在必须同时提供 `--auth-code` 或 `TG_SIGNER_GUI_AUTHCODE`
@@ -11,6 +11,19 @@
 - **健壮性修复**：Automation 的 `timer_loop` 无异常隔离，一次异常即让所有 timer 规则永久停摆且无告警。现循环体内部捕获异常继续轮询，并给 `create_task` 加完成回调记录异常退出
 - **健壮性修复**：`_call_telegram_api()` 的 FloodWait 退避在 `async with lock` 内部等待，而 FloodWait 常见数百秒，会把同一个 client 的所有任务（包括其它 chat 的签到）串行阻塞。现把退避移出锁外；限流间隔的等待仍留在锁内，保证并发调用继续被串行化
 - **健壮性修复**：大模型输出异常击穿签到主循环。`choose_option_by_image()` 遇到非 JSON / 缺 `option` 字段 / `option` 非整数 / 空 `content` 时抛 `KeyError`/`TypeError`，`get_reply()` 可能返回 `None`，两者都会打死整个任务。现分别收敛为 `-1` 与 `""`，并把 `sign_once()` 的异常捕获从 `errors.RPCError` 放宽为「单个 chat 失败只跳过该 chat」
+- **安全修复**：`*.session_string` 与 `.openai_config.json` 未收紧权限。两者默认按进程 umask 落盘（POSIX 下常见 0644），同机其他用户可直接读到账号凭据与 API Key。现新增 `restrict_file_permissions()`，在 `save_session_string()` 与 `OpenAIConfigManager.save_config()` 落盘后把文件收紧为 `0600`。刻意做成 best-effort：非 POSIX 平台与 `chmod` 失败都只返回 `False`，不让登录 / 保存失败
+- **安全修复**：硬编码的共享 `api_id` / `api_hash` 被所有未设环境变量的用户共用（同一应用配额、风控关联）。现内置值为默认回退并**明确 warning 一次**。未改成 fail-fast，否则会直接打断所有既有部署的启动
+- **安全修复**：自动化规则的 `text_value` 模板可借 `str.format_map` 的属性链逃逸取值（如 `{message.__class__.__mro__}`）。现改用 `_SafeTemplateFormatter`，拒绝下标访问、属性链深度 > 2、以及任何以 `_` 开头或为空的字段段
+- **安全修复**：自动化规则里的正则无长度与形态约束，灾难性回溯会卡死事件循环（CPython 的 `re` 在回溯期间不释放 GIL，线程超时也打不断）。现新增 `safe_regex_search()`：pattern 上限 512、subject 上限 8KB（超长截断而非拒绝），并用「star height ≥ 2」形状检查挡掉「量词套量词」。判别性实证：朴素 `re.search(r"(a+)+$", "a"*24 + "!")` 需 1.98s，新护栏 0.0000s 抛 `ValueError`；正则非法 / 超长时三处调用点统一降级为「不匹配」，不打断整条规则链
+- **安全修复**：WebUI 子进程的代理凭据原先经 `--proxy` 进 argv，同机可被 `ps` / 任务管理器读到。现改为通过 `TG_PROXY` 环境变量传递（CLI 本就有该 `envvar`，无需改 CLI）
+- **健壮性修复**：WebUI 登录会话无过期。每账号一个 daemon 线程 + 独立 event loop + 一个 Client，用户 `send_code` 后直接关页面就会永久驻留。现加 10 分钟 TTL 并由 `send_login_code` / `complete_login` 入口顺手回收
+- **健壮性修复**：`get_ai_tools()` 每条消息新建一个 `AITools`，每次都泄漏一个 httpx 连接池且从不 `close()`。现改为惰性创建后缓存复用
+- **健壮性修复**：`Client.__aenter__` 抛非 `ConnectionError` 异常时 `_CLIENT_REFS` 已 +1 却不回滚，引用计数永久漂移。现补 `except BaseException` 回滚后再 `raise`（保留「连接失败仍算可用」的既有语义）
+- **健壮性修复**：编辑消息的忙等可永久自旋。`wait_for()` 里的 action 若抛异常，`sign_a_chat` 中的 `waiting_message = None` 不会执行，该消息的编辑事件此后永远自旋。现把复位动作放进 `finally`
+- **健壮性修复**：`sign_once` 闭包捕获外层循环的 `now`，跨轮次会串值；`_validate_sign_at()` 返回 `Optional[str]`，非法时会把 `None` 传进 `croniter` 抛 `TypeError`（且不在被捕获集合内）。现 `sign_at` 提前求值并在不可用时明确报错，`now` 改为参数传入
+- **健壮性修复**：WebUI 多处模块级可变状态被 FastAPI 线程池并发读写。`runner.py` 的进程 / 锁 / 任务名字典、`server.py` 的鉴权失败计数、`data.py` 的 logger 配置、`account.py` 的登录会话注册表现已各自加锁；其中鉴权「判断锁定 + 记一次失败」收进同一把锁，此前读-改-写分离可被并发绕过「连续 5 次锁定 60 秒」
+- **健壮性修复**：子进程日志路径不一致。此前只传 `--log-dir`，子进程按 CLI 的默认相对 `--log-file` 另建 `logs/`，且多个子进程的 `RotatingFileHandler` 并发轮转同一 `warn.log` / `error.log` 会互相截断。现显式传 `--log-file <workdir>/logs/<kind>-<account>/tg-signer.log`，每个子进程独立目录
+### 0.10.3
 - WebUI「群组/频道 → 复制到配置」改为优先写入群组/频道的数字 ID（此前固定写 `@username`），仅在拿不到 ID 时才退回用户名
 - 修复 Automation 规则的 `chat_id` 为数字字符串时规则永不触发且不报错：`_match_chat` / `_normalize_user_id` 只对 `int` 做数字比较，字符串会落进 `@username` 分支。新增 `normalize_chat_ref()` 归一化纯数字字符串为 `int`（`@username` 保持字符串），并在 `MessageTriggerParams` / `TimerTriggerParams` / `StartupTriggerParams` / `FilterConfig` 上通过 `ChatRefsMixin` 于解析阶段统一处理
 - WebUI「复制到配置」为 Signer 配置自动填写群组任务名（优先标题、其次用户名）与随机 `random_seconds`（100~1000）；仅在新建时填写，编辑已有配置不覆盖用户已填的群组名与延迟

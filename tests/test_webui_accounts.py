@@ -1,4 +1,5 @@
 import importlib.util
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -164,3 +165,138 @@ def test_save_and_remove_account_user_mapping(tmp_path):
     account.remove_account_user("acc1", tmp_path)
     assert account.load_account_users(tmp_path) == {}
     assert not user_dir.exists()
+
+
+# ---------------------------------------------------------------------------
+# 登录会话注册表：TTL 回收 + 并发安全
+#
+# 登录会话持有 daemon 线程 + 独立 event loop + 一个 Client。用户在 send_code
+# 之后直接关掉页面时没人回收，所以给会话加 TTL；注册表又被 FastAPI 线程池
+# 并发读写，所以所有访问必须过锁。
+# ---------------------------------------------------------------------------
+
+
+class _FakeLoginSession:
+    """最小登录会话替身：只需要 ``created_at`` 与 ``close()``。"""
+
+    def __init__(self, name, age=0.0):
+        self.account = name
+        self.created_at = time.monotonic() - age
+        self.close_calls = 0
+
+    def close(self):
+        self.close_calls += 1
+        # 与真实实现一致：只有当注册表里还是自己时才摘除（幂等）。
+        with account._LOGIN_SESSIONS_LOCK:
+            if account.LOGIN_SESSIONS.get(self.account) is self:
+                account.LOGIN_SESSIONS.pop(self.account, None)
+
+
+@pytest.fixture()
+def clean_login_sessions():
+    """登录会话注册表是模块级全局状态，用例前后都要清干净。"""
+    with account._LOGIN_SESSIONS_LOCK:
+        account.LOGIN_SESSIONS.clear()
+    yield
+    with account._LOGIN_SESSIONS_LOCK:
+        account.LOGIN_SESSIONS.clear()
+
+
+def test_prune_login_sessions_reaps_only_expired(clean_login_sessions):
+    fresh = _FakeLoginSession("fresh")
+    stale = _FakeLoginSession("stale", age=account.LOGIN_SESSION_TTL_SECONDS + 1)
+    with account._LOGIN_SESSIONS_LOCK:
+        account.LOGIN_SESSIONS.update({"fresh": fresh, "stale": stale})
+
+    assert account.prune_login_sessions() == ["stale"]
+    assert stale.close_calls == 1
+    assert fresh.close_calls == 0
+    with account._LOGIN_SESSIONS_LOCK:
+        assert set(account.LOGIN_SESSIONS) == {"fresh"}
+
+
+def test_send_login_code_prunes_expired_sessions_first(
+    clean_login_sessions, monkeypatch, tmp_path
+):
+    """发起新登录时应顺带回收别账号的过期会话，而不是无限堆积线程。"""
+    stale = _FakeLoginSession("old", age=account.LOGIN_SESSION_TTL_SECONDS + 1)
+    with account._LOGIN_SESSIONS_LOCK:
+        account.LOGIN_SESSIONS["old"] = stale
+
+    created = []
+
+    class _FakeNewSession:
+        def __init__(self, name, workdir):
+            created.append((name, Path(workdir)))
+            self.account = name
+
+        def send_code(self, phone):
+            return "ok", f"验证码已发送至 {phone}"
+
+    monkeypatch.setattr(account, "_AccountLoginSession", _FakeNewSession)
+
+    assert account.send_login_code("acc", "+10086", tmp_path) == (
+        "ok",
+        "验证码已发送至 +10086",
+    )
+    assert stale.close_calls == 1
+    assert created == [("acc", Path(tmp_path))]
+    with account._LOGIN_SESSIONS_LOCK:
+        assert set(account.LOGIN_SESSIONS) == {"acc"}
+
+
+def test_send_login_code_closes_replaced_session(
+    clean_login_sessions, monkeypatch, tmp_path
+):
+    """同账号重复发起登录：旧会话必须被关闭，否则线程与 client 泄漏。"""
+    old = _FakeLoginSession("acc")
+    with account._LOGIN_SESSIONS_LOCK:
+        account.LOGIN_SESSIONS["acc"] = old
+
+    class _FakeNewSession:
+        def __init__(self, name, workdir):
+            self.account = name
+
+        def send_code(self, phone):
+            return "ok", "sent"
+
+    monkeypatch.setattr(account, "_AccountLoginSession", _FakeNewSession)
+
+    assert account.send_login_code("acc", "+1", tmp_path)[0] == "ok"
+    assert old.close_calls == 1
+    with account._LOGIN_SESSIONS_LOCK:
+        assert account.LOGIN_SESSIONS["acc"] is not old
+
+
+def test_complete_login_without_session_reports_restart(clean_login_sessions):
+    assert account.complete_login("acc", "12345") == (
+        "error",
+        "登录会话不存在，请重新发起登录",
+    )
+
+
+def test_login_session_close_is_idempotent_and_spares_newer_session(
+    clean_login_sessions, tmp_path
+):
+    """``close()`` 必须先摘除自己再收尾，且不得误摘同账号的新会话。"""
+    session = account._AccountLoginSession("acc", tmp_path)
+    try:
+        with account._LOGIN_SESSIONS_LOCK:
+            account.LOGIN_SESSIONS["acc"] = session
+
+        session.close()
+        with account._LOGIN_SESSIONS_LOCK:
+            assert "acc" not in account.LOGIN_SESSIONS
+
+        # 重复关闭必须幂等（收尾逻辑在 finally 里，loop 已经停了）。
+        session.close()
+
+        newer = _FakeLoginSession("acc")
+        with account._LOGIN_SESSIONS_LOCK:
+            account.LOGIN_SESSIONS["acc"] = newer
+        session.close()
+        with account._LOGIN_SESSIONS_LOCK:
+            assert account.LOGIN_SESSIONS.get("acc") is newer
+    finally:
+        with account._LOGIN_SESSIONS_LOCK:
+            account.LOGIN_SESSIONS.pop("acc", None)

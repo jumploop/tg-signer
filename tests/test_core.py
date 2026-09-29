@@ -1562,3 +1562,238 @@ def test_load_config_error_mentions_field(signer_factory):
     )
     with pytest.raises(ValueError, match=r"chats\.0\.actions"):
         signer.load_config()
+
+
+# ---------------------------------------------------------------------------
+# P2 修复:凭据落盘权限 / 内置 api 凭据提示 / LLM client 复用
+#          引用计数回滚 / 共享消息状态 / sign_at 边界
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_save_session_string_restricts_permissions(tmp_path, monkeypatch):
+    """session_string 等同账号登录态,落盘后必须收紧到仅属主可读写。"""
+    import tg_signer.core as core
+
+    calls = []
+
+    def _spy(path, mode=0o600):
+        calls.append((pathlib.Path(path), mode))
+        return True
+
+    class _FakeClient:
+        def __init__(self, path):
+            self._path = path
+
+        @property
+        def session_string_file(self):
+            return self._path
+
+        async def export_session_string(self):
+            return "SESSION-STRING-SECRET"
+
+    session_file = tmp_path / "acct.session_string"
+    monkeypatch.setattr(core, "restrict_file_permissions", _spy)
+
+    await core.Client.save_session_string(_FakeClient(session_file))
+
+    assert session_file.read_text(encoding="utf-8") == "SESSION-STRING-SECRET"
+    assert calls == [(session_file, 0o600)]
+
+
+def test_get_api_config_warns_once_about_shared_builtin_credentials(monkeypatch):
+    """未配置凭据时用的是所有用户共享的内置应用,必须提示一次且不刷屏。"""
+    import tg_signer.core as core
+
+    monkeypatch.delenv("TG_API_ID", raising=False)
+    monkeypatch.delenv("TG_API_HASH", raising=False)
+    monkeypatch.setattr(core, "_api_default_warned", False)
+    warnings = []
+    monkeypatch.setattr(
+        core.logger,
+        "warning",
+        lambda message, *args, **kwargs: warnings.append(message),
+    )
+
+    for _ in range(3):
+        assert core.get_api_config() == (core.DEFAULT_API_ID, core.DEFAULT_API_HASH)
+
+    assert len(warnings) == 1, warnings
+    assert "TG_API_ID" in warnings[0]
+
+
+def test_get_api_config_uses_env_without_warning(monkeypatch):
+    import tg_signer.core as core
+
+    monkeypatch.setenv("TG_API_ID", "123456")
+    monkeypatch.setenv("TG_API_HASH", "deadbeef")
+    monkeypatch.setattr(core, "_api_default_warned", False)
+    warnings = []
+    monkeypatch.setattr(
+        core.logger,
+        "warning",
+        lambda message, *args, **kwargs: warnings.append(message),
+    )
+
+    assert core.get_api_config() == (123456, "deadbeef")
+    assert warnings == []
+
+
+def test_get_ai_tools_reuses_one_instance(signer_factory, monkeypatch):
+    """每条消息都会调 get_ai_tools:必须复用,否则每条消息泄漏一个 httpx 连接池。"""
+    import tg_signer.core as core
+
+    signer = signer_factory(task_name="ai_reuse")
+    created = []
+
+    class _FakeTools:
+        def __init__(self, cfg):
+            created.append(cfg)
+
+    monkeypatch.setattr(core, "AITools", _FakeTools)
+    monkeypatch.setattr(signer, "ensure_ai_cfg", lambda: {"api_key": "sk-test"})
+
+    first = signer.get_ai_tools()
+    second = signer.get_ai_tools()
+
+    assert first is second
+    assert len(created) == 1
+
+
+@pytest.mark.asyncio
+async def test_client_refcount_rolls_back_when_start_fails(monkeypatch, tmp_path):
+    """start() 抛非 ConnectionError 时必须回滚引用计数。
+
+    否则该 key 的计数永久停在 1:下一次 __aenter__ 会误判「已在运行」跳过
+    start(),__aexit__ 还会去 stop() 一个从未启动过的 client。
+    """
+    import tg_signer.core as core
+
+    async def fake_start(self):
+        del self
+        raise RuntimeError("start boom")
+
+    monkeypatch.setattr(core.Client, "start", fake_start)
+
+    client = get_client(name="acct", workdir=tmp_path)
+    key = client.key
+
+    with pytest.raises(RuntimeError):
+        async with client:
+            pass
+
+    assert core._CLIENT_REFS[key] == 0
+
+
+@pytest.mark.asyncio
+async def test_wait_for_resets_waiting_message_when_action_raises(signer_factory):
+    """动作处理抛异常时必须复位 waiting_message。
+
+    否则 on_edited_message 针对同 id 的等待循环会永远自旋 —— 编辑事件再也不被
+    处理,也不报错。
+    """
+    signer = signer_factory()
+    signer.context = signer.ensure_ctx()
+    chat = SignChatV3(chat_id=123, actions=[ClickKeyboardByTextAction(text="签到")])
+    route_key = signer.get_route_key(123, None)
+    message = SimpleNamespace(id=100, text="签到", photo=None, reply_markup=None)
+    signer.context.chat_messages[route_key][100] = message
+
+    async def boom(*_args, **_kwargs):
+        raise RuntimeError("action boom")
+
+    signer._click_keyboard_by_text = boom
+
+    with pytest.raises(RuntimeError):
+        await signer.wait_for(chat, chat.actions[0], timeout=0.5)
+
+    assert signer.context.waiting_message is None
+
+
+@pytest.mark.asyncio
+async def test_on_edited_message_proceeds_after_action_failure(signer_factory):
+    """端到端:动作失败之后编辑事件不能被卡住(旧实现会永久自旋)。"""
+    signer = signer_factory()
+    signer.context = signer.ensure_ctx()
+    chat = SignChatV3(chat_id=123, actions=[ClickKeyboardByTextAction(text="签到")])
+    route_key = signer.get_route_key(123, None)
+    message = SimpleNamespace(id=100, text="签到", photo=None, reply_markup=None)
+    signer.context.chat_messages[route_key][100] = message
+
+    async def boom(*_args, **_kwargs):
+        raise RuntimeError("action boom")
+
+    signer._click_keyboard_by_text = boom
+    handled = []
+
+    async def fake_on_message(client, msg):
+        handled.append(msg.id)
+
+    signer._on_message = fake_on_message
+
+    with pytest.raises(RuntimeError):
+        await signer.wait_for(chat, chat.actions[0], timeout=0.5)
+
+    edited = SimpleNamespace(
+        id=100,
+        text="edited",
+        photo=None,
+        reply_markup=None,
+        from_user=SimpleNamespace(username="tester", id=1),
+        chat=SimpleNamespace(id=123),
+    )
+    await asyncio.wait_for(signer.on_edited_message(None, edited), timeout=2)
+    assert handled == [100]
+
+
+@pytest.mark.asyncio
+async def test_normal_run_rejects_unusable_sign_at(signer_factory, monkeypatch):
+    """sign_at 拿不到规范化表达式时必须报配置错误。
+
+    旧实现把 None 交给 croniter,抛出的 TypeError 不在 normal_run 的捕获集合
+    里,表现成一句难懂的崩溃。
+    """
+    signer = signer_factory(task_name="bad_sign_at")
+    signer.user = SimpleNamespace(id=123456)
+    signer.load_config = lambda _cls: SignConfigV3(chats=[], sign_at="0 6 * * *")
+    signer.load_sign_record = lambda: {}
+    monkeypatch.setattr(signer, "_validate_sign_at", lambda _value: None)
+
+    with pytest.raises(ValueError, match="sign_at"):
+        await signer.normal_run(only_once=True)
+
+
+@pytest.mark.asyncio
+async def test_sign_once_persists_the_current_cycle_time(signer_factory, monkeypatch):
+    """sign_once 用参数拿到本轮 now(旧实现闭包捕获外层 while 循环的变量)。"""
+    import tg_signer.core as core
+
+    signer = signer_factory(task_name="cycle_now")
+    signer.user = SimpleNamespace(id=123456)
+    signer.load_config = lambda _cls: SignConfigV3(
+        chats=[], sign_at="* * * * *", sign_interval=0
+    )
+    signer.load_sign_record = lambda: {}
+    persisted = []
+    signer.persist_sign_record = lambda record, date, at: persisted.append((date, at))
+
+    frozen = datetime(2026, 9, 29, 6, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(core, "get_now", lambda: frozen)
+
+    class DummyApp:
+        key = "dummy-app"
+
+        def add_handler(self, *_args, **_kwargs):
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    signer.app = DummyApp()
+
+    await signer.normal_run(only_once=True)
+
+    assert persisted == [(str(frozen.date()), frozen.isoformat())]

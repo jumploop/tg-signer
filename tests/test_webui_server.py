@@ -472,6 +472,79 @@ def test_auth_login_flow(client, monkeypatch):
     assert good.json()["ok"] is True
 
 
+@pytest.fixture()
+def reset_auth_storage():
+    """失败计数是模块级全局状态，鉴权用例前后都要清干净以免互相污染。"""
+    with server._auth_storage_lock:
+        server._auth_storage.clear()
+    yield
+    with server._auth_storage_lock:
+        server._auth_storage.clear()
+
+
+def _lock_held() -> bool:
+    """当前线程是否已持有 ``_auth_storage_lock``。
+
+    ``threading.Lock`` 不可重入，被本线程持有时 ``acquire(blocking=False)``
+    返回 ``False``，据此可以确定被调用的那一刻锁是否在手上。
+    """
+    acquired = server._auth_storage_lock.acquire(blocking=False)
+    if acquired:
+        server._auth_storage_lock.release()
+    return not acquired
+
+
+def test_auth_login_records_failure_under_lock(client, monkeypatch, reset_auth_storage):
+    """失败计数必须在锁内完成读-改-写，否则并发请求会把锁定次数冲掉。"""
+    monkeypatch.setenv(server.AUTH_CODE_ENV, "secret123")
+    observed = []
+    real = server.auth_helpers.record_auth_failure
+
+    def spy(storage):
+        observed.append(_lock_held())
+        return real(storage)
+
+    monkeypatch.setattr(server.auth_helpers, "record_auth_failure", spy)
+
+    resp = client.post("/api/auth/login", json={"code": "wrong"})
+    assert resp.json()["ok"] is False
+    assert observed == [True], "record_auth_failure 未在锁内调用"
+
+
+def test_auth_login_clears_failures_under_lock(client, monkeypatch, reset_auth_storage):
+    monkeypatch.setenv(server.AUTH_CODE_ENV, "secret123")
+    observed = []
+    real = server.auth_helpers.clear_auth_failures
+
+    def spy(storage):
+        observed.append(_lock_held())
+        return real(storage)
+
+    monkeypatch.setattr(server.auth_helpers, "clear_auth_failures", spy)
+
+    resp = client.post("/api/auth/login", json={"code": "secret123"})
+    assert resp.json()["ok"] is True
+    assert observed == [True], "clear_auth_failures 未在锁内调用"
+
+
+def test_auth_login_locks_out_after_max_attempts(
+    client, monkeypatch, reset_auth_storage
+):
+    """连续错误到上限后必须开始 429，即使随后提交正确授权码。"""
+    monkeypatch.setenv(server.AUTH_CODE_ENV, "secret123")
+    for _ in range(server.auth_helpers.AUTH_MAX_ATTEMPTS):
+        resp = client.post("/api/auth/login", json={"code": "wrong"})
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is False
+
+    locked = client.post("/api/auth/login", json={"code": "secret123"})
+    assert locked.status_code == 429
+    assert "尝试次数过多" in locked.json()["detail"]
+
+    # require_auth 也不能在锁定期间放行（即便带的是正确 Bearer）。
+    assert client.get("/api/state").status_code == 429
+
+
 def test_index_served_or_reports_missing_build(client):
     resp = client.get("/")
     assert resp.status_code in (200, 503)

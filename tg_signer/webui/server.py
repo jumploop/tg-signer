@@ -13,6 +13,7 @@ import asyncio
 import copy
 import os
 import pathlib
+import threading
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
@@ -33,6 +34,9 @@ AUTH_CODE_ENV = "TG_SIGNER_GUI_AUTHCODE"
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 _auth_storage: Dict[str, Any] = {}
+# 失败计数是「读-改-写」,同步依赖由 FastAPI 放进线程池执行;不加锁时并发请求
+# 会各自读到同一份旧值再写回,把「连续 5 次错误锁定 60 秒」直接绕过。
+_auth_storage_lock = threading.Lock()
 
 state = data_mod.UIState()
 
@@ -150,14 +154,15 @@ def require_auth(
     expected = _expected_auth_code()
     if not expected:
         return
-    if auth_helpers.is_auth_locked(_auth_storage):
-        remaining = auth_helpers.auth_lock_remaining(_auth_storage)
-        raise HTTPException(
-            status_code=429,
-            detail=f"尝试次数过多，请 {remaining:.0f} 秒后再试",
-        )
-    if authorization != f"Bearer {expected}":
-        raise _challenge()
+    with _auth_storage_lock:
+        if auth_helpers.is_auth_locked(_auth_storage):
+            remaining = auth_helpers.auth_lock_remaining(_auth_storage)
+            raise HTTPException(
+                status_code=429,
+                detail=f"尝试次数过多，请 {remaining:.0f} 秒后再试",
+            )
+        if authorization != f"Bearer {expected}":
+            raise _challenge()
 
 
 @asynccontextmanager
@@ -587,9 +592,11 @@ def read_logs(
 
 @app.get("/api/auth/status")
 def auth_status() -> Dict[str, Any]:
+    with _auth_storage_lock:
+        locked_remaining = auth_helpers.auth_lock_remaining(_auth_storage)
     return {
         "required": bool(_expected_auth_code()),
-        "locked_until": auth_helpers.auth_lock_remaining(_auth_storage),
+        "locked_until": locked_remaining,
     }
 
 
@@ -598,15 +605,18 @@ def auth_login(body: AuthBody) -> Dict[str, Any]:
     expected = _expected_auth_code()
     if not expected:
         return {"ok": True, "message": "未启用授权码"}
-    if auth_helpers.is_auth_locked(_auth_storage):
-        remaining = auth_helpers.auth_lock_remaining(_auth_storage)
-        raise HTTPException(
-            status_code=429, detail=f"尝试次数过多，请 {remaining:.0f} 秒后再试"
-        )
-    if body.code == expected:
-        auth_helpers.clear_auth_failures(_auth_storage)
-        return {"ok": True, "message": "登录成功"}
-    auth_helpers.record_auth_failure(_auth_storage)
+    # 判断与记录必须在同一把锁里,否则「第 5 次失败」会被并发请求拆成多次
+    # 「还差几次」,锁定永远触发不了。
+    with _auth_storage_lock:
+        if auth_helpers.is_auth_locked(_auth_storage):
+            remaining = auth_helpers.auth_lock_remaining(_auth_storage)
+            raise HTTPException(
+                status_code=429, detail=f"尝试次数过多，请 {remaining:.0f} 秒后再试"
+            )
+        if body.code == expected:
+            auth_helpers.clear_auth_failures(_auth_storage)
+            return {"ok": True, "message": "登录成功"}
+        auth_helpers.record_auth_failure(_auth_storage)
     return {"ok": False, "message": "授权码错误"}
 
 
