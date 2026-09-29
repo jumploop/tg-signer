@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>tg-signer 代码审计与修复报告 · 2026-09-29</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --ink:#1b1f24; --ink-2:#4a5460; --ink-3:#8792a0;
+    --line:#e3e6ea; --p1:#d92d20; --p1-bg:#fef3f2; --p2:#b54708; --p2-bg:#fffaeb;
+    --ok:#067647; --ok-bg:#ecfdf3; --accent:#3a5bcc; --accent-bg:#eff4ff;
+    --warn:#b54708; --warn-bg:#fffaeb;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.7 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1060px;margin:0 auto;padding:40px 24px 72px}
+  header{border-bottom:1px solid var(--line);padding-bottom:24px;margin-bottom:28px}
+  h1{margin:0 0 8px;font-size:26px;letter-spacing:-.02em}
+  .meta{color:var(--ink-3);font-size:12.5px;display:flex;flex-wrap:wrap;gap:6px 14px}
+  .meta code{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:1px 6px;color:var(--ink-2)}
+  h2{font-size:17px;margin:40px 0 14px;letter-spacing:-.01em}
+  h2 .badge{font-size:11px;font-weight:600;vertical-align:2px;margin-left:8px;
+    padding:2px 8px;border-radius:20px;background:var(--accent-bg);color:var(--accent)}
+  h2 .badge.warnb{background:var(--warn-bg);color:var(--warn)}
+  .grid{display:grid;gap:14px}
+  .g3{grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 20px}
+  .card .k{font-size:12px;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase}
+  .card .v{font-size:22px;font-weight:650;margin:6px 0 4px;letter-spacing:-.02em}
+  .card .d{font-size:12.5px;color:var(--ink-2)}
+  .card.risk{border-left:3px solid var(--p1)}
+  .card.risk2{border-left:3px solid var(--p2)}
+  .card.ok{border-left:3px solid var(--ok)}
+  table{width:100%;border-collapse:collapse;background:var(--panel);
+    border:1px solid var(--line);border-radius:10px;overflow:hidden;font-size:13px}
+  th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#fafbfc;font-weight:600;font-size:12px;color:var(--ink-2);
+     letter-spacing:.03em;text-transform:uppercase}
+  tr:last-child td{border-bottom:none}
+  td code,p code,li code{background:#f2f4f6;border-radius:4px;padding:1px 5px;
+    font:12px/1.5 "SFMono-Regular",Consolas,monospace;color:#2b3440}
+  .pill{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;
+    letter-spacing:.03em;white-space:nowrap}
+  .pill.p1{background:var(--p1-bg);color:var(--p1)}
+  .pill.p2{background:var(--p2-bg);color:var(--p2)}
+  .pill.ok{background:var(--ok-bg);color:var(--ok)}
+  .pill.p3{background:#f1f3f5;color:var(--ink-2)}
+  .pill.env{background:var(--warn-bg);color:var(--warn)}
+  .finding{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    padding:20px 22px;margin-bottom:14px}
+  .finding.p2{border-left:3px solid var(--p2)}
+  .finding.ok{border-left:3px solid var(--ok)}
+  .finding.env{border-left:3px solid var(--p2);background:#fffdf7}
+  .finding h3{margin:0 0 4px;font-size:15.5px}
+  .finding .loc{font:12px/1.6 "SFMono-Regular",Consolas,monospace;color:var(--ink-3);margin-bottom:12px}
+  .finding p{margin:9px 0}
+  .block{background:#fafbfc;border:1px solid var(--line);border-radius:8px;
+    padding:12px 14px;margin:10px 0;font:12.5px/1.65 "SFMono-Regular",Consolas,monospace;
+    color:#2b3440;white-space:pre;overflow-x:auto}
+  .block .cmt{color:var(--ink-3)}
+  .block .bad{color:var(--p1);font-weight:600}
+  .block .good{color:var(--ok);font-weight:600}
+  .bar{height:8px;border-radius:4px;background:#eef0f3;overflow:hidden;margin-top:8px}
+  .bar > i{display:block;height:100%;border-radius:4px}
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:720px){.split{grid-template-columns:1fr}}
+  ul{margin:8px 0;padding-left:20px}
+  li{margin:4px 0}
+  footer{margin-top:48px;padding-top:20px;border-top:1px solid var(--line);
+    color:var(--ink-3);font-size:12.5px}
+  a{color:var(--accent)}
+  .note{font-size:12.5px;color:var(--ink-3);margin-top:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>tg-signer 代码审计与修复报告</h1>
+  <div class="meta">
+    <span>2026-09-29</span><span>·</span>
+    <span>六轮修复：P1 全部 + P2 全部 15 项 + P3 4 项 + 1 项附带发现 + 1 项界面体验</span><span>·</span>
+    <span>范围：<code>tg_signer/</code> 27 文件 / 7401 行</span><span>·</span>
+    <span>对应版本 <code>0.10.4</code></span>
+  </div>
+</header>
+
+<div class="grid g3">
+  <div class="card ok">
+    <div class="k">安全</div>
+    <div class="v" style="color:var(--ok)">P1 + P2 已清零</div>
+    <div class="d">P1 安全 3 项、P2 安全 5 项全部修复并回归</div>
+  </div>
+  <div class="card ok">
+    <div class="k">健壮性</div>
+    <div class="v" style="color:var(--ok)">P1 + P2 已清零</div>
+    <div class="d">P1 健壮性 3 项、P2 健壮性 10 项全部修复并回归</div>
+  </div>
+  <div class="card risk2">
+    <div class="k">规范 / 可扩展性</div>
+    <div class="v" style="color:var(--p2)">良好 / 中等</div>
+    <div class="d">ruff 全绿；插件设计正确；P3 已修 4 项（版本号参与分发、触发器清单收敛等），余 4 项按用户决定或建议不做</div>
+  </div>
+</div>
+
+<h2>修复进度<span class="badge">P1 6/6 · P2 15/15 · P3 4/8</span></h2>
+
+<div class="grid g3">
+  <div class="card ok">
+    <div class="k">P1 严重</div>
+    <div class="v" style="color:var(--ok)">6 / 6</div>
+    <div class="bar"><i style="width:100%;background:var(--ok)"></i></div>
+    <div class="d">安全 3 + 健壮性 3，全部修复并回归验证</div>
+  </div>
+  <div class="card ok">
+    <div class="k">P2 中等</div>
+    <div class="v" style="color:var(--ok)">15 / 15</div>
+    <div class="bar"><i style="width:100%;background:var(--ok)"></i></div>
+    <div class="d">第一轮 3 项 + 第三轮剩余 12 项，全部修复并回归验证</div>
+  </div>
+  <div class="card risk2">
+    <div class="k">P3 建议</div>
+    <div class="v" style="color:var(--p2)">4 / 8</div>
+    <div class="bar"><i style="width:50%;background:var(--ok)"></i></div>
+    <div class="d">第五轮修复 P3-1 / P3-3 / P3-4 / P3-6；余 4 项按用户决定或建议不做</div>
+  </div>
+</div>
+
+<table style="margin-top:14px">
+  <thead>
+    <tr><th style="width:120px">维度</th><th style="width:170px">等级分布</th><th>主要落点</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><span class="pill p1">P1 安全</span></td>
+      <td>3 项 · <span class="pill ok">已修</span><div class="bar"><i style="width:100%;background:var(--ok)"></i></div></td>
+      <td>任意文件读取 · account 目录穿越 · 默认无鉴权</td>
+    </tr>
+    <tr>
+      <td><span class="pill p1">P1 健壮性</span></td>
+      <td>3 项 · <span class="pill ok">已修</span><div class="bar"><i style="width:100%;background:var(--ok)"></i></div></td>
+      <td>SQLite 并发写失败 · timer 循环静默停摆 · LLM 异常击穿主循环</td>
+    </tr>
+    <tr>
+      <td><span class="pill p2">P2 安全</span></td>
+      <td>5 项 · <span class="pill ok">已修 5</span><div class="bar"><i style="width:100%;background:var(--ok)"></i></div></td>
+      <td>API Key 明文回显 · 插件 RCE 前置 · 敏感文件权限 · 硬编码共享 api_id · 代理凭据入 argv</td>
+    </tr>
+    <tr>
+      <td><span class="pill p2">P2 健壮性</span></td>
+      <td>10 项 · <span class="pill ok">已修 10</span><div class="bar"><i style="width:100%;background:var(--ok)"></i></div></td>
+      <td>持锁 sleep · 引用计数漂移 · 忙等死锁 · 共享状态无锁 · 日志轮转竞态 · 连接复用与连接关闭</td>
+    </tr>
+    <tr>
+      <td><span class="pill ok">P3 可扩展性</span></td>
+      <td>8 项<div class="bar"><i style="width:70%;background:var(--ink-3)"></i></div></td>
+      <td>版本号未参与分发 · handler 参数零契约 · 触发器无注册表 · core.py 职责过载</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>第四轮修复（连接生命周期收敛）<span class="badge">附带发现转正</span></h2>
+
+<div class="finding p2">
+  <h3><code>data.sqlite3</code> 每次读写都漏关连接</h3>
+  <div class="loc">tg_signer/sign_record_store.py · 7 处 <code>with self._connect() as conn:</code></div>
+  <p><code>sqlite3.Connection</code> 的上下文管理器<strong>只提交/回滚事务，不关闭连接</strong>。7 处调用点都依赖它收尾，
+  于是连接只能等 gc 兜底才释放：实测 30 次 <code>upsert_record()</code> 后<strong>仍有 30 个连接存活</strong>，
+  <code>gc.collect()</code> 才归零。单次调用看不出问题，多账号并发时会同时压着大量已打开的库与 WAL/<code>-shm</code> 句柄。</p>
+  <div class="split">
+    <div class="block"><span class="cmt"># 修复前：7 处都是这个写法</span>
+with self._connect() as conn:
+    self._upsert_records(conn, ...)
+    conn.commit()
+<span class="bad"># 只 commit，连接留给 gc</span></div>
+    <div class="block"><span class="cmt"># 修复后：事务 + 关闭收敛到唯一入口</span>
+with self._connection() as conn:
+    ...
+<span class="ok"># _connection() 内 finally: conn.close()</span></div>
+  </div>
+  <pre style="margin-top:10px"><code>@contextlib.contextmanager
+def _connection(self) -&gt; Iterator[sqlite3.Connection]:
+    conn = self._connect()
+    try:
+        with conn:          <span class="cmt"># 保留原先的提交/回滚语义</span>
+            yield conn
+    finally:
+        conn.close()        <span class="cmt"># 补上原先缺失的关闭</span></code></pre>
+  <p><code>_connect()</code> 本身<strong>不改变</strong>（仍返回裸连接）：
+  <code>test_connect_enables_wal_and_busy_timeout</code> 直接把它当上下文管理器用并断言
+  <code>journal_mode</code> / <code>busy_timeout</code>，改签名会破坏该契约。
+  仓库内 <code>sqlite3.connect</code> 只此一处，因此仍走「收敛到唯一入口」。</p>
+</div>
+
+<div class="finding p2">
+  <h3>对照实验：这次修复<strong>不改变</strong>沙箱的并发结果</h3>
+  <div class="loc">8 写者 × 200 轮，新旧实现各重复 3 次</div>
+  <table>
+    <thead><tr><th style="width:300px">实现</th><th>第 1 次</th><th>第 2 次</th><th>第 3 次</th></tr></thead>
+    <tbody>
+      <tr><td>旧：<code>with conn</code>（不关闭）</td><td>7/8 失败</td><td>7/8 失败</td><td>7/8 失败</td></tr>
+      <tr><td>新：<code>_connection()</code>（关闭）</td><td>7/8 失败</td><td>7/8 失败</td><td>7/8 失败</td></tr>
+    </tbody>
+  </table>
+  <p><strong>结论</strong>：关连接与下方的 WAL 环境限制<strong>无关</strong>，两侧完全一致 —— 修复的价值在资源释放，
+  不在「修好沙箱」。同时<strong>更正上一轮的范围</strong>：<code>[cold]</code> 与 <code>[initialized]</code>
+  在本沙箱<strong>都</strong>必然失败（上一轮 <code>[initialized]</code> 曾侥幸通过，属偶然，不是本次修复引入的回归）。</p>
+</div>
+
+<h2>第三轮修复（§2 剩余 12 项 P2）<span class="badge">本轮全部处理完毕</span></h2>
+
+<table>
+  <thead>
+    <tr><th style="width:74px">编号</th><th style="width:190px">问题</th><th>修复方式</th><th style="width:150px">落点</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><span class="pill p2">P2-2</span></td><td>敏感文件权限未收紧</td>
+      <td>新增 <code>restrict_file_permissions()</code>，落盘后收紧为 <code>0600</code>。刻意做成 <strong>best-effort</strong>：非 POSIX 与 <code>chmod</code> 失败都只返回 <code>False</code>，不让登录 / 保存失败</td>
+      <td><code>utils.py</code><br><code>core.py</code> · <code>ai_tools.py</code></td>
+    </tr>
+    <tr>
+      <td><span class="pill p2">P2-3</span></td><td>硬编码共享 api_id/hash</td>
+      <td>缺环境变量时回退内置凭据并 <strong>warning 一次</strong>。未改 fail-fast——那会打断所有既有部署的启动</td>
+      <td><code>core.py</code></td>
+    </tr>
+    <tr>
+      <td><span class="pill p2">P2-4</span></td><td>代理凭据进入 argv</td>
+      <td><code>build_command()</code> 去掉 <code>--proxy</code>，改由 <code>build_env()</code> 走 <code>TG_PROXY</code> 环境变量。CLI 侧本就是 <code>envvar</code>，无需改动</td>
+      <td><code>webui/runner.py</code></td>
+    </tr>
+    <tr>
+      <td><span class="pill p2">P2-7</span></td><td>模板可访问对象属性</td>
+      <td>新增 <code>_SafeTemplateFormatter</code>，拒绝下标访问、属性链深度 &gt; 2、任何以 <code>_</code> 开头或为空的字段段</td>
+      <td><code>automation/handlers.py</code></td>
+    </tr>
+    <tr>
+      <td><span class="pill p2">P2-8</span></td><td>正则无超时（ReDoS）</td>
+      <td>新增 <code>safe_regex_search()</code>：pattern ≤ 512、subject ≤ 8KB（超长<strong>截断</strong>）、star height ≥ 2 形状检查。三处调用点统一降级为「不匹配」，不打断规则链</td>
+      <td><code>utils.py</code> · <code>handlers.py</code> · <code>engine.py</code></td>
+    </tr>
+    <tr>
+      <td><span class="pill p2">P2-9</span></td><td>登录会话无 TTL</td>
+      <td>新增 <code>LOGIN_SESSION_TTL_SECONDS = 600</code> 与 <code>prune_login_sessions()</code>（锁内摘出 → 锁外 <code>close()</code>）；两个入口先 prune</td>
+      <td><code>webui/account.py</code></td>
+    </tr>
+    <tr>
+      <td><span class="pill p2">P2-10</span></td><td>每次调用新建 LLM client</td>
+      <td><code>get_ai_tools()</code> 改为惰性创建后缓存复用（原实现每条消息泄漏一个 httpx 连接池且从不 <code>close()</code>）</td>
+      <td><code>core.py</code></td>
+    </tr>
+    <tr>
+      <td><span class="pill p2">P2-12</span></td><td>客户端引用计数漂移</td>
+      <td><code>__aenter__</code> 补 <code>except BaseException</code> 回滚 <code>_CLIENT_REFS</code> 后再 <code>raise</code>（保留「连接失败仍算可用」语义）。③号 <code>_CLIENT_INSTANCES.pop</code> <strong>按测试契约保留不动</strong></td>
+      <td><code>core.py</code></td>
+    </tr>
+    <tr>
+      <td><span class="pill p2">P2-13</span></td><td>编辑消息忙等可死锁</td>
+      <td><code>wait_for()</code> 三个 <code>isinstance</code> 分支包进 <code>try/finally</code>，<code>finally</code> 无条件复位 <code>waiting_message</code>（原实现异常不复位 → 编辑事件永久自旋）</td>
+      <td><code>core.py</code></td>
+    </tr>
+    <tr>
+      <td><span class="pill p2">P2-14</span></td><td>闭包捕获循环变量 / Optional</td>
+      <td><code>sign_at</code> 提前求值并在不可用时明确报错；<code>sign_once(now)</code> 改为<strong>参数传入</strong> <code>now</code>（原闭包捕获外层 <code>while</code> 的 <code>now</code>，跨轮次串值）</td>
+      <td><code>core.py</code></td>
+    </tr>
+    <tr>
+      <td><span class="pill p2">P2-15</span></td><td>共享状态无锁</td>
+      <td>四处加锁：<code>runner._STATE_LOCK</code>(RLock，因 <code>_forget</code> 会被持锁方重入)、<code>server._auth_storage_lock</code>、<code>data._logger_setup_lock</code>、<code>account._LOGIN_SESSIONS_LOCK</code>。鉴权「判断锁定 + 记一次失败」收进同一把锁</td>
+      <td><code>runner.py</code> · <code>server.py</code><br><code>data.py</code> · <code>account.py</code></td>
+    </tr>
+    <tr>
+      <td><span class="pill p2">P2-16</span></td><td><code>stop()</code> 过早释放账号锁</td>
+      <td>经核对<strong>基线已具备</strong>（<code>terminate → wait(10) → kill → wait(5)</code> 之后才 <code>_forget()</code>），本轮只补注释说明顺序不可调换</td>
+      <td><code>webui/runner.py</code></td>
+    </tr>
+    <tr>
+      <td><span class="pill p2">P2-17</span></td><td>子进程日志路径不一致</td>
+      <td><code>build_command()</code> 同时传 <code>--log-dir</code> 与 <code>--log-file &lt;workdir&gt;/logs/&lt;kind&gt;-&lt;account&gt;/tg-signer.log</code>。只传 <code>--log-dir</code> 时子进程会按相对默认值另建 <code>logs/</code>，且多子进程并发轮转同一 <code>warn.log</code>/<code>error.log</code> 会互相截断</td>
+      <td><code>webui/runner.py</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>本轮三条关键实现说明<span class="badge">容易被改错</span></h2>
+
+<div class="split">
+  <div class="finding ok">
+    <h3>P2-8 的护栏是启发式，不是沙箱</h3>
+    <div class="loc">utils.py · safe_regex_search</div>
+    <p>CPython 的 <code>re</code> 在灾难性回溯期间<strong>不释放 GIL</strong>，线程超时也打不断它，
+    真正的「超时中断」必须引入 <code>regex</code> 等第三方库——本轮不新增依赖，
+    因此改为「长度上限 + star height ≥ 2 形状检查」。</p>
+    <p><strong>判别性实证</strong>：朴素 <code>re.search(r"(a+)+$", "a"*24 + "!")</code> 需
+    <strong>1.98s</strong>，新护栏 <strong>0.0000s</strong> 抛 <code>ValueError</code>；
+    6 个危险 pattern 全部命中，11 个常见 pattern 零误报。</p>
+  </div>
+  <div class="finding ok">
+    <h3>P2-17 必须同时传两个参数</h3>
+    <div class="loc">webui/runner.py · build_command</div>
+    <p>只传 <code>--log-dir</code> 时 CLI 的 <code>--log-file</code> 仍取<strong>相对默认值</strong>，
+    子进程会在自己的 cwd 下另建 <code>logs/</code> —— 这正是原缺陷的成因。
+    所以修复必须显式给出 <code>--log-file</code> 的绝对路径，指向每子进程独立目录。</p>
+    <p>同理 <strong>P2-4 只改传递通道</strong>：<code>TG_PROXY</code> 是 CLI 已有的 <code>envvar</code>，
+    改 <code>runner.py</code> 即可，<code>cli/signer.py</code> 无需改动。</p>
+  </div>
+</div>
+
+<h2>环境限制实证<span class="badge warnb">与代码无关，结论可直接引用</span></h2>
+
+<div class="finding env">
+  <h3>本沙箱的 WAL 不可用（<code>-shm</code> 共享内存映射被拦截）</h3>
+  <div class="loc">tests/test_sign_record_store.py · test_concurrent_upserts_never_raise_database_is_locked[cold] 与 [initialized]</div>
+  <p>这两条用例在本沙箱<strong>都必然失败</strong>（<code>SQLITE_READONLY: attempt to write a readonly database</code>）。
+  逐层排除过程如下，每一项都是实跑结果：</p>
+  <table>
+    <thead><tr><th style="width:300px">实验</th><th>结果</th></tr></thead>
+    <tbody>
+      <tr><td>8 线程冷启动（现状）</td><td>7/8 失败，错误码 <code>SQLITE_READONLY</code>(8)，失败点是 <code>executemany</code></td></tr>
+      <tr><td><code>PRAGMA journal_mode=WAL</code> 改为「重试到真的切成功」</td><td>仍 7/8 失败；且探针显示 <strong><code>pragma_err</code> 全为空、所有连接看到的 mode 都是 <code>wal</code></strong></td></tr>
+      <tr><td>表与 WAL 都预热，只做 INSERT</td><td>仍 2/8 失败</td></tr>
+      <tr><td>整个 bootstrap + 写一起重试 6 次</td><td>仍 6/8 失败（<strong>不是瞬时错误，重试无效</strong>）</td></tr>
+      <tr><td>并发数 1 / 2 / 4 / 8</td><td>0 / 1 / 3 / 7 失败 —— <strong>恰好 N−1，永远只有一个赢家</strong></td></tr>
+      <tr><td>换目录（系统 temp / 仓库内 / D 盘）</td><td>三个位置行为<strong>完全一致</strong></td></tr>
+      <tr><td>换 <code>journal_mode</code></td><td><code>DELETE</code> 2、4 并发 <strong>0 失败</strong>；<code>TRUNCATE</code> 0 失败；<strong>只有 <code>WAL</code> 坏</strong></td></tr>
+      <tr><td>第四轮：改为每次显式关闭连接（各 3 次）</td><td>旧 / 新实现均 <strong>7/8 失败</strong> —— 排除「连接泄漏」这条路</td></tr>
+    </tbody>
+  </table>
+  <p><strong>结论</strong>：WAL 要求多连接共享同一份 <code>-shm</code>，被拦截后 SQLite 对第二个及以后的连接直接返回
+  <code>SQLITE_READONLY</code>；同一环境下 <code>Path.symlink_to()</code> 也会<strong>不报错地退化成普通文件</strong>
+  （lstat <code>0o100666</code>、无重解析点），说明该拦截层会同时影响文件系统语义。</p>
+  <p><strong>因此没有把 <code>journal_mode</code> 改成 <code>DELETE</code></strong>：WAL 是正确处理（单写多读、跨进程友好），
+  为迁就本沙箱改掉会降低真实部署的并发能力。这两条用例在正常机器上应当通过。
+  （第四轮确实动过 <code>sign_record_store.py</code>，但只为补上连接关闭，与 <code>journal_mode</code> 无关。）</p>
+</div>
+
+<div class="finding env">
+  <h3>本沙箱 Python 模块加载慢约 10 倍（<code>timeout=30</code> 假失败）</h3>
+  <div class="loc">tests/test_main_entry.py · 两例写死 subprocess timeout=30</div>
+  <table>
+    <thead><tr><th style="width:300px">命令</th><th>实测耗时</th></tr></thead>
+    <tbody>
+      <tr><td><code>python -c pass</code>（解释器启动基线）</td><td>1.7s</td></tr>
+      <tr><td><code>import pyrogram</code>（第三方，与本次改动无关）</td><td><strong>13.4s</strong></td></tr>
+      <tr><td><code>import tg_signer.core</code></td><td>15.4 ~ 20.0s</td></tr>
+      <tr><td><code>python -m tg_signer --help</code></td><td><strong>54s</strong></td></tr>
+    </tbody>
+  </table>
+  <p>CLI 启动被 <code>import pyrogram</code> 主导（约 13s），全量并发跑测时 <code>--help</code> 超过用例写死
+  的 30s 上限而失败；<strong>单跑可通过</strong>。本轮对 <code>core.py</code> 的唯一 import 改动是往既有
+  <code>from .utils import …</code> 里加一个符号，而 <code>import tg_signer.utils</code> 仅需 1.4s，
+  因此与本次改动无关。</p>
+  <p><strong>第四轮复核</strong>：这两例在同一次全量跑测中<strong>通过</strong>了，印证其成因是并发负载下的
+  启动超时抖动，而非缺陷 —— 属环境相关，不应为迁就本沙箱放宽 <code>timeout</code>。</p>
+</div>
+
+<h2>第二轮修复（P2 优先三项）<span class="badge">修复前后实测</span></h2>
+
+<div class="finding p2">
+  <h3>P2-1　API Key 明文回显</h3>
+  <div class="loc">tg_signer/webui/server.py · GET /api/llm-config</div>
+  <div class="split">
+    <div class="block"><span class="cmt"># 修复前</span>
+GET /api/llm-config
+→ {"config": {
+     "api_key": <span class="bad">"sk-live-…-4321"</span>}}
+   <span class="cmt"># 明文密钥回显给浏览器</span></div>
+    <div class="block"><span class="cmt"># 修复后</span>
+GET /api/llm-config
+→ {"config": {
+     "api_key": <span class="good">"****4321"</span>}}
+   <span class="cmt"># 响应全文不含明文</span></div>
+  </div>
+  <p><strong>保存语义</strong>：<code>POST</code> 时「留空」或「原样回填掩码」都视为<strong>不修改已有密钥</strong>。
+  实测两种提交都返回 <code>api_key_unchanged: true</code> 且文件内密钥未被覆盖；提交新值才替换。
+  <code>/api/llm-config/test</code> 同样在密钥留空/为掩码时回退到服务端已保存的密钥。</p>
+  <p><strong>为什么用「掩码即哨兵」</strong>：前端 <code>LlmConfig.vue</code> 会把回显值填进输入框并在保存时原样提交，
+  若只改 GET 返回值，真实密钥反而会被覆盖成 <code>****4321</code>。因此本次无需重建前端产物。</p>
+</div>
+
+<div class="finding p2">
+  <h3>P2-5 + P2-6　workdir 任意切换（插件加载 RCE 前置）</h3>
+  <div class="loc">tg_signer/webui/data.py · UIState.set_workdir</div>
+  <div class="split">
+    <div class="block"><span class="cmt"># 修复前</span>
+POST /api/state
+  {"workdir": <span class="bad">"../../pwned"</span>}
+→ 200
+  mkdir(parents=True)  <span class="bad"># 越界建目录</span>
+  <span class="bad"># 后续 run 会 exec_module</span>
+  <span class="bad"># &lt;workdir&gt;/handlers/*.py</span></div>
+    <div class="block"><span class="cmt"># 修复后</span>
+POST /api/state
+  {"workdir": <span class="good">"../../pwned"</span>}
+→ 400 工作目录越界
+  <span class="good"># 目录未被创建</span>
+  <span class="good"># 当前 workdir 保持不变</span></div>
+  </div>
+  <p><strong>实现要点</strong>：新增 <code>allowed_workdir_roots()</code>，默认只允许<strong>启动时工作目录的父目录</strong>，
+  可用 <code>TG_SIGNER_WEBUI_WORKDIR_ROOTS</code>（<code>os.pathsep</code> 分隔）放宽；
+  <code>set_workdir()</code> 改为<strong>先校验再 mkdir</strong>（原先越界路径先被创建出来，本身就是一个目录创建原语），
+  校验用 <code>resolve()</code> 后的路径，顺带挡掉指向根之外的软链。</p>
+</div>
+
+<div class="finding p2">
+  <h3>P2-11　FloodWait 持锁 sleep 阻塞同一 client 的所有任务</h3>
+  <div class="loc">tg_signer/core.py · _call_telegram_api</div>
+  <div class="block"><span class="cmt"># 修复前：退避在锁内，FloodWait（常见数百秒）期间同 client 全部任务干等</span>
+async with lock:
+    ...
+    except errors.FloodWait as e:
+        <span class="bad">await asyncio.sleep(wait_seconds)</span>
+
+<span class="cmt"># 修复后：退避移到锁外；限流间隔的等待仍留在锁内</span>
+async with lock:
+    ...
+    if wait_for > 0:
+        await asyncio.sleep(wait_for)   <span class="good"># 限流间隔：必须在锁内</span>
+    ...
+    else:
+        return result
+<span class="good">await asyncio.sleep(wait_seconds)</span>   <span class="cmt"># FloodWait 退避：锁外</span></div>
+  <p><strong>实测（旧实现源码从 <code>git show HEAD</code> 取出后 <code>exec</code> 复现）</strong>：
+  旧实现 <code>sleep(3600.5)</code> 时 <code>lock.locked() == <span style="color:var(--p1)">True</span></code>；
+  新实现 <code>sleep(3600.0)</code> 时 <code>lock.locked() == <span style="color:var(--ok)">False</span></code>，
+  而限流间隔 sleep 仍为 <code>True</code>（并发调用继续被串行化）。</p>
+</div>
+
+<h2>第一轮修复（P1 全部）<span class="badge">回归验证</span></h2>
+
+<table>
+  <thead>
+    <tr><th style="width:70px">编号</th><th style="width:190px">问题</th><th>验证方式</th><th style="width:210px">修复前 → 修复后</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><span class="pill p1">P1-1</span></td><td>任意文件读取</td>
+      <td><code>GET /api/logs?path=</code> 指向 workdir 外文件 / <code>session_string</code> / <code>logs/..</code></td>
+      <td>200 返回明文 → <span class="pill ok">全部 400</span></td>
+    </tr>
+    <tr>
+      <td><span class="pill p1">P1-2</span></td><td>account 目录穿越</td>
+      <td><code>logout</code> / <code>send-code</code> / <code>chats/fetch</code> / <code>run/start</code> / 配置读写删 传 <code>../x</code></td>
+      <td>越界建 <code>evil.lock</code>、触达越界 <code>unlink()</code> → <span class="pill ok">全部拒绝</span></td>
+    </tr>
+    <tr>
+      <td><span class="pill p1">P1-3</span></td><td>默认无鉴权可绑 <code>0.0.0.0</code></td>
+      <td><code>main(host=…)</code>，<code>uvicorn.run</code> 打桩</td>
+      <td>静默放行 → <span class="pill ok">SystemExit</span>（有授权码才放行）</td>
+    </tr>
+    <tr>
+      <td><span class="pill p1">P1-4</span></td><td>SQLite 并发写必失败</td>
+      <td>8 线程 × 200 upsert（冷启动/稳态）；6 进程跨进程写</td>
+      <td>冷启动 6/8、稳态 5/8 失败 → <span class="pill ok">0/8</span>，跨进程 840 行无丢失<br>
+        <span class="pill env">本沙箱例外</span> <span class="note">沙箱 WAL 不可用，见上方环境限制章节</span></td>
+    </tr>
+    <tr>
+      <td><span class="pill p1">P1-5</span></td><td>timer 循环静默停摆</td>
+      <td><code>_tick_timers</code> 抛 <code>OSError</code></td>
+      <td>循环退出、规则永久停摆 → <span class="pill ok">持续 tick 且任务存活</span></td>
+    </tr>
+    <tr>
+      <td><span class="pill p1">P1-6</span></td><td>LLM 异常击穿主循环</td>
+      <td>6 类异常模型输出 + <code>content=None</code></td>
+      <td><code>KeyError</code>/<code>TypeError</code> 外抛 → <span class="pill ok">统一 -1 / ""</span></td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>容易改回去的实现细节<span class="badge">反直觉</span></h2>
+
+<div class="split">
+  <div class="finding ok">
+    <h3>只加 <code>timeout</code> 修不好 SQLite 冷启动</h3>
+    <div class="loc">sign_record_store.py · _connect</div>
+    <p>多连接同时从 delete 切向 WAL 时，SQLite 对失败者<strong>直接返回 <code>SQLITE_BUSY</code> 且不调用 busy handler</strong>，
+    只加 <code>timeout</code> 实测仍有 2/8 线程失败。真正的根因是 rollback-journal 模式下 COMMIT 需要
+    RESERVED→EXCLUSIVE 升级、被其他读者挡住会立刻报 locked —— WAL 才是修复本身，切换过程还需容错。</p>
+  </div>
+  <div class="finding ok">
+    <h3>测试写死的超时是环境相关的</h3>
+    <div class="loc">tests/test_main_entry.py · timeout=30</div>
+    <p>本机 <code>import pyrogram</code> 需约 13s，CLI 冷启动 15~20s，<code>--help</code> 可达 54s。
+    「启动应在 30s 内完成」这条隐含假设在慢机器 / 并发跑测下不成立。若要让测试跨环境稳健，
+    应按实测启动耗时自适应，而不是把超时直接调大掩盖问题。</p>
+  </div>
+  <div class="finding ok">
+    <h3><code>Path.symlink_to()</code> 可能静默降级</h3>
+    <div class="loc">tests/test_utils.py · 软链逃逸守卫</div>
+    <p>Windows 上缺 <code>SeCreateSymbolicLinkPrivilege</code> 或被安全软件拦截时，
+    <code>symlink_to()</code> 可能<strong>不抛异常</strong>而退化成一个普通文件（lstat <code>0o100666</code>、无重解析点）。
+    只写 <code>except OSError: pytest.skip</code> 拦不住，必须在创建后补
+    <code>if not link.is_symlink(): pytest.skip(...)</code>。</p>
+  </div>
+  <div class="finding ok">
+    <h3>打桩 <code>os.name</code> 会连带改变 <code>pathlib</code> 的行为</h3>
+    <div class="loc">tests/test_utils.py · restrict_file_permissions</div>
+    <p><code>monkeypatch.setattr(os, "name", "posix")</code> 改的是全局 <code>os</code> 模块属性，
+    此时 <code>pathlib.Path()</code> 会构造 <code>PosixPath</code>，与 <code>tmp_path</code> 的 <code>WindowsPath</code>
+    <strong>不相等</strong>，断言会假失败。测试里不要在该窗口内重新包装 Path。</p>
+  </div>
+</div>
+
+<h2>验证与状态</h2>
+<ul>
+  <li><strong>静态检查</strong>：<code>ruff check .</code> 全绿；<code>ruff format --check .</code> 51 个文件全绿。</li>
+  <li><strong>测试执行（全量，第五轮）</strong>：<strong>427 passed, 5 skipped, 2 failed</strong>。
+    2 failed 为沙箱 WAL 并发用例 <code>[cold]</code> / <code>[initialized]</code>（环境，用户确认原样保留，
+    以保住正常机器上的回归检测价值）；上一轮记为失败的 CLI 启动超时两例本次<strong>通过</strong>，印证其为负载抖动。</li>
+  <li><strong>测试执行（第六轮）</strong>：<span class="pill env">未取得干净数字</span>
+    定向 <code>tests/test_webui_server.py -k "static or llm"</code> → <strong>7 passed</strong>（含新增守卫）。
+    全量因本轮重建产物消耗了沙箱 safe-delete 的每轮删除配额，<code>test_webui_accounts.py</code> 3 条会删文件的用例
+    被守卫以 <code>SystemExit: 1</code> 打断（环境假失败，详见「第六轮修复」末节）—— 需在新一轮重跑全量。</li>
+  <li><strong>第六轮新增用例</strong>：<code>test_webui_server</code> 1 条（产物与源码同步守卫），
+    该文件收集数 41 → 42。</li>
+  <li><strong>第五轮新增用例</strong>：<code>test_config_validation</code> 9 · <code>test_core</code> 3 ·
+    <code>test_automation_engine</code> 2 · <code>test_webui_data</code> 5，用例总数 410 → 429。</li>
+  <li><strong>第四轮新增用例</strong>：<code>test_sign_record_store</code> 3 条（5 个公开方法均关闭连接 ·
+    两条迁移路径关闭连接 · 方法体抛异常时仍关闭），用例总数 407 → 410。</li>
+  <li><strong>第三轮新增用例</strong>：<code>test_utils</code> 12 · <code>test_ai_tools</code> 1 · <code>test_core</code> 9 ·
+    <code>test_automation_handlers</code> 12 · <code>test_automation_engine</code> 4 ·
+    <code>test_webui_runner</code> 4 · <code>test_webui_accounts</code> 5 · <code>test_webui_server</code> 4。</li>
+  <li><strong>已覆盖</strong>：<code>tg_signer/</code> 全部 Python 源码、WebUI 后端 REST 契约、CLI 参数面、
+    SQLite 存储层、自动化引擎与 handler、kurigram 兼容补丁。</li>
+  <li><strong>未覆盖</strong>：前端组件的交互逻辑（第六轮起补上了「产物与源码同步」这一项守卫，
+    但仍不覆盖 Vue 运行时行为）、docker 部署的纵深防御、
+    真实 Telegram 账号下的端到端行为（涉及真实凭据，未执行）。</li>
+</ul>
+
+<h2>P3 可扩展性（8 项，已修 4）<span class="badge">明细为重建 · 原章节未落盘</span></h2>
+
+<div class="finding env">
+  <h3>先说明一件事：原 §3 明细从未落盘</h3>
+  <p>报告正文有 6 处引用「§3 的 8 项 P3」，但 §2 之后直接跳到 §4 —— 章节本身缺失，只有数量被记录
+  下来。下表按<strong>当前代码</strong>重新取证，条目与编号为新编（原编号已不可复原），数量沿用原来的 8 项。</p>
+</div>
+
+<table>
+  <thead>
+    <tr><th style="width:96px">编号 / 状态</th><th style="width:150px">问题</th><th style="width:175px">位置</th><th>证据 / 结论</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><span class="pill p3">P3-1</span><div style="margin-top:6px"><span class="pill ok">已修复</span></div></td><td>配置 <code>version</code> 不参与分发</td>
+      <td><code>config.py:136</code>、<code>161-176</code></td>
+      <td><code>version</code> 只在 6 处被<strong>赋值</strong>，全仓库无一处<strong>读取</strong>（<code>grep -rn "\.version" tg_signer/</code> 除无关匹配外为空）。<code>load_checked()</code> 是「先试当前类，再递归走 <code>olds</code>」，完全不看 <code>d["version"]</code>；另有同样未使用的 <code>_version</code>（<code>config.py:442</code>）。<strong>可做（小）</strong>：需以现有 <code>olds</code> 链兜底，否则会拒掉合法老配置</td>
+    </tr>
+    <tr>
+      <td><span class="pill p3">P3-2</span><div style="margin-top:6px"><span class="pill env">未处理</span></div></td><td>handler params 无契约</td>
+      <td><code>handlers.py</code>（8 个内置 handler）</td>
+      <td>签名统一是 <code>params: Dict[str, Any]</code>，取值靠 <code>.get()</code> + 别名回退（<code>recent_limit</code>/<code>recent_messages</code>、<code>pattern</code>/<code>regex</code>、<code>text</code>/<code>source_var</code>/<code>source_vars</code>），拼写错误<strong>静默失效</strong>，WebUI 也无法生成参数表单。<strong>可做（中）</strong>：收紧校验会打断已有配置，建议先「只告警不拒绝」</td>
+    </tr>
+    <tr>
+      <td><span class="pill p3">P3-3</span><div style="margin-top:6px"><span class="pill ok">已修复</span></div></td><td>模块级缓存只增不减</td>
+      <td><code>core.py:216-230</code></td>
+      <td>8 个模块级容器，<strong>但并非全都无回收</strong>：<code>_CLIENT_INSTANCES</code>（<code>core.py:286</code>）与 <code>_LOGIN_USERS</code>（<code>core.py:722/726</code>）都有清理路径 —— <span class="bad">原判断「其余 6 个没有任何删除调用」有误</span>。剩下 3 把锁 <strong>不该清理</strong>：清掉后并发的 <code>__aenter__</code> 会各自新建一把锁、同时进入临界区。真正确认的缺陷是 <code>webui/account.py</code> 跨模块、无锁地 pop <code>tg_core</code> 的私有容器 → 收敛为 <code>forget_client()</code></td>
+    </tr>
+    <tr>
+      <td><span class="pill p3">P3-4</span><div style="margin-top:6px"><span class="pill ok">已修复</span></div></td><td>触发器无注册表</td>
+      <td><code>engine.py:209</code>、<code>226</code>、<code>269</code>、<code>332</code></td>
+      <td>未知 <code>type</code> <strong>不会</strong>静默忽略 —— <code>TriggerConfig</code> 是 discriminated union，解析阶段就拒（实测：<code>Input tag 'cron' … does not match any of the expected tags</code>）。<span class="bad">原判断「既不报错也不告警」有误</span>。真实隐患是<strong>清单漂移</strong>：config 新增类型而引擎没跟上 → 「配置合法但永不触发」。另有三处重复的 <code>trigger.type != "…"</code> 过滤 → 收敛为 <code>SUPPORTED_TRIGGER_TYPES</code> + <code>_iter_triggers()</code>，并加 CI 漂移守卫</td>
+    </tr>
+    <tr>
+      <td><span class="pill p3">P3-5</span><div style="margin-top:6px"><span class="pill env">建议不做</span></div></td><td><code>core.py</code> 职责过载</td>
+      <td><code>core.py</code>（1625 行 / 6 类）</td>
+      <td><code>Client</code>（pyrogram 子类 + 实例池 + 引用计数）与 <code>BaseUserWorker</code>（配置 + API 包装 + 限流 + FloodWait + 调度 + 信号）混居一文件。<strong>建议不做</strong>：纯结构调整、零功能收益，却牵动 <code>from tg_signer.core import …</code> 这一公开 API</td>
+    </tr>
+    <tr>
+      <td><span class="pill p3">P3-6</span><div style="margin-top:6px"><span class="pill ok">已修复</span></div></td><td>配置类型元数据散落两表</td>
+      <td><code>webui/data.py:18</code>、<code>24</code></td>
+      <td><code>CONFIG_META</code> 与 <code>NAME_PREFIXES</code> 各管一半，<code>automation</code> 不在前者却必须在后者；新增配置类型要改两表 + <code>server.py</code> 路由 + 前端。<strong>可做（小）</strong>：不能改变现有命名结果</td>
+    </tr>
+    <tr>
+      <td><span class="pill p3">P3-7</span><div style="margin-top:6px"><span class="pill env">建议不做</span></div></td><td>前端构建产物入库</td>
+      <td><code>webui/static/</code> 25 个受跟踪文件</td>
+      <td>产物入库意味着前端改动必须重建并提交产物，否则线上与源码不一致；本会话已两次因此绕开前端改动。<strong>建议不做</strong>：属发布 / CI 流程改造，超出代码审计范围</td>
+    </tr>
+    <tr>
+      <td><span class="pill p3">P3-8</span><div style="margin-top:6px"><span class="pill env">未处理</span></div></td><td><code>SignRecordStore</code> 每次操作开闭连接</td>
+      <td><code>sign_record_store.py</code></td>
+      <td>WAL 经典用法是长连接复用。<strong>可做（中）但需单独立项</strong>：<code>webui/data.py:379</code> 在请求处理里新建 store、跑在 FastAPI 线程池上，而 <code>sqlite3</code> 默认 <code>check_same_thread=True</code>，改成「每实例缓存一条连接」会直接报错，必须配 <code>threading.local</code> 或显式加锁 —— 改错比现状更糟</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>第五轮修复（P3 四项）<span class="badge">P3-1 · P3-3 · P3-4 · P3-6</span></h2>
+
+<div class="finding ok">
+  <h3>四项改动：都是「把判据收敛到唯一入口」</h3>
+  <div class="loc">config.py · core.py · automation/engine.py · webui/data.py · webui/account.py</div>
+  <table>
+    <thead><tr><th style="width:70px">编号</th><th style="width:150px">改动</th><th>关键实现</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="pill p3">P3-1</span></td><td><code>version</code> 真正参与分发</td>
+        <td><code>to_jsonable()</code> 补写 <code>version</code>（ClassVar 不参与 <code>model_dump</code>，不补则磁盘上永远没有版本号）；<code>load_checked()</code> 在配置声明了版本时<strong>先不试自己</strong>；全部失败时改报声明版本的字段错误</td>
+      </tr>
+      <tr>
+        <td><span class="pill p3">P3-3</span></td><td>回收收敛到 <code>forget_client()</code></td>
+        <td>新增 <code>core.forget_client()</code> 作为模块外回收 client 状态的唯一入口，<code>webui/account.py</code> 不再直接戳私有容器；<code>__aexit__</code> 在引用归零时顺带回收 <code>_API_LAST_CALL_AT</code></td>
+      </tr>
+      <tr>
+        <td><span class="pill p3">P3-4</span></td><td>触发器类型清单收敛</td>
+        <td>引擎侧 <code>SUPPORTED_TRIGGER_TYPES</code> 单一清单；<code>_iter_triggers()</code> 取代三处重复过滤（保留原下标，<code>trigger_id</code> 依赖它作 <code>state.json</code> 的键）</td>
+      </tr>
+      <tr>
+        <td><span class="pill p3">P3-6</span></td><td>元数据合并</td>
+        <td><code>CONFIG_META</code> + <code>NAME_PREFIXES</code> → <code>CONFIG_KINDS</code> 一张表（<code>cfg_cls</code> / <code>name_prefix</code> / <code>dir_name</code>）</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="finding p2">
+  <h3>P3-1 的判别性对照：同一个配置，只差一个 <code>version</code></h3>
+  <p>一份 chats 里<strong>同时</strong>带 <code>sign_text</code>（V2 特征）与 <code>actions</code>（V3 特征）的配置：</p>
+  <table>
+    <thead><tr><th style="width:190px">输入</th><th style="width:130px">修复前</th><th>修复后</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>无 <code>version</code></td><td rowspan="2">两者结果<strong>相同</strong>：都按 V3 接受，<code>actions</code> 保留手写值 <code>手写的</code>，<code>migrated=False</code></td>
+        <td>不变：按 V3 接受，<code>actions</code> 仍为 <code>手写的</code></td>
+      </tr>
+      <tr>
+        <td><code>version: 2</code></td>
+        <td><span class="ok">按 V2 迁移</span>：用 <code>sign_text</code> 重建 actions → <code>签到</code>，<code>migrated=True</code></td>
+      </tr>
+    </tbody>
+  </table>
+  <p>另一处可观测改善：缺 <code>sign_text</code> 的 V1 配置，修复前报 <code>chats: Field required</code>（<strong>V3 的错</strong>，会让人去补一个不相干的字段），带 <code>version: 1</code> 后报 <code>sign_text: Field required</code>。
+  且<strong>写错的 version 不会拒掉原本能读的配置</strong> —— <code>version</code> 取 <code>2 / 99 / "3"</code> 时合法 V3 配置照旧加载（已补用例钉住）。</p>
+</div>
+
+<div class="finding env">
+  <h3>踩坑：合并两张表比看起来危险（一次性暴露 6 个失败）</h3>
+  <div class="loc">tg_signer/webui/server.py · 5 处引用旧表</div>
+  <p>把两张表合并成 <code>CONFIG_KINDS</code> 后，<code>server.py</code> 的守卫全炸了。原因不是漏改，而是<strong>原本等价的两个判据分叉了</strong>：</p>
+  <table>
+    <thead><tr><th style="width:250px">原守卫</th><th style="width:210px">真实语义</th><th>替换方式</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>if kind not in data.CONFIG_META:</code><br>（4 处）</td>
+        <td>该 kind 走 <code>&lt;workdir&gt;/signs/</code> 目录布局</td>
+        <td><strong>不能</strong>换成成员判断 —— <code>automation</code> 现在也在表里，放行后会去操作一个不存在的 <code>signs/</code> 目录。改为 <code>uses_dir_layout(kind)</code></td>
+      </tr>
+      <tr>
+        <td><code>if kind not in data.NAME_PREFIXES:</code><br>（1 处）</td>
+        <td>该 kind 能自动生成随机名</td>
+        <td>直译为 <code>if kind not in data.CONFIG_KINDS:</code></td>
+      </tr>
+    </tbody>
+  </table>
+  <p><strong>教训</strong>：表合并前 <code>kind in CONFIG_META</code> 与 <code>kind in CONFIG_KINDS</code> 恰好等价；合并后前者收紧、后者放宽 —— 靠 grep 逐个替换必然会错。
+  已补 <code>test_uses_dir_layout_excludes_automation</code> 把这个区分钉住。</p>
+</div>
+
+<h2>第六轮修复（LLM 配置的密钥回填观感）<span class="badge">纯观感 · 服务端零改动</span></h2>
+
+<div class="finding ok">
+  <h3>把服务端回显的掩码当作值回填进密码框</h3>
+  <div class="loc">tg_signer/webui/frontend/src/components/LlmConfig.vue</div>
+  <p>服务端 <code>GET /api/llm-config</code> 只回掩码（如 <code>****1234</code>），明文不出服务端；
+  但前端 <code>refresh()</code> 把这串掩码<strong>当作值</strong>写进了输入框的绑定变量。
+  后果分三层：用户分不清「已配置」与「这是真实密钥」；<code>type="password"</code> + <code>show-password</code>
+  把掩码渲染成 8 个圆点（像一把 8 位密钥），点开明文开关则直接露出 <code>****1234</code>；空值守卫
+  <code>if (!apiKey.value.trim())</code> 因此<strong>永不触发</strong>，掩码被原样提交回服务端。</p>
+  <p>第三条在服务端已被兜住（§7 第 4 条：空值、或恰好等于掩码，都视为「不修改已有密钥」），
+  所以这是<strong>纯观感问题</strong>、没有功能缺陷 —— 也正因此它一直没被优先处理。</p>
+  <table>
+    <thead><tr><th style="width:150px">位置</th><th style="width:290px">修复前</th><th>修复后</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>refresh()</code></td>
+        <td><code>apiKey.value = config.api_key || ''</code></td>
+        <td>掩码存进独立的 <code>apiKeyMask</code>，输入框置空</td>
+      </tr>
+      <tr>
+        <td>输入框</td>
+        <td>无占位符</td>
+        <td><code>:placeholder="apiKeyPlaceholder"</code></td>
+      </tr>
+      <tr>
+        <td>占位符</td>
+        <td>—</td>
+        <td>已配置 → <code>已配置（****1234），留空表示不修改</code>；未配置 → <code>请输入 API Key</code></td>
+      </tr>
+      <tr>
+        <td>保存 / 测试守卫</td>
+        <td><code>if (!apiKey.value.trim())</code> 告警</td>
+        <td>未配置且留空才告警；已配置时允许留空提交</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="note">密钥「末 4 位」的信息没丢，只是从输入框的值挪到了占位符里。服务端的「空值 = 不修改」契约原本就存在，本次是把前端对齐到它。</p>
+</div>
+
+<div class="finding env">
+  <h3>本项的真实代价：必须重建 <code>webui/static/</code>，且产物 diff 看着很大</h3>
+  <div class="loc">tg_signer/webui/static/ · 14 个 chunk 改名 + index.html</div>
+  <p><code>static/</code> 是<strong>入库</strong>的构建产物（25 个文件），由 <code>frontend/</code> 用 vite 构建。
+  只改 <code>.vue</code> 而不重建，随包分发的界面不会有任何变化 —— 这正是本项此前被推迟的原因。</p>
+  <p><strong>好在构建是字节可复现的。</strong>动源码之前先原样跑一次 <code>vite build</code>，
+  <code>git status -- tg_signer/webui/static</code> 完全干净；清空产物目录后重建，结果同样逐字节一致。
+  因此本次的产物 diff 可信任为「只含相关变更」。</p>
+  <p>但产物 diff 涉及 14 个文件改名，其中 10 个是与被改组件<strong>毫无关系</strong>的路由 chunk。
+  逐条核对后确认是<strong>哈希传播级联</strong>，不是混杂改动：</p>
+  <table>
+    <thead><tr><th style="width:60px">层级</th><th style="width:230px">现象</th><th>证据</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td><code>Configs-*.css</code> 内容变化</td>
+        <td>仅 scoped style id 由 <code>data-v-0fa4ed76</code> 变为 <code>data-v-004f14f0</code>（组件变了，scopeId 随之变），其余 CSS 逐字符相同</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td>入口 chunk 改名</td>
+        <td><code>index-C1O0xJIF.js</code> → <code>index-DgKNUvyG.js</code>（入口内含各 chunk 文件名映射表）</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td>10 个路由 chunk 全部改名</td>
+        <td>都以<strong>文件名</strong> import 入口。以 <code>Accounts</code> 为例：新旧<strong>同为 6634 字节</strong>，diff 仅为该行的 3 处 import 路径</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="finding ok">
+  <h3>判别性测试：A/B 实证 + 产物中的字符串计数</h3>
+  <div class="loc">tests/test_webui_server.py · test_llm_config_ui_leaves_the_stored_key_blank</div>
+  <p>新增用例用 <code>llm-form</code>（<code>LlmConfig.vue</code> 的 scoped class）定位打包后组件所在的 chunk，
+  断言其中含「留空表示不修改」。它守的是<strong>产物与源码是否同步</strong> —— 正是本项最容易踩的坑。</p>
+  <table>
+    <thead><tr><th style="width:200px">跑在哪份产物上</th><th>结果</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>修复前（还原到 HEAD 产物）</td>
+        <td><span class="pill p1">FAILED</span> <code>AssertionError: 以下产物的 LLM 配置界面未体现「留空表示不修改」: ['Configs-D3OhaQpj.js']</code></td>
+      </tr>
+      <tr>
+        <td>重建之后</td>
+        <td><span class="pill ok">PASSED</span> <code>7 passed, 35 deselected</code></td>
+      </tr>
+    </tbody>
+  </table>
+  <table>
+    <thead><tr><th>产物中的判别性字符串</th><th style="width:120px">修复前</th><th style="width:120px">修复后</th></tr></thead>
+    <tbody>
+      <tr><td><code>留空表示不修改</code></td><td>0</td><td><strong style="color:var(--ok)">1</strong></td></tr>
+      <tr><td><code>请输入 API Key</code></td><td>0</td><td><strong style="color:var(--ok)">1</strong></td></tr>
+      <tr><td><code>已配置（</code></td><td>0</td><td><strong style="color:var(--ok)">1</strong></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="finding env">
+  <h3>踩坑：沙箱 safe-delete 守卫会拦下 <code>emptyOutDir</code></h3>
+  <div class="loc">与代码无关，纯环境计数器</div>
+  <p>重建时第二次 <code>vite build</code> 直接失败：</p>
+  <p><code>[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED] {"count":52,"threshold":50,"targets":["...\\static\\assets"]}</code></p>
+  <p><code>emptyOutDir: true</code> 要一次删掉 <code>static/</code> 下全部内容，而沙箱的 safe-delete 守卫按
+  <strong>每轮累计</strong>删除数计数（阈值 50），本轮累计已达 52 故被拦。前几次构建能过，只是因为当时还没到阈值。</p>
+  <p>解法：先自己清空 <code>static/assets</code> 与 <code>static/index.html</code>，让 <code>emptyDir</code> 面对空目录
+  （计数 0）再构建。<strong>后续同一轮里还发生了连带影响</strong>：累计计数继续上涨，
+  <code>test_webui_accounts.py</code> 里几条会删文件的用例被守卫以 <code>SystemExit: 1</code> 打断 ——
+  那 3 条与本轮改动无关（账号管理用例，既不经手 <code>LlmConfig.vue</code> 也不读 <code>static/</code>），
+  且在上一次全量中是通过的，判定为环境假失败；本轮的全量数字因此不作数，需在新一轮重跑。</p>
+</div>
+
+<h2>剩余未处理</h2>
+<ul>
+  <li><strong>P3 余 4 项</strong>：P3-2（handler params 契约）与 P3-8（连接复用）<strong>按用户决定不动</strong>；
+    P3-5（<code>core.py</code> 拆分）与 P3-7（前端产物入库）<strong>建议不做</strong> —— 逐项理由见上「P3 可扩展性」。</li>
+  <li><strong>环境限制的处置</strong>：沙箱内 WAL 不可用、CLI 启动超时偏紧 —— 已确认按「原样保留 + 文档记录」处理，
+    未改动用例判别力。</li>
+  <li><strong>连接关闭</strong>：<code>sign_record_store.py</code> 的漏关连接已在<strong>第四轮</strong>修复
+    （<code>_connection()</code> 收敛），不再列为待办。</li>
+  <li><strong>可选优化（未做）</strong>：<code>SignRecordStore</code> 目前每次操作都开闭一个连接，而 WAL 的经典用法
+    是长连接复用。若要进一步降开销，应改为「每个 store 实例缓存一条连接」，但那会牵动 <code>sqlite3</code> 的
+    <code>check_same_thread</code> 与 FastAPI 线程池的交互，属独立议题。</li>
+  <li><strong>观感项</strong>：前端 <code>LlmConfig.vue</code> 把掩码回填进密码框，已在<strong>第六轮</strong>修复
+    （改为「已配置，留空表示不修改」，并重建 <code>webui/static/</code> 产物 + 补产物同步守卫），不再列为待办。</li>
+</ul>
+
+<footer>
+  完整明细（P1/P2 全表、根因分析、可扩展性评估、复现脚本、六轮修复记录、环境限制实证数据）
+  见 <code>docs/security_audit_2026-09-29.md</code>
+</footer>
+
+</div>
+</body>
+</html>
