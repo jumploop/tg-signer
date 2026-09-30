@@ -87,6 +87,10 @@ Folder 可以使用名称或 ID。`--from-folder` 表示从该 Folder 发现对�
 }
 ```
 
+说明：
+- `ignore_case`（默认 `true`）作用于 `chat_id` / `chat_ids` 里的 `@username` 匹配：置为 `false` 才要求大小写完全一致。`from_user_ids` 里的 `@username` 恒为大小写不敏感（Telegram 用户名本身就不区分大小写），数字 ID 不受该开关影响。
+- `chat_id` / `chat_ids` / `from_user_ids` 写在配置里的数字字符串会被归一化成整数，避免「配置是 `"-100123"`、实际是 int」这种静默不命中。
+
 ### 4.2 timer 触发
 ```json
 {
@@ -104,6 +108,7 @@ Folder 可以使用名称或 ID。`--from-folder` 表示从该 Folder 发现对�
 说明：
 - `cron` 与 `interval_seconds` 二选一即可。
 - 也可以先不配置两者，后续由 `schedule_next` 动态写入下次触发时间。
+- `random_seconds` 必须 ≥ 0（负数会被配置校验拒绝）：它是「在下次触发时间上再随机推迟几秒」的抖动范围。
 
 ### 4.3 startup 触发
 ```json
@@ -119,7 +124,7 @@ Folder 可以使用名称或 ID。`--from-folder` 表示从该 Folder 发现对�
 - `text_rule`: `exact` | `contains` | `regex` | `all`
 - `text_value`: 匹配值
 - `chat_id` / `chat_ids` / `from_user_ids`
-- `ignore_case`
+- `ignore_case`: 作用于 `text_rule` 的文本匹配与 `chat_id` / `chat_ids` 的 `@username` 匹配（默认 `true`）
 
 ### 5.2 常用内置 Handler
 - `send_text`: 发文本
@@ -131,7 +136,7 @@ Folder 可以使用名称或 ID。`--from-folder` 表示从该 Folder 发现对�
 - `ai_reply`: 调用大模型生成回复
 - `blacklist_filter`: 黑名单拦截
 - `forward` / `external_forward`: 转发到 Telegram 或外部
-- `store_state` / `load_state`: 持久化变量
+- `store_state` / `load_state`: 持久化变量。`store_state` 的 `keys`（数组，也接受单个字符串）非空时**只持久化列出的键**，否则持久化全部规则变量；规则链结束时引擎会按这个子集回写状态
 
 常见模板变量：
 - `{message.text}`

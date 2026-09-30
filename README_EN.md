@@ -305,6 +305,12 @@ Daily check-in time (time or crontab expression, such as '06:00:00' or '0 6 * * 
 Random time deviation in seconds (default is 0): 300
 ```
 
+When the task actually runs:
+
+- On startup, if **today's** scheduled time has already passed, it signs once immediately (catch-up); if it has not arrived yet, it **waits for that time** instead of signing early (otherwise the same day would be signed twice).
+- A non-daily crontab (e.g. `0 6 * * 1`, Mondays only) only signs on matching days; on other days nothing is signed.
+- If **every** chat fails in a round, the day is not recorded as done: the round is retried after 60 seconds. As soon as one chat succeeds the day counts as done (so chats that already succeeded are not messaged twice). Use `tg-signer run-once <task>` to force an immediate run.
+
 ### Monitoring Has Been Removed
 
 `tg-signer monitor` and `<workdir>/monitors/` are gone. Use `tg-signer automation`

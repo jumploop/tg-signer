@@ -183,7 +183,7 @@ sequenceDiagram
 
 - 规则变量初始化：`ctx.vars = rule.vars + state.vars`（后者覆盖前者）。
 - handler 串行执行；任一异常会中断当前规则链。
-- 链执行结束后统一回写 `ctx.vars` 到状态存储。
+- 链执行结束后统一回写 `ctx.vars` 到状态存储；`store_state(keys=[...])` 可通过 `ctx.persist_vars` 声明「只回写列出的键」，未声明时维持回写全部 `ctx.vars` 的契约。
 
 ## 6. 模板与变量机制
 
