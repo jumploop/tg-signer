@@ -5,7 +5,8 @@ Exercises the full path that real WebUI traffic takes:
 1. ``webui.data._setup_webui_logger`` configures file logging for the WebUI
    process itself.
 2. ``webui.runner.start`` spawns a child process whose stdout/stderr is
-   appended to the same ``<workdir>/logs/tg-signer.log``.
+   appended to its own ``<workdir>/logs/<kind>-<account>/stdout.log`` (the
+   top-level main log is reserved for the WebUI process's own handler).
 3. ``webui.data.load_logs`` reads that file from the WebUI log page.
 
 Each test is isolated with a logger-handler snapshot so the global
@@ -92,10 +93,11 @@ def test_setup_webui_logger_creates_main_log(tmp_path, restored_logger):
 def test_child_process_stdout_visible_in_load_logs(
     tmp_path, restored_logger, _webui_process_state, monkeypatch
 ):
-    """起一个真子进程写 stdout,确认 data.load_logs 能从主日志读出来。"""
+    """起一个真子进程写 stdout,确认 data.load_logs 能从子目录日志读出来。"""
     # 1) WebUI 自身 logger 初始化
     _setup_webui_logger(tmp_path)
     main_log = tmp_path / "logs" / webui_runner.DEFAULT_LOG_FILE_NAME
+    stdout_log = webui_runner.child_stdout_log(tmp_path, "signer", "acc")
 
     # 2) 缩短 grace,子进程先 flush marker 再 sleep 60
     monkeypatch.setattr(webui_runner, "_STARTUP_GRACE_SECONDS", 0.3)
@@ -117,19 +119,24 @@ def test_child_process_stdout_visible_in_load_logs(
         # 3) 等待 marker 落盘
         deadline = time.time() + 10
         while time.time() < deadline:
-            content = main_log.read_text(encoding="utf-8", errors="ignore")
+            content = stdout_log.read_text(encoding="utf-8", errors="ignore")
             if marker in content:
                 break
             time.sleep(0.05)
 
-        # 4) 模拟 WebUI 日志页:用 data.load_logs 读主日志
+        # 4) 模拟 WebUI 日志页:用 data.load_logs 读子目录里的 stdout 日志
         #    log_dir 是读日志的允许根目录,由 server 层传入(state.log_path.parent)。
         resolved_path, lines = webui_data.load_logs(
-            limit=1000, log_path=str(main_log), log_dir=main_log.parent
+            limit=1000, log_path=str(stdout_log), log_dir=main_log.parent
         )
-        assert resolved_path == main_log
+        assert resolved_path == stdout_log
         assert any(marker in line for line in lines), (
             f"load_logs did not surface child stdout; lines were:\n{lines!r}"
+        )
+        # 主日志不得被子进程写入:它由主进程的 RotatingFileHandler 独占,
+        # 子进程的裸 fd 在轮转后会指向被改名的旧 inode。
+        assert marker not in main_log.read_text(encoding="utf-8", errors="ignore"), (
+            "子进程 stdout 泄漏进了顶层主日志"
         )
     finally:
         webui_runner.stop("signer", "acc")

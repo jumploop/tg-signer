@@ -111,6 +111,28 @@ def test_workdir_is_logged_on_startup_and_switch(client, tmp_path):
     assert f"log_path={new_log}" in content
 
 
+def test_switch_workdir_failure_rolls_state_back(client, tmp_path, monkeypatch):
+    """切换失败必须把 workdir 退回去,不能只报错不改状态。
+
+    set_workdir() 成功后本函数已无回滚点:若直接抛 400,后端其实已经在新目录
+    操作,而前端收到失败后保留旧值显示 —— 正是「基础设置显示的路径和实际不一致」。
+    """
+    before = client.get("/api/state").json()
+    target = tmp_path / "half-switched"
+
+    def boom(_workdir):
+        raise OSError("模拟磁盘故障")
+
+    monkeypatch.setattr(server.data_mod, "_setup_webui_logger", boom)
+    resp = client.post("/api/state", json={"workdir": str(target)})
+    assert resp.status_code == 400
+
+    monkeypatch.undo()
+    after = client.get("/api/state").json()
+    assert after["workdir"] == before["workdir"]
+    assert after["log_path"] == before["log_path"]
+
+
 @pytest.mark.parametrize(
     "relative",
     ["../wb_outside_a", "../../wb_outside_b", "../wb_outside_c/nested"],

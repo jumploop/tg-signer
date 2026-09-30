@@ -73,9 +73,10 @@ class SignRecord:
     path: Path
 
 
-def get_workdir(workdir: Optional[Path | str] = None) -> Path:
+def get_workdir(workdir: Optional[Path | str] = None, *, create: bool = True) -> Path:
     base = Path(workdir) if workdir else DEFAULT_WORKDIR
-    base.mkdir(parents=True, exist_ok=True)
+    if create:
+        base.mkdir(parents=True, exist_ok=True)
     # 必须返回绝对路径。DEFAULT_WORKDIR 默认是相对的 ``.signer``，若原样返回，
     # UIState.log_path 就是 ``.signer/logs/tg-signer.log``：日志接口把它当作
     # 「相对 logs/ 根目录」再次拼接，resolve_log_under() 必然判定越界，/api/logs
@@ -378,6 +379,10 @@ def load_user_infos(workdir: Optional[Path | str] = None) -> List[UserInfo]:
                     latest_chats = json.load(fp)
                 except json.JSONDecodeError:
                     pass
+        # 文件内容不保证是数组（手改过、或被截断成对象），下游按 list 迭代，
+        # 直接透传会让 /api/chats 抛 TypeError 变 500。
+        if not isinstance(latest_chats, list):
+            latest_chats = []
 
         entries.append(
             UserInfo(
@@ -560,7 +565,9 @@ def load_group_chats(workdir: Optional[Path | str] = None) -> List[Dict[str, Any
         account = (
             info.data.get("first_name") or info.data.get("username") or info.user_id
         )
-        for chat in info.latest_chats:
+        for chat in info.latest_chats or []:
+            if not isinstance(chat, dict):
+                continue
             chat_type = _normalize_chat_type(chat.get("type"))
             if chat_type not in GROUP_CHAT_TYPES:
                 continue
@@ -579,8 +586,10 @@ def load_group_chats(workdir: Optional[Path | str] = None) -> List[Dict[str, Any
 class UIState:
     """WebUI 共享 UI 状态(不依赖 NiceGUI,便于无 GUI 环境测试)。"""
 
-    def __init__(self) -> None:
-        self.workdir: Path = get_workdir(DEFAULT_WORKDIR)
+    def __init__(
+        self, workdir: Optional[Path | str] = None, *, create: bool = True
+    ) -> None:
+        self.workdir: Path = get_workdir(workdir or DEFAULT_WORKDIR, create=create)
         # 统一主日志:<workdir>/logs/<LOG_FILE_NAME>,与子进程共享同一份
         self.log_path: Path = self.workdir / "logs" / LOG_FILE_NAME
         self._initial_workdir = self.workdir.resolve()

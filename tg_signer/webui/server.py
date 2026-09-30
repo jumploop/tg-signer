@@ -40,7 +40,11 @@ _auth_storage: Dict[str, Any] = {}
 # 会各自读到同一份旧值再写回,把「连续 5 次错误锁定 60 秒」直接绕过。
 _auth_storage_lock = threading.Lock()
 
-state = data_mod.UIState()
+# create=False：模块级 state 在 import 时构造，而 UIState 过去会 mkdir 工作目录，
+# 于是「仅仅 import 一下」就会在进程 CWD 下凭空建出 `.signer` —— 传了
+# --workdir 也照样建，随后 main() 改回真正的 workdir，那个野目录却留在磁盘上。
+# 目录改由 _setup_logger()（经 _setup_webui_logger 的 mkdir）在启动时创建。
+state = data_mod.UIState(create=False)
 
 SIGNER_TEMPLATE: Dict[str, object] = {
     "chats": [
@@ -262,17 +266,27 @@ def get_state(_: None = Depends(require_auth)) -> Dict[str, Any]:
 
 @app.post("/api/state")
 def set_state(body: StateBody, _: None = Depends(require_auth)) -> Dict[str, str]:
+    previous = state.workdir
+    previous_log = state.log_path
     try:
-        previous = str(state.workdir)
         state.set_workdir(body.workdir)
         # 日志 handler 是进程启动时按当时的 workdir 绑定的，不重绑的话
         # /api/state 显示的 log_path 已经是新目录，实际日志却仍写进旧目录 ——
         # 基础设置页显示的「主日志路径」就成了假路径，而新目录的 logs/ 根本
         # 不会被创建（切到一个全新目录时日志页直接空白）。
         data_mod._setup_webui_logger(state.workdir)
-        _log_workdir(f"切换 {previous} ->")
     except Exception as exc:  # noqa: BLE001
+        # set_workdir() 成功之后本函数已无回滚点：若这里直接抛 400，后端其实
+        # 已经切到新目录在操作，而前端收到失败后保留旧值显示 —— 正是「基础设置
+        # 显示的路径和实际不一致」。必须把状态和日志 handler 一起退回去。
+        state.workdir = previous
+        state.log_path = previous_log
+        try:
+            data_mod._setup_webui_logger(state.workdir)
+        except Exception:  # noqa: BLE001
+            pass
         raise HTTPException(status_code=400, detail=f"切换工作目录失败: {exc}")
+    _log_workdir(f"切换 {previous} ->")
     return {"workdir": str(state.workdir), "log_path": str(state.log_path)}
 
 

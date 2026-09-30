@@ -257,9 +257,14 @@ def test_shutdown_all_no_op_when_empty():
     assert runner.shutdown_all() == []
 
 
-def test_start_redirects_stdout_stderr_to_main_log(monkeypatch, tmp_path):
-    """子进程 stdout/stderr 应被重定向到 <workdir>/logs/<main_log>,而非 DEVNULL。"""
+def test_start_redirects_stdout_stderr_to_child_dir_not_main_log(monkeypatch, tmp_path):
+    """子进程 stdout/stderr 落到子目录,且**不**写顶层主日志。
+
+    顶层主日志由主进程的 RotatingFileHandler 独占;子进程若也往里写,它继承来的
+    裸 fd 在轮转后会指向被改名的旧 inode,输出从此静默消失。
+    """
     main_log = tmp_path / "logs" / runner.DEFAULT_LOG_FILE_NAME
+    stdout_log = runner.child_stdout_log(tmp_path, "signer", "acc")
     marker = "RUNNER_REDIRECT_MARKER_42"
     # grace 调到 0.3s:子进程先 flush marker 再 sleep 60,grace 期内仍存活
     monkeypatch.setattr(runner, "_STARTUP_GRACE_SECONDS", 0.3)
@@ -280,7 +285,7 @@ def test_start_redirects_stdout_stderr_to_main_log(monkeypatch, tmp_path):
         # 等 marker 真正落盘(子进程 flush 后写到 main_log,文件 I/O 略有延迟)
         deadline = time.time() + 10
         while time.time() < deadline:
-            if main_log.is_file() and marker in main_log.read_text(
+            if stdout_log.is_file() and marker in stdout_log.read_text(
                 encoding="utf-8", errors="ignore"
             ):
                 break
@@ -288,16 +293,24 @@ def test_start_redirects_stdout_stderr_to_main_log(monkeypatch, tmp_path):
     finally:
         runner.stop("signer", "acc")
 
-    # 主日志文件应存在并包含 marker
-    assert main_log.is_file(), f"expected main log at {main_log}"
-    content = main_log.read_text(encoding="utf-8", errors="ignore")
+    # 子目录文件应存在并包含 marker
+    assert stdout_log.is_file(), f"expected stdout log at {stdout_log}"
+    content = stdout_log.read_text(encoding="utf-8", errors="ignore")
     assert marker in content, (
-        f"stdout was not redirected to main log; content was:\n{content!r}"
+        f"stdout was not redirected to child dir; content was:\n{content!r}"
     )
+    # 关键断言:顶层主日志不得被子进程写入(轮转后会写进旧 inode)。
+    assert not main_log.exists() or marker not in main_log.read_text(
+        encoding="utf-8", errors="ignore"
+    ), "子进程 stdout 泄漏进了顶层主日志"
 
 
 def test_start_creates_log_dir(tmp_path):
-    """start() 启动前应自动创建 <workdir>/logs 目录。"""
+    """start() 启动前应自动创建 <workdir>/logs 及其子目录下的 stdout 日志。
+
+    顶层 tg-signer.log 不再由 start() 创建 —— 它归主进程的 RotatingFileHandler
+    独占，由 _setup_webui_logger 在服务启动时负责。
+    """
     workdir = tmp_path / "wd"
     workdir.mkdir()
     assert not (workdir / "logs").exists()
@@ -313,12 +326,13 @@ def test_start_creates_log_dir(tmp_path):
     finally:
         _runner.build_command = orig_build
     assert (workdir / "logs").is_dir()
-    assert (workdir / "logs" / runner.DEFAULT_LOG_FILE_NAME).is_file()
+    assert runner.child_stdout_log(workdir, "signer", "acc").is_file()
+    assert not (workdir / "logs" / runner.DEFAULT_LOG_FILE_NAME).exists()
 
 
 def test_start_propagates_file_handle_error(monkeypatch, tmp_path):
-    """若打开主日志失败,start() 应返回失败而非静默丢日志。"""
-    log_path = tmp_path / "logs" / runner.DEFAULT_LOG_FILE_NAME
+    """若打开子进程 stdout 日志失败,start() 应返回失败而非静默丢日志。"""
+    log_path = runner.child_stdout_log(tmp_path, "signer", "acc")
     # 让目录创建后,open() 失败:把 logs/ 弄成文件
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.parent.rmdir()
@@ -460,6 +474,7 @@ def test_start_isolates_child_log_dir(monkeypatch, tmp_path):
     assert captured["cmd"][captured["cmd"].index("--log-file") + 1] == str(
         child_log_dir / runner.DEFAULT_LOG_FILE_NAME
     )
-    # WebUI 侧的聚合主日志仍是 <workdir>/logs/<DEFAULT_LOG_FILE_NAME>
-    assert (tmp_path / "logs" / runner.DEFAULT_LOG_FILE_NAME).is_file()
+    # 子进程 stdout 也隔离在同一个子目录;顶层主日志留给主进程自己的 handler。
+    assert runner.child_stdout_log(tmp_path, "automation", "acc").is_file()
+    assert not (tmp_path / "logs" / runner.DEFAULT_LOG_FILE_NAME).exists()
     runner._forget("automation:acc")

@@ -593,3 +593,38 @@ def test_load_config_migrates_legacy_v1_file(tmp_path):
     entry = data.load_config("signer", "legacy", tmp_path)
     assert entry.updated_from_old is True
     assert entry.payload["chats"][0]["chat_id"] == 123
+
+
+# ---------------------------------------------------------------------------
+# 回归：import 副作用 / 脏 latest_chats.json
+# ---------------------------------------------------------------------------
+
+
+def test_get_workdir_can_resolve_without_creating(tmp_path):
+    """create=False 时只解析路径，不落盘。
+
+    模块级 ``state`` 过去在 import 阶段就 mkdir，于是「仅仅 import 一下」会在
+    进程 CWD 下凭空建出 ``.signer`` —— 传了 --workdir 也照样建。
+    """
+    target = tmp_path / "never-created"
+    resolved = data.get_workdir(target, create=False)
+    assert resolved == target.resolve()
+    assert not target.exists(), "create=False 仍然创建了目录"
+
+
+def test_ui_state_create_false_does_not_touch_disk(tmp_path, monkeypatch):
+    monkeypatch.delenv("TG_SIGNER_WORKDIR", raising=False)
+    monkeypatch.setattr(data, "DEFAULT_WORKDIR", tmp_path / "import_side_effect")
+    state = data.UIState(create=False)
+    assert state.workdir == (tmp_path / "import_side_effect").resolve()
+    assert not (tmp_path / "import_side_effect").exists()
+
+
+@pytest.mark.parametrize("payload", [{}, None, "not-a-list"])
+def test_load_group_chats_tolerates_malformed_latest_chats(tmp_path, payload):
+    """latest_chats.json 内容不是数组时，不能把 /api/chats 打成 500。"""
+    user_dir = tmp_path / "users" / "u1"
+    user_dir.mkdir(parents=True)
+    (user_dir / "me.json").write_text(json.dumps({"id": 1}), encoding="utf-8")
+    (user_dir / "latest_chats.json").write_text(json.dumps(payload), encoding="utf-8")
+    assert data.load_group_chats(tmp_path) == []

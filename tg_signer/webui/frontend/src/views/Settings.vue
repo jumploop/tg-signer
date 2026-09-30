@@ -65,6 +65,9 @@ async function apply() {
     ElMessage.success('已切换工作目录')
   } catch (error) {
     ElMessage.error(errMsg(error))
+    // 切换失败时后端并未生效，输入框里那个路径是无效值。不回滚的话用户看到的
+    // 就是一个「填了但没用上」的目录，正是「显示的路径和实际不一致」的来源。
+    await refresh()
   } finally {
     saving.value = false
   }

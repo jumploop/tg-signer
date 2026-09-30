@@ -1,8 +1,10 @@
 """WebUI 后台运行进程管理。
 
 以独立 CLI 子进程持续运行签到/监控/自动化任务，避免阻塞 WebUI 事件循环。
-所有子进程与 WebUI 主进程统一写入 <workdir>/logs/<DEFAULT_LOG_FILE>，
-子进程 stdout/stderr 也追加到同一文件，避免日志被 DEVNULL 吞掉。
+WebUI 主进程自身的日志写入 <workdir>/logs/<DEFAULT_LOG_FILE>；每个任务子进程
+则独占 <workdir>/logs/<kind>-<account>/，它的 logger 与 stdout/stderr 都在那里，
+两者互不干扰（主日志的 RotatingFileHandler 一旦轮转，子进程的裸 fd 会因指向
+旧 inode 而静默丢日志）。
 
 **单账号多任务共享一个子进程**: 同 `(kind, account)` 的多个任务在同一个
 子进程内通过 `asyncio.gather` 跑，共享同一个 pyrogram Client，从而避免多个
@@ -167,6 +169,24 @@ def process_key(kind: str, account: str) -> str:
     return f"{kind}:{account}"
 
 
+def child_log_dir(workdir: Path | str, kind: str, account: str) -> Path:
+    """任务子进程独占的日志目录 ``<workdir>/logs/<kind>-<account>/``。"""
+    return resolve_under(Path(workdir) / "logs", f"{kind}-{account}")
+
+
+def child_stdout_log(workdir: Path | str, kind: str, account: str) -> Path:
+    """子进程 stdout/stderr 的落点。
+
+    曾经指向顶层 ``<workdir>/logs/tg-signer.log``，于是主日志同时有两个写入方：
+    WebUI 主进程的 ``RotatingFileHandler`` 和子进程经 ``Popen`` 继承的裸 fd。
+    轮转时主进程把文件改名成 ``.log.1`` 并新建，子进程那个 fd 仍指着改名前的旧
+    inode，此后所有输出都落进 ``.log.1`` —— 从「运行日志」页看主日志就是
+    「任务跑了一段时间后突然不再更新」。子进程自己的 logger 已经在写这个子目录，
+    stdout 再抄一份到主日志本就是冗余，直接隔离到同一子目录即可。
+    """
+    return child_log_dir(workdir, kind, account) / "stdout.log"
+
+
 def build_command(
     kind: str,
     tasks: Union[str, List[str]],
@@ -187,15 +207,15 @@ def build_command(
       CLI 的 ``--log-file`` 默认值是相对路径 ``logs/tg-signer.log``,于是子进程
       会在自己的 cwd 下另建一份 ``logs/``,而 ``warn.log`` / ``error.log`` 又被
       所有子进程共享 —— 多个 RotatingFileHandler 并发轮转会互相截断。现在把
-      两个路径都指到 ``<workdir>/logs/<kind>-<account>/``。WebUI 侧看到的聚合
-      日志仍由 stdout 重定向到 ``<workdir>/logs/<DEFAULT_LOG_FILE_NAME>`` 提供。
+      两个路径都指到 ``<workdir>/logs/<kind>-<account>/``；子进程的 stdout/stderr
+      也重定向到同一子目录（见 :func:`child_stdout_log`），不与主日志争抢。
     """
     if isinstance(tasks, str):
         tasks = [tasks]
     if not tasks:
         raise ValueError("至少需要一个任务名")
     workdir = Path(workdir)
-    child_log_dir = resolve_under(workdir / "logs", f"{kind}-{account}")
+    log_dir = child_log_dir(workdir, kind, account)
     cmd = [
         sys.executable,
         "-m",
@@ -207,9 +227,9 @@ def build_command(
         "--session_dir",
         str(workdir),
         "--log-dir",
-        str(child_log_dir),
+        str(log_dir),
         "--log-file",
-        str(child_log_dir / DEFAULT_LOG_FILE_NAME),
+        str(log_dir / DEFAULT_LOG_FILE_NAME),
     ]
     if kind == "signer":
         cmd += ["run", *tasks]
@@ -313,8 +333,11 @@ def start(
         workdir.mkdir(parents=True, exist_ok=True)
         log_dir.mkdir(parents=True, exist_ok=True)
         cmd = build_command(kind, tasks, workdir, account)
-        main_log = log_dir / DEFAULT_LOG_FILE_NAME
-        log_fp = open(main_log, "a", encoding="utf-8")
+        # 落到子进程独占的子目录，而不是顶层主日志 —— 顶层主日志由主进程的
+        # RotatingFileHandler 独占，混进子进程的裸 fd 会在轮转后写进旧 inode。
+        stdout_log = child_stdout_log(workdir, kind, account)
+        stdout_log.parent.mkdir(parents=True, exist_ok=True)
+        log_fp = open(stdout_log, "a", encoding="utf-8")
     except OSError as exc:
         lock.release()
         return False, f"{tasks[0]} 启动失败: {exc}"

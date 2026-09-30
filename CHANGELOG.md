@@ -1,6 +1,14 @@
 # Changelog / 版本变动日志
 
 ## 版本变动日志
+### 0.10.12
+- **fix: import 模块即在进程 CWD 下凭空创建 `.signer`**：`server.py` 的模块级 `state = data_mod.UIState()` 会在 import 阶段执行，而 `UIState.__init__` -> `get_workdir()` 内含 `mkdir(parents=True)`。于是「仅仅 import 一下」就在 CWD 建出 `.signer`，传了 `--workdir` 也照样建 —— 随后 `main()` 改回真正的 workdir，那个野目录却留在磁盘上。Docker 里 WORKDIR 若是 `/`，用户就会在自己根本没用过的路径下看到残留目录。现 `get_workdir()`/`UIState()` 增 `create` 开关，模块级 state 用 `create=False`，目录改由 `_setup_logger()` 在启动时创建
+- **fix: `POST /api/state` 切换失败后状态不回滚**：`set_workdir()` 成功之后本函数已无回滚点，若后续 `_setup_webui_logger()` 失败，会被同一个 `except Exception` 吞掉并返回 400「切换工作目录失败」—— 但后端其实**已经切到新目录在操作**，前端收到失败后保留旧值显示。这正是「基础设置显示的路径和实际不一致」的代码级成因（此前只怀疑部署侧未重启）。现失败时把 `workdir` / `log_path` 与日志 handler 一并退回
+- **fix: 子进程 stdout 与主进程 logger 争抢同一个主日志**：`runner.start` 过去把子进程 `stdout/stderr` 重定向到顶层 `<workdir>/logs/tg-signer.log`，而该文件同时被主进程的 `RotatingFileHandler` 独占。轮转时主进程把文件改名为 `.log.1` 并新建，子进程经 `Popen` 继承的裸 fd 仍指向改名前的旧 inode，此后所有输出落进 `.log.1` —— 表现为「任务跑一段时间后主日志突然不再更新」。子进程自己的 logger 本就写在 `<workdir>/logs/<kind>-<account>/`（v0.10.8 已隔离），stdout 再抄一份到主日志属冗余。新增 `runner.child_stdout_log()`，stdout 改落 `<workdir>/logs/<kind>-<account>/stdout.log`，顶层主日志由主进程 handler 独占
+- **fix: `latest_chats.json` 内容不是数组时 `/api/chats` 报 500**：文件被手改或截断成 `{}` / `null` 时，`load_user_infos` 原样透传，`load_group_chats` 按 list 迭代抛 `TypeError`。现载入时校验类型，聚合时再逐项跳过非 dict
+- **fix: 前端切换工作目录失败不回滚输入框**：`Settings.vue` 的 `apply()` 在 catch 里只弹错误，用户填的无效路径留在框里却未生效。现失败时重新拉取后端真实值
+- 测试：新增 `test_switch_workdir_failure_rolls_state_back`、`test_get_workdir_can_resolve_without_creating`、`test_ui_state_create_false_does_not_touch_disk`、`test_load_group_chats_tolerates_malformed_latest_chats`；改写 `test_start_redirects_stdout_stderr_to_child_dir_not_main_log`（含「子进程不得写顶层主日志」判别断言）、`test_child_process_stdout_visible_in_load_logs`、`test_start_creates_log_dir`、`test_start_isolates_child_log_dir`
+
 ### 0.10.11
 - **feat: 把后端实际使用的工作目录打进日志**：`server._log_workdir()` 在服务启动与 `POST /api/state` 切换工作目录时各写一行 `WebUI 工作目录[启动|切换 旧 ->]: workdir=... | log_path=... | cwd=... | 是否绝对路径=...`，写入 `<workdir>/logs/tg-signer.log`。此前「基础设置」显示的目录与后端实际读写的目录只能靠猜，现在 grep 这一行即可核对
 - 背景：代码侧已确认后端只有 `state.workdir` 一个数据源，不存在「显示 A 实际读 B」的双数据源问题。剩余最可能的成因是线上 Python 进程未随 `git pull` 重启（静态产物每请求读磁盘，后端代码在内存里），故提供可观测手段
