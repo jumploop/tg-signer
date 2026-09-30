@@ -36,6 +36,9 @@ class AutomationContext:
     logger: logging.Logger
     worker: "UserAutomation"
     workdir: Path
+    # store_state(keys=[...]) 通过它声明「规则结束时只回写这些变量」；
+    # None 表示回写全部 ctx.vars（默认契约）。
+    persist_vars: Optional[Dict[str, Any]] = None
 
     def log(self, msg: str, level: str = "INFO") -> None:
         normalized_level = level.upper()
@@ -67,11 +70,12 @@ class RuleStateStore:
             return
         try:
             with open(self.path, "r", encoding="utf-8") as fp:
-                self._data = json.load(fp)
-            rules = self._data.get("rules", {})
-            self.logger.debug("状态文件加载完成: %s (rules=%s)", self.path, len(rules))
-        except (OSError, json.JSONDecodeError) as exc:
-            # 损坏时备份原文件,避免下次 save 静默覆盖导致状态彻底丢失
+                data = json.load(fp)
+            self._validate_shape(data)
+        except (OSError, ValueError, TypeError) as exc:
+            # 损坏时备份原文件,避免下次 save 静默覆盖导致状态彻底丢失。
+            # JSONDecodeError / UnicodeDecodeError 都是 ValueError 的子类,
+            # 形状错误(根不是 dict、rules 不是 dict 等)则显式抛 ValueError。
             self.logger.warning(
                 f"无法读取状态文件: {self.path} ({exc}),已备份为 .corrupt-<ts> 并以空状态继续"
             )
@@ -83,6 +87,36 @@ class RuleStateStore:
             except OSError as backup_exc:  # noqa: BLE001
                 self.logger.warning(f"备份损坏状态文件失败: {backup_exc}")
             self._data = {"rules": {}}
+            return
+        # 形状合法但缺字段时也要补齐,保证后续访问器永远拿到 {"rules": {...}}。
+        data.setdefault("rules", {})
+        self._data = data
+        self.logger.debug(
+            "状态文件加载完成: %s (rules=%s)", self.path, len(self._data["rules"])
+        )
+
+    @staticmethod
+    def _validate_shape(data: Any) -> None:
+        """校验状态文件形状，非法时抛 ``ValueError``。
+
+        形状错误必须在 load 阶段拦住:此前只捕获 JSON 解码错误,``[]`` / ``null``
+        / ``{"rules": null}`` 这类文件会让 ``_rule_bucket`` 在**每个**自动化子命令
+        上抛 AttributeError/TypeError。
+        """
+        if not isinstance(data, dict):
+            raise ValueError(f"状态文件根节点必须是对象,实际为 {type(data).__name__}")
+        rules = data.get("rules", {})
+        if not isinstance(rules, dict):
+            raise ValueError(
+                f"状态文件的 rules 字段必须是对象,实际为 {type(rules).__name__}"
+            )
+        for rule_id, bucket in rules.items():
+            if not isinstance(bucket, dict):
+                raise ValueError(f"状态文件 rules.{rule_id} 必须是对象")
+            for key in ("vars", "triggers"):
+                value = bucket.get(key)
+                if value is not None and not isinstance(value, dict):
+                    raise ValueError(f"状态文件 rules.{rule_id}.{key} 必须是对象")
 
     def save(self, force: bool = False) -> None:
         # 无变更时跳过落盘，减少频繁 IO。

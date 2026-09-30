@@ -8,6 +8,7 @@ import pytest
 from tg_signer.automation.handlers import (
     ai_reply,
     blacklist_filter,
+    external_forward,
     extract_regex,
     load_plugins,
     random_pick,
@@ -374,3 +375,161 @@ async def test_blacklist_filter_skips_invalid_regex(tmp_path):
         _render_event(), ctx, {"regex": "(unclosed", "keywords": []}
     )
     assert result == "continue"
+
+
+# ---------------------------------------------------------------------------
+# B8: external_forward 单个目标失败不得中断其余目标
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_external_forward_continues_after_target_failure(tmp_path, monkeypatch):
+    """第一个目标抛异常时，第二个目标仍要收到转发。"""
+    import tg_signer.automation.handlers as handlers
+
+    sent: list[str] = []
+
+    async def flaky_udp(cfg, message):
+        _ = cfg, message
+        raise OSError("udp boom")
+
+    async def ok_http(cfg, message):
+        sent.append(str(cfg.url))
+
+    monkeypatch.setattr(handlers, "udp_forward", flaky_udp)
+    monkeypatch.setattr(handlers, "http_api_callback", ok_http)
+
+    ctx = _render_ctx(tmp_path)
+    event = _render_event()
+    result = await external_forward(
+        event,
+        ctx,
+        {
+            "targets": [
+                {"type": "udp", "host": "127.0.0.1", "port": 9999},
+                {"type": "http", "url": "http://127.0.0.1:1/hook"},
+            ]
+        },
+    )
+
+    assert result == "continue"
+    assert sent == ["http://127.0.0.1:1/hook"]
+
+
+# ---------------------------------------------------------------------------
+# B9: blacklist_filter 的 keywords 裸字符串不得被逐字符拆分
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_blacklist_filter_string_keyword_is_not_split(tmp_path):
+    ctx = _render_ctx(tmp_path)
+
+    # "abcd" 必须整体作为一个关键词：文本 "abc" 不含 "abcd" → 不拦截。
+    result = await blacklist_filter(
+        _render_event(text="abc"), ctx, {"keywords": "abcd"}
+    )
+    assert result == "continue"
+
+    # 列表形式照旧生效。
+    result = await blacklist_filter(
+        _render_event(text="abcd"), ctx, {"keywords": ["abcd"]}
+    )
+    assert result == "stop"
+
+
+# ---------------------------------------------------------------------------
+# B10: include_current 不得把当前消息重复拼进 prompt
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_include_current_does_not_duplicate_current_message(tmp_path):
+    """当前消息已在历史里时，prompt 只能出现一次。"""
+    state = RuleStateStore(tmp_path / "state.json", logging.getLogger("test"))
+    worker = DummyWorker()
+    current = SimpleNamespace(
+        text="当前消息",
+        caption=None,
+        from_user=SimpleNamespace(
+            username="neo", first_name=None, last_name=None, id=1
+        ),
+        sender_chat=None,
+    )
+    older = SimpleNamespace(
+        text="更早消息",
+        caption=None,
+        from_user=SimpleNamespace(
+            username="trinity", first_name=None, last_name=None, id=2
+        ),
+        sender_chat=None,
+    )
+    event = Event(
+        type="message",
+        chat_id=123,
+        message=SimpleNamespace(text="当前消息", id=99),
+        now=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        trigger_id="t1",
+        rule_id="r1",
+    )
+    ctx = AutomationContext(
+        vars={},
+        state=state,
+        client=DummyClient([current, older]),
+        logger=logging.getLogger("test"),
+        worker=worker,
+        workdir=tmp_path,
+    )
+
+    result = await ai_reply(
+        event,
+        ctx,
+        {"prompt": "p", "recent_limit": 2, "include_current": True, "store_var": "o"},
+    )
+
+    assert result == "continue"
+    _, query = worker.ai_tools.calls[0]
+    assert query.count("当前消息") == 1
+    assert "[current]" not in query
+
+
+@pytest.mark.asyncio
+async def test_include_current_marks_message_missing_from_history(tmp_path):
+    """当前消息不在历史里时保留 [current] 标记。"""
+    state = RuleStateStore(tmp_path / "state.json", logging.getLogger("test"))
+    worker = DummyWorker()
+    older = SimpleNamespace(
+        text="更早消息",
+        caption=None,
+        from_user=SimpleNamespace(
+            username="trinity", first_name=None, last_name=None, id=2
+        ),
+        sender_chat=None,
+    )
+    event = Event(
+        type="message",
+        chat_id=123,
+        message=SimpleNamespace(text="当前消息", id=99),
+        now=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        trigger_id="t1",
+        rule_id="r1",
+    )
+    ctx = AutomationContext(
+        vars={},
+        state=state,
+        client=DummyClient([older]),
+        logger=logging.getLogger("test"),
+        worker=worker,
+        workdir=tmp_path,
+    )
+
+    result = await ai_reply(
+        event,
+        ctx,
+        {"prompt": "p", "recent_limit": 1, "include_current": True, "store_var": "o"},
+    )
+
+    assert result == "continue"
+    _, query = worker.ai_tools.calls[0]
+    assert query.count("当前消息") == 1
+    assert "[current] 当前消息" in query

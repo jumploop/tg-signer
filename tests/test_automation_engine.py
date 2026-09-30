@@ -18,13 +18,14 @@ from tg_signer.automation.engine import (
     UserAutomation,
 )
 from tg_signer.automation.handlers import register_builtin_handlers
-from tg_signer.automation.models import RuleStateStore
+from tg_signer.automation.models import Event, RuleStateStore
 from tg_signer.config import (
     AutomationConfig,
     FilterConfig,
     HandlerConfig,
     MessageTriggerConfig,
     RuleConfig,
+    StartupTriggerConfig,
     TimerTriggerConfig,
     TriggerConfig,
 )
@@ -35,7 +36,7 @@ class AutomationHarness(UserAutomation):
 
     def __init__(self, tmp_path):
         import logging
-        from collections import OrderedDict, defaultdict
+        from collections import OrderedDict
 
         self.task_name = "t"
         self._account = "test_account"
@@ -43,10 +44,12 @@ class AutomationHarness(UserAutomation):
         self._tasks_dir = "automations"
         self.logger = logging.getLogger("tg-signer")
         _ = self.task_dir  # 触发目录创建
+        self._state = None
         self.state = RuleStateStore(self.task_dir / "state.json", self.logger)
         self._tick_seconds = 1.0
-        self._message_cache = defaultdict(OrderedDict)
+        self._message_cache = OrderedDict()
         self._message_cache_limit = 200
+        self._message_cache_chats_limit = 64
         self.app = SimpleNamespace(forward_messages=lambda *args, **kwargs: None)
 
 
@@ -500,3 +503,328 @@ def test_iter_triggers_filter_by_type_keeps_the_original_index(tmp_path):
     assert timer_pairs[0][1].params.chat_id == 2
 
     assert list(worker._iter_triggers(rule, STARTUP_TRIGGER_TYPE)) == []
+
+
+# ---------------------------------------------------------------------------
+# B1: 后台任务必须在 client 启动之后创建
+# ---------------------------------------------------------------------------
+
+
+class FakeApp:
+    """最小 client 替身：记录是否已经进入 ``async with``。"""
+
+    def __init__(self):
+        self.entered = False
+        self.handlers: list[tuple] = []
+
+    async def __aenter__(self):
+        # 让出一次控制权：修复前 startup 任务在 __aenter__ 之前就已创建，
+        # 会在这一步抢跑并看到 entered=False。
+        await asyncio.sleep(0)
+        self.entered = True
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    def add_handler(self, *args, **kwargs):
+        self.handlers.append((args, kwargs))
+
+
+@pytest.mark.asyncio
+async def test_background_tasks_start_after_client_is_started(tmp_path, monkeypatch):
+    """startup/timer 任务必须在 ``async with self.app`` 内创建。
+
+    修复前任务先于 client 启动被调度，冷启动首次 Telegram 调用直接抛
+    "Client has not been started yet"，startup 被静默吞掉、timer 的
+    next_run_at 还会照常推进（本次到期被消费）。
+    """
+    worker = make_worker(tmp_path)
+    app = FakeApp()
+    worker.app = app
+    worker.user = object()  # 跳过登录
+    worker.load_config = lambda cfg_cls=None: AutomationConfig(  # type: ignore[method-assign]
+        rules=[
+            RuleConfig(
+                id="r1",
+                enabled=True,
+                triggers=[StartupTriggerConfig(type="startup", params={})],
+                handlers=[],
+            )
+        ]
+    )
+    observed: list[bool] = []
+
+    async def probe_run_rule(rule, event):
+        observed.append(app.entered)
+
+    worker._run_rule = probe_run_rule  # type: ignore[method-assign]
+
+    async def fake_idle():
+        # 等 startup 任务执行完再退出（真实 idle() 会永久阻塞）。
+        for _ in range(200):
+            if observed:
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("startup 任务未执行")
+
+    import tg_signer.automation.engine as engine
+
+    monkeypatch.setattr(engine, "idle", fake_idle)
+
+    await worker.run()
+
+    assert observed == [True], "startup 任务在 client 启动前就被调度了"
+
+
+@pytest.mark.asyncio
+async def test_background_tasks_are_cancelled_on_exit(tmp_path, monkeypatch):
+    """退出时仍要取消 startup/timer 任务（保留原 cancel-on-exit 语义）。"""
+    worker = make_worker(tmp_path)
+    worker._tick_seconds = 30
+    app = FakeApp()
+    worker.app = app
+    worker.user = object()
+    worker.load_config = lambda cfg_cls=None: AutomationConfig(rules=[])  # type: ignore[method-assign]
+
+    running: list[bool] = []
+
+    async def fake_idle():
+        await asyncio.sleep(0)
+
+    import tg_signer.automation.engine as engine
+
+    monkeypatch.setattr(engine, "idle", fake_idle)
+    real_timer_loop = worker.timer_loop
+
+    async def tracked_timer_loop():
+        running.append(True)
+        try:
+            await real_timer_loop()
+        finally:
+            running.append(False)
+
+    worker.timer_loop = tracked_timer_loop  # type: ignore[method-assign]
+
+    await worker.run()
+    # 取消是异步投递的，让事件循环把 CancelledError 送进去。
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert running == [True, False]
+
+
+# ---------------------------------------------------------------------------
+# B2: 仅构造 worker 不应创建任务目录（state 懒加载）
+# ---------------------------------------------------------------------------
+
+
+def test_constructing_worker_does_not_create_task_dir(tmp_path):
+    """构造 UserAutomation 不应触碰 <workdir>/automations/<task>。
+
+    `automation list` 曾经因为构造默认任务名为 my_task 的 worker 而凭空建出
+    `automations/my_task` 并把 my_task 列进输出。
+    """
+    workdir = tmp_path / "wd"
+    worker = UserAutomation(
+        workdir=workdir, session_dir=tmp_path / "sessions", account="acct"
+    )
+
+    assert worker._state is None
+    assert not (workdir / "automations").exists()
+
+    # 首次访问 state 时才真正落盘到任务目录。
+    assert worker.state is not None
+    assert (workdir / "automations" / "my_task" / "state.json").parent.is_dir()
+
+
+def test_list_task_names_is_read_only(tmp_path):
+    workdir = tmp_path / "wd"
+    assert UserAutomation.list_task_names(workdir) == []
+    assert not workdir.exists()
+
+    (workdir / "automations" / "b_task").mkdir(parents=True)
+    (workdir / "automations" / "a_task").mkdir(parents=True)
+    (workdir / "automations" / "loose_file").write_text("x", encoding="utf-8")
+
+    assert UserAutomation.list_task_names(workdir) == ["a_task", "b_task"]
+
+
+# ---------------------------------------------------------------------------
+# B4: export → import 往返不得按错误格式落盘
+# ---------------------------------------------------------------------------
+
+
+def _automation_payload() -> dict:
+    return {
+        "version": 1,
+        "rules": [
+            {
+                "id": "r1",
+                "enabled": True,
+                "triggers": [{"type": "timer", "params": {"interval_seconds": 60}}],
+                "handlers": [{"handler": "send_text", "params": {"text": "hi"}}],
+            }
+        ],
+    }
+
+
+def test_yaml_task_export_import_roundtrip_stays_loadable(tmp_path):
+    """YAML 任务导出的是 YAML 原文，import 必须仍按 YAML 落回 config.yaml。"""
+    yaml = pytest.importorskip("yaml")
+
+    worker = make_worker(tmp_path)
+    config_path = worker.task_dir / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(_automation_payload(), allow_unicode=True), encoding="utf-8"
+    )
+
+    exported = worker.export()
+    assert "rules:" in exported  # 导出的确实是 YAML 原文
+
+    worker.import_(exported)
+
+    # 修复前：YAML 文本被写进 config.json，遮蔽 config.yaml 且解析失败。
+    assert not (worker.task_dir / "config.json").exists()
+    cfg = worker.load_config()
+    assert [rule.id for rule in cfg.rules] == ["r1"]
+
+
+def test_json_task_export_import_roundtrip_stays_loadable(tmp_path):
+    worker = make_worker(tmp_path)
+    config_path = worker.task_dir / "config.json"
+    config_path.write_text(json.dumps(_automation_payload()), encoding="utf-8")
+
+    worker.import_(worker.export())
+
+    cfg = worker.load_config()
+    assert [rule.id for rule in cfg.rules] == ["r1"]
+    on_disk = json.loads(config_path.read_text(encoding="utf-8"))
+    assert on_disk["rules"][0]["id"] == "r1"
+
+
+def test_import_yaml_text_into_json_task_converts_format(tmp_path):
+    """导入 YAML 文本到没有配置的任务时，目标文件是 JSON，内容必须是 JSON。"""
+    yaml = pytest.importorskip("yaml")
+
+    worker = make_worker(tmp_path)
+    worker.import_(yaml.safe_dump(_automation_payload(), allow_unicode=True))
+
+    target = worker.task_dir / "config.json"
+    assert target.is_file()
+    assert json.loads(target.read_text(encoding="utf-8"))["rules"][0]["id"] == "r1"
+    assert [rule.id for rule in worker.load_config().rules] == ["r1"]
+
+
+def test_import_invalid_text_raises_clear_error(tmp_path):
+    worker = make_worker(tmp_path)
+
+    with pytest.raises(ValueError, match="导入"):
+        worker.import_("这不是配置: [[[")
+
+
+# ---------------------------------------------------------------------------
+# B6: 用户名匹配大小写
+# ---------------------------------------------------------------------------
+
+
+def test_chat_username_matching_is_case_insensitive_by_default(tmp_path):
+    """Telegram 用户名大小写不敏感：@MyChannel 必须命中配置里的 @mychannel。"""
+    worker = make_worker(tmp_path)
+    msg = DummyMessage(text="hi", chat=DummyChat(id=1, username="MyChannel"))
+
+    assert worker._match_chat(msg, "@mychannel", None)
+
+    trigger = MessageTriggerConfig(type="message", params={"chat_id": "@mychannel"})
+    assert worker._match_message_trigger(trigger, msg)
+    assert worker._match_filter(FilterConfig(chat_id="@mychannel"), msg)
+
+    # ignore_case=False 时保持大小写敏感，避免把开关做成死字段。
+    strict_trigger = MessageTriggerConfig(
+        type="message", params={"chat_id": "@mychannel", "ignore_case": False}
+    )
+    assert not worker._match_message_trigger(strict_trigger, msg)
+    assert not worker._match_filter(
+        FilterConfig(chat_id="@mychannel", ignore_case=False), msg
+    )
+
+
+# ---------------------------------------------------------------------------
+# B7: store_state(keys=[...]) 必须真正生效
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_store_state_keys_restrict_what_is_persisted(tmp_path):
+    """`keys` 限定的子集必须生效：引擎不再无条件回写全部 ctx.vars。"""
+    worker = make_worker(tmp_path)
+    register_builtin_handlers()
+    worker.config = AutomationConfig(
+        rules=[
+            RuleConfig(
+                id="r1",
+                enabled=True,
+                triggers=[StartupTriggerConfig(type="startup", params={})],
+                handlers=[
+                    HandlerConfig(
+                        handler="store_state", params={"keys": ["keep", "also"]}
+                    )
+                ],
+                vars={"keep": 1, "also": 2, "drop": 3},
+            )
+        ]
+    )
+
+    event = Event(
+        type="startup",
+        chat_id=None,
+        message=None,
+        now=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        trigger_id="t1",
+        rule_id="r1",
+    )
+    await worker._run_rule(worker.config.rules[0], event)
+
+    assert worker.state.get_rule_vars("r1") == {"keep": 1, "also": 2}
+
+
+@pytest.mark.asyncio
+async def test_run_rule_persists_all_vars_without_store_state(tmp_path):
+    """未使用 store_state 时维持原契约：回写全部 ctx.vars。"""
+    worker = make_worker(tmp_path)
+    register_builtin_handlers()
+    rule = RuleConfig(
+        id="r1",
+        enabled=True,
+        triggers=[StartupTriggerConfig(type="startup", params={})],
+        handlers=[],
+        vars={"a": 1, "b": 2},
+    )
+
+    event = Event(
+        type="startup",
+        chat_id=None,
+        message=None,
+        now=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        trigger_id="t1",
+        rule_id="r1",
+    )
+    await worker._run_rule(rule, event)
+
+    assert worker.state.get_rule_vars("r1") == {"a": 1, "b": 2}
+
+
+# ---------------------------------------------------------------------------
+# B11: 消息缓存要限制 chat 数量
+# ---------------------------------------------------------------------------
+
+
+def test_message_cache_bounds_number_of_chats(tmp_path):
+    worker = make_worker(tmp_path)
+    worker._message_cache_chats_limit = 2
+
+    for chat_id in (1, 2, 3):
+        worker._cache_message(DummyMessage(id=1, text="x", chat=DummyChat(id=chat_id)))
+
+    assert worker.get_cached_messages(1) == []
+    assert len(worker.get_cached_messages(2)) == 1
+    assert len(worker.get_cached_messages(3)) == 1

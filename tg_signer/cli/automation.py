@@ -45,7 +45,10 @@ tg_automation: Group
 @tg_automation.command(name="list", help="列出已有配置")
 @click.pass_obj
 def list_(obj):
-    return UserAutomation(workdir=obj["workdir"]).list_()
+    # 只枚举已有任务目录:构造 worker 会带上默认任务名(my_task)并据此建目录,
+    # 把「列出」变成「创建」。
+    for task_name in UserAutomation.list_task_names(obj["workdir"]):
+        click.echo(task_name)
 
 
 @tg_automation.command(help="根据配置运行自动化(可指定多个任务共享同一 Client)")
@@ -88,6 +91,15 @@ def reconfig(obj, task_name):
 @click.pass_obj
 def validate(obj, task_name):
     automation = get_automation(task_name, obj)
+    # 配置文件不存在时 load_config() 会走 reconfig() → 写模板,把「校验」变成
+    # 「创建」。这里用不创建目录的查询:校验不存在的任务时,磁盘上不留任何痕迹
+    # (用 _resolve_config_file()/task_dir 会经 make_dirs 建出空任务目录)。
+    config_path = automation.find_existing_config_file()
+    if config_path is None:
+        default_path = automation.config_dir_path() / "config.json"
+        raise click.ClickException(
+            f"配置不存在: {default_path}（可用 `automation init {task_name}` 生成模板配置）"
+        )
     try:
         automation.load_config()
     except Exception as exc:  # noqa: BLE001

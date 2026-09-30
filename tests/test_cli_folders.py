@@ -131,3 +131,92 @@ def test_folder_errors_are_reported_as_click_errors(monkeypatch, runner):
 
     assert result.exit_code == 1
     assert "Error: folder error" in result.output
+
+
+# ---------------------------------------------------------------------------
+# automation list / validate / export→import 往返
+# ---------------------------------------------------------------------------
+
+_YAML_CONFIG = """\
+version: 1
+rules:
+  - id: r1
+    enabled: true
+    triggers:
+      - type: timer
+        params:
+          interval_seconds: 60
+    handlers:
+      - handler: send_text
+        params:
+          text: hi
+"""
+
+
+def _invoke(runner, workdir, *args, **kwargs):
+    return runner.invoke(
+        signer_cli.tg_signer, ["--workdir", str(workdir), "automation", *args], **kwargs
+    )
+
+
+def test_automation_list_on_fresh_workdir_prints_nothing_and_creates_nothing(
+    runner, tmp_path
+):
+    """`automation list` 不得构造默认任务(my_task)并把它建出来。"""
+    workdir = tmp_path / "wd"
+
+    result = _invoke(runner, workdir, "list")
+
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == ""
+    assert not (workdir / "automations").exists()
+
+
+def test_automation_list_prints_real_tasks(runner, tmp_path):
+    workdir = tmp_path / "wd"
+    (workdir / "automations" / "task_a").mkdir(parents=True)
+    (workdir / "automations" / "task_b").mkdir(parents=True)
+
+    result = _invoke(runner, workdir, "list")
+
+    assert result.exit_code == 0, result.output
+    assert result.output.split() == ["task_a", "task_b"]
+
+
+def test_automation_validate_missing_config_does_not_create_one(runner, tmp_path):
+    """`validate <typo>` 必须报错，而不是写出模板配置并显示「校验通过」。"""
+    workdir = tmp_path / "wd"
+
+    result = _invoke(runner, workdir, "validate", "typo_task")
+
+    assert result.exit_code == 1, result.output
+    assert "配置不存在" in result.output
+    assert not list((workdir / "automations" / "typo_task").glob("config.*"))
+    assert not (workdir / "automations" / "typo_task" / "state.json").exists()
+    # 连空任务目录都不能留下:否则 `automation list` 会把它当成真实任务列出来
+    assert not (workdir / "automations" / "typo_task").exists()
+    assert not (workdir / "automations").exists()
+
+
+def test_automation_yaml_export_import_validate_roundtrip(runner, tmp_path):
+    """YAML 任务导出→导入后必须仍可加载，且 validate 通过。"""
+    yaml = pytest.importorskip("yaml")
+    workdir = tmp_path / "wd"
+    task_dir = workdir / "automations" / "my_auto"
+    task_dir.mkdir(parents=True)
+    (task_dir / "config.yaml").write_text(_YAML_CONFIG, encoding="utf-8")
+
+    exported = _invoke(runner, workdir, "export", "my_auto")
+    assert exported.exit_code == 0, exported.output
+    assert "rules:" in exported.output
+
+    imported = _invoke(runner, workdir, "import", "my_auto", input=exported.output)
+    assert imported.exit_code == 0, imported.output
+
+    # 修复前：YAML 文本落进 config.json，遮蔽 config.yaml 且解析失败。
+    assert not (task_dir / "config.json").exists()
+    assert yaml.safe_load((task_dir / "config.yaml").read_text(encoding="utf-8"))
+
+    validated = _invoke(runner, workdir, "validate", "my_auto")
+    assert validated.exit_code == 0, validated.output
+    assert "配置校验通过" in validated.output

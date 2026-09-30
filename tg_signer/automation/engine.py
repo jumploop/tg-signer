@@ -3,7 +3,7 @@ import json
 import logging
 import random
 import re
-from collections import OrderedDict, defaultdict
+from collections import OrderedDict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple, Union
@@ -48,6 +48,10 @@ SUPPORTED_TRIGGER_TYPES = frozenset(
     {STARTUP_TRIGGER_TYPE, TIMER_TRIGGER_TYPE, MESSAGE_TRIGGER_TYPE}
 )
 
+# 自动化配置文件的候选文件名(JSON 优先,其次 YAML)。集中一处,避免
+# 「建目录的解析」与「不建目录的存在性查询」两份清单各自漂移。
+CONFIG_FILE_NAMES = ("config.json", "config.yaml", "config.yml")
+
 
 class UserAutomation(BaseUserWorker[AutomationConfig]):
     """规则驱动的自动化执行器。
@@ -64,16 +68,31 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.state = RuleStateStore(self.state_file, logger)
+        # 状态存储懒加载:仅构造 worker 不应触碰 <workdir>/automations/<task>,
+        # 否则 `automation list` 这类只读命令会凭空建出任务目录。
+        self._state: Optional[RuleStateStore] = None
         self._tick_seconds = 1.0
         # 按 chat_id -> message_id 缓存最近消息，供后续 wait_for/复杂 handler 复用。
-        self._message_cache: dict[int, OrderedDict[int, Message]] = defaultdict(
-            OrderedDict
+        # 外层也用 OrderedDict:chat 数量同样要能按 LRU 淘汰。
+        self._message_cache: "OrderedDict[int, OrderedDict[int, Message]]" = (
+            OrderedDict()
         )
         self._message_cache_limit = 200
+        # 聊天的数量同样要有上限:只限单聊消息数的话,长期运行会随聊天数无限增长。
+        self._message_cache_chats_limit = 64
 
     def ensure_ctx(self):
         return {}
+
+    @property
+    def state(self) -> RuleStateStore:
+        if self._state is None:
+            self._state = RuleStateStore(self.state_file, logger)
+        return self._state
+
+    @state.setter
+    def state(self, value: RuleStateStore) -> None:
+        self._state = value
 
     @property
     def state_file(self) -> Path:
@@ -83,13 +102,40 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
     def handlers_dir(self) -> Path:
         return self.workdir / "handlers"
 
+    @classmethod
+    def list_task_names(cls, workdir: Union[str, Path]) -> List[str]:
+        """列出已有自动化任务目录名（只读，不创建任何目录）。
+
+        `automation list` 需要一个不构造 worker 的入口:构造 worker 会带上
+        默认任务名并据此建目录,把「列出」变成「创建」。
+        """
+        tasks_dir = Path(workdir) / cls._tasks_dir
+        if not tasks_dir.is_dir():
+            return []
+        return sorted(path.name for path in tasks_dir.iterdir() if path.is_dir())
+
+    def config_dir_path(self) -> Path:
+        """任务配置目录路径(只拼路径,不创建目录)。"""
+        return self.workdir / self._tasks_dir / self.task_name
+
+    def find_existing_config_file(self) -> Optional[Path]:
+        """返回已存在的配置文件;都不存在时返回 ``None``,且不创建任何目录。
+
+        只读命令必须用它而不是 :meth:`_resolve_config_file`:后者经 ``task_dir``
+        会 ``make_dirs``,于是 ``automation validate <打错的task>`` 会在磁盘上
+        留下一个空的 ``<workdir>/automations/<task>/`` 目录,随后被 ``list``
+        当成真实任务列出来。
+        """
+        task_dir = self.config_dir_path()
+        for name in CONFIG_FILE_NAMES:
+            candidate = task_dir / name
+            if candidate.exists():
+                return candidate
+        return None
+
     def _config_candidates(self) -> List[Path]:
         # JSON 优先，其次 YAML，符合当前产品决策。
-        return [
-            self.task_dir / "config.json",
-            self.task_dir / "config.yaml",
-            self.task_dir / "config.yml",
-        ]
+        return [self.task_dir / name for name in CONFIG_FILE_NAMES]
 
     def _resolve_config_file(self) -> Path:
         # 返回第一个存在的配置文件；若都不存在，则返回默认 JSON 路径。
@@ -146,6 +192,54 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         with open(config_path, "r", encoding="utf-8") as fp:
             return fp.read()
 
+    def _parse_import_payload(self, config_str: str) -> Dict[str, object]:
+        # 导入内容可能是 JSON,也可能是从 YAML 任务导出的 YAML 文本。
+        try:
+            payload = json.loads(config_str)
+        except ValueError:
+            try:
+                import yaml  # type: ignore
+            except ModuleNotFoundError as exc:
+                raise ValueError(
+                    "导入内容不是合法JSON，且未安装pyyaml无法按YAML解析"
+                ) from exc
+            try:
+                payload = yaml.safe_load(config_str)
+            except yaml.YAMLError as exc:
+                raise ValueError(f"无法解析导入内容: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("导入内容必须是JSON/YAML对象")
+        return payload
+
+    def _write_config_payload(self, path: Path, config: AutomationConfig) -> None:
+        payload = config.to_jsonable()
+        if path.suffix in {".yml", ".yaml"}:
+            try:
+                import yaml  # type: ignore
+            except ModuleNotFoundError as exc:
+                raise ValueError("未安装pyyaml，无法写入YAML配置") from exc
+            with open(path, "w", encoding="utf-8") as fp:
+                yaml.safe_dump(payload, fp, allow_unicode=True, sort_keys=False)
+            return
+        with open(path, "w", encoding="utf-8") as fp:
+            json.dump(payload, fp, ensure_ascii=False)
+
+    def import_(self, config_str: str) -> None:  # type: ignore[override]
+        """按目标文件格式落盘。
+
+        `export()` 导出的是解析后配置文件(可能是 YAML)的原文,而基类实现一律写
+        `<task>/config.json`:YAML 文本落进 config.json 后会遮蔽 config.yaml 并
+        解析失败。这里先解析(JSON 优先、YAML 兜底)、校验,再按目标文件格式序列化。
+        """
+        target = self._resolve_config_file()
+        payload = self._parse_import_payload(config_str)
+        config, _from_old, err = self.cfg_cls.load_checked(payload)
+        if config is None:
+            raise ValueError(f"无法解析导入配置（{err or '未知原因'}）")
+        self._write_config_payload(target, config)
+        self.config = config
+        self.log(f"配置已导入: {target}", level="INFO")
+
     def ask_for_config(self) -> AutomationConfig:
         return self.template_config()
 
@@ -199,23 +293,32 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
 
         self.app.add_handler(MessageHandler(self.on_message, filters.all))
         self.app.add_handler(EditedMessageHandler(self.on_edited_message, filters.all))
-        # startup trigger 每条规则只在进程启动后执行一次。
-        startup_tasks = [
-            asyncio.create_task(self.run_startup(rule))
-            for rule in cfg.rules
-            if rule.enabled and self._has_trigger(rule, STARTUP_TRIGGER_TYPE)
-        ]
-        self.log(f"startup 任务数: {len(startup_tasks)}", level="DEBUG")
-        # timer trigger 统一由轮询调度循环驱动。
-        timer_task = asyncio.create_task(self.timer_loop())
-        for task in (*startup_tasks, timer_task):
-            task.add_done_callback(self._log_task_failure)
+        # 后台任务必须在 client 真正启动之后创建:冷启动时 client 还没 start,
+        # 首次 Telegram 调用会抛 "Client has not been started yet",该异常会被
+        # `_run_rule` 吞掉并中断 handler 链,timer 的 next_run_at 还会被照常推进
+        # —— 即本次到期的运行被静默消费。
+        startup_tasks: List[asyncio.Task] = []
+        timer_task: Optional[asyncio.Task] = None
         async with self.app:
+            # startup trigger 每条规则只在进程启动后执行一次。
+            startup_tasks = [
+                asyncio.create_task(self.run_startup(rule))
+                for rule in cfg.rules
+                if rule.enabled and self._has_trigger(rule, STARTUP_TRIGGER_TYPE)
+            ]
+            self.log(f"startup 任务数: {len(startup_tasks)}", level="DEBUG")
+            # timer trigger 统一由轮询调度循环驱动。
+            timer_task = asyncio.create_task(self.timer_loop())
+            for task in (*startup_tasks, timer_task):
+                task.add_done_callback(self._log_task_failure)
             self.log("开始自动化运行...")
-            await idle()
-        for task in startup_tasks:
-            task.cancel()
-        timer_task.cancel()
+            try:
+                await idle()
+            finally:
+                # 退出前取消后台任务:此时 client 仍在运行,取消是安全的。
+                for task in startup_tasks:
+                    task.cancel()
+                timer_task.cancel()
 
     def _has_trigger(self, rule: RuleConfig, trigger_type: str) -> bool:
         return any(trigger.type == trigger_type for trigger in rule.triggers)
@@ -373,11 +476,15 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         chat_id = message.chat and message.chat.id
         if chat_id is None:
             return
-        cache = self._message_cache[chat_id]
+        cache = self._message_cache.setdefault(chat_id, OrderedDict())
+        # 同时把 chat 自身标记为最近使用,超出上限时按 LRU 淘汰整个 chat。
+        self._message_cache.move_to_end(chat_id)
         cache[message_id] = message
         cache.move_to_end(message_id)
         while len(cache) > self._message_cache_limit:
             cache.popitem(last=False)
+        while len(self._message_cache) > self._message_cache_chats_limit:
+            self._message_cache.popitem(last=False)
         self.log(
             f"消息已缓存: chat={chat_id}, message_id={message_id}, cached={len(cache)}",
             level="DEBUG",
@@ -429,7 +536,10 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         trigger_params = trigger.params
         if trigger_params.chat_id or trigger_params.chat_ids:
             if not self._match_chat(
-                message, trigger_params.chat_id, trigger_params.chat_ids
+                message,
+                trigger_params.chat_id,
+                trigger_params.chat_ids,
+                ignore_case=trigger_params.ignore_case,
             ):
                 return False
         if trigger_params.from_user_ids:
@@ -451,7 +561,12 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
 
     def _match_filter(self, filter_cfg: FilterConfig, message: Message) -> bool:
         if filter_cfg.chat_id or filter_cfg.chat_ids:
-            if not self._match_chat(message, filter_cfg.chat_id, filter_cfg.chat_ids):
+            if not self._match_chat(
+                message,
+                filter_cfg.chat_id,
+                filter_cfg.chat_ids,
+                ignore_case=filter_cfg.ignore_case,
+            ):
                 return False
         if filter_cfg.from_user_ids:
             if not self._match_user(message, filter_cfg.from_user_ids):
@@ -514,6 +629,7 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         message: Message,
         chat_id: Optional[Union[int, str]],
         chat_ids: Optional[List[Union[int, str]]],
+        ignore_case: bool = True,
     ) -> bool:
         if chat_ids is None:
             chat_ids = []
@@ -527,8 +643,14 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             if isinstance(target, int) and message.chat.id == target:
                 return True
             if isinstance(target, str):
+                # Telegram 用户名大小写不敏感:`@MyChannel` 与配置里的
+                # `@mychannel` 必须能互相命中(ignore_case 默认 True)。
                 target_norm = target.strip("@")
-                if message.chat.username == target_norm:
+                username = (message.chat.username or "").strip("@")
+                if ignore_case:
+                    if username.lower() == target_norm.lower():
+                        return True
+                elif username == target_norm:
                     return True
         return False
 
@@ -570,9 +692,12 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             if result in {"stop", "defer"}:
                 # stop/defer 都会中断后续 handler。
                 break
-        self.state.set_rule_vars(rule.id, ctx.vars)
+        # store_state(keys=[...]) 可用 ctx.persist_vars 限定只回写部分变量;
+        # 未声明时维持原契约:回写全部 ctx.vars。
+        persisted_vars = ctx.persist_vars if ctx.persist_vars is not None else ctx.vars
+        self.state.set_rule_vars(rule.id, persisted_vars)
         self.state.save()
         self.log(
-            f"规则执行结束并持久化变量: rule={rule.id}, keys={list(ctx.vars.keys())}",
+            f"规则执行结束并持久化变量: rule={rule.id}, keys={list(persisted_vars.keys())}",
             level="DEBUG",
         )

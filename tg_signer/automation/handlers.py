@@ -188,6 +188,7 @@ async def resolve_ai_input(
         return message_text(event.message)
 
     lines: list[str] = []
+    texts: list[str] = []
 
     async def _fetch_history():
         msgs = []
@@ -211,15 +212,18 @@ async def resolve_ai_input(
         text = message_text(msg).strip()
         if not text:
             continue
+        texts.append(text)
         lines.append(f"[{message_sender(msg)}] {text}")
 
     lines.reverse()
+    texts.reverse()
     if as_bool(params.get("include_current", False)):
         current_text = message_text(event.message).strip()
-        if current_text:
-            current_line = f"[current] {current_text}"
-            if not lines or lines[-1] != current_line:
-                lines.append(current_line)
+        # 当前消息通常就是历史里最新的一条:此时 lines[-1] 是 "[sender] 文本",
+        # 与 "[current] 文本" 永不相等(旧实现因此失效,当前消息被重复拼进 prompt)。
+        # 这里比对纯文本,已存在就不再追加。
+        if current_text and (not texts or texts[-1] != current_text):
+            lines.append(f"[current] {current_text}")
     if not lines:
         return message_text(event.message)
 
@@ -441,6 +445,16 @@ async def blacklist_filter(
     ignore_case = as_bool(params.get("ignore_case", False))
     matched_text = text.lower() if ignore_case else text
     keywords = params.get("keywords") or []
+    if isinstance(keywords, str):
+        # 裸字符串必须整体当成一个关键词:否则 "abcd" 会退化成 4 个单字符关键词,
+        # 含 "a" 的正常文本会被误杀。
+        keywords = [keywords]
+    elif not isinstance(keywords, (list, tuple, set)):
+        ctx.log(
+            f"blacklist_filter: keywords 类型非法 ({type(keywords).__name__})，已忽略",
+            level="WARNING",
+        )
+        keywords = []
     for kw in keywords:
         if not kw:
             continue
@@ -512,6 +526,7 @@ async def external_forward(
         return "stop"
     targets = params.get("targets") or []
     success_count = 0
+    failure_count = 0
     for target in targets:
         if not isinstance(target, dict):
             continue
@@ -521,20 +536,36 @@ async def external_forward(
                 cfg = UDPForward.model_validate(target)
             except Exception:  # noqa: BLE001
                 ctx.log("external_forward: UDP配置无效", level="WARNING")
+                failure_count += 1
                 continue
-            await udp_forward(cfg, event.message)
+            try:
+                await udp_forward(cfg, event.message)
+            except Exception as exc:  # noqa: BLE001
+                # 单个目标失败不得中断后续目标,也不应打断整条 handler 链。
+                failure_count += 1
+                ctx.log(f"external_forward: UDP转发失败 ({exc})", level="WARNING")
+                continue
             success_count += 1
         elif t_type == "http":
             try:
                 cfg = HttpCallback.model_validate(target)
             except Exception:  # noqa: BLE001
                 ctx.log("external_forward: HTTP配置无效", level="WARNING")
+                failure_count += 1
                 continue
-            await http_api_callback(cfg, event.message)
+            try:
+                await http_api_callback(cfg, event.message)
+            except Exception as exc:  # noqa: BLE001
+                failure_count += 1
+                ctx.log(f"external_forward: HTTP回调失败 ({exc})", level="WARNING")
+                continue
             success_count += 1
         else:
             ctx.log(f"external_forward: 未知目标类型 {t_type}", level="DEBUG")
-    ctx.log(f"external_forward: 转发完成 success={success_count}", level="DEBUG")
+    ctx.log(
+        f"external_forward: 转发完成 success={success_count}, failed={failure_count}",
+        level="DEBUG",
+    )
     return "continue"
 
 
@@ -616,11 +647,21 @@ async def schedule_next(
 async def store_state(
     event: Event, ctx: AutomationContext, params: Dict[str, Any]
 ) -> HandlerResult:
+    """声明本规则要持久化的变量。
+
+    引擎在规则链结束时统一回写变量,所以「只写 ``ctx.state``」不会生效(会被随后
+    的全量回写覆盖)。这里把子集同时写进 ``ctx.state`` 与 ``ctx.persist_vars``,
+    由引擎按它回写:``keys`` 非空时只持久化列出的键,否则持久化全部 ``ctx.vars``。
+    ``keys`` 也接受单个字符串(按一个键处理)。
+    """
     keys = params.get("keys")
+    if isinstance(keys, str):
+        keys = [keys]
     if keys:
         stored = {k: ctx.vars.get(k) for k in keys}
     else:
         stored = dict(ctx.vars)
+    ctx.persist_vars = stored
     ctx.state.set_rule_vars(event.rule_id, stored)
     ctx.log(
         f"store_state: rule={event.rule_id}, keys={list(stored.keys())}",
