@@ -1,6 +1,9 @@
 # Changelog / 版本变动日志
 
 ## 版本变动日志
+### 0.10.13
+- **chore: 移除 WebUI 启动/切换工作目录时的日志打印**：撤掉 0.10.11 引入的 `server._log_workdir()` 及其两处调用，同时删掉当时的 `import logging` 与配套测试 `test_workdir_is_logged_on_startup_and_switch`。该功能只是 0.10.12 之前的临时排查手段，真正的问题（import 建野目录、切换失败不回滚）已在 0.10.12 修复，不再需要靠日志反推实际目录
+
 ### 0.10.12
 - **fix: import 模块即在进程 CWD 下凭空创建 `.signer`**：`server.py` 的模块级 `state = data_mod.UIState()` 会在 import 阶段执行，而 `UIState.__init__` -> `get_workdir()` 内含 `mkdir(parents=True)`。于是「仅仅 import 一下」就在 CWD 建出 `.signer`，传了 `--workdir` 也照样建 —— 随后 `main()` 改回真正的 workdir，那个野目录却留在磁盘上。Docker 里 WORKDIR 若是 `/`，用户就会在自己根本没用过的路径下看到残留目录。现 `get_workdir()`/`UIState()` 增 `create` 开关，模块级 state 用 `create=False`，目录改由 `_setup_logger()` 在启动时创建
 - **fix: `POST /api/state` 切换失败后状态不回滚**：`set_workdir()` 成功之后本函数已无回滚点，若后续 `_setup_webui_logger()` 失败，会被同一个 `except Exception` 吞掉并返回 400「切换工作目录失败」—— 但后端其实**已经切到新目录在操作**，前端收到失败后保留旧值显示。这正是「基础设置显示的路径和实际不一致」的代码级成因（此前只怀疑部署侧未重启）。现失败时把 `workdir` / `log_path` 与日志 handler 一并退回
