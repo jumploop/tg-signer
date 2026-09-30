@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from tg_signer.utils import resolve_under
 
@@ -148,9 +148,21 @@ def _acquire_account_lock(workdir: Path, account: str) -> LockHandle:
     return LockHandle(fp)
 
 
-def _forget(key: str) -> None:
-    """清理 key 对应的进程 / 锁 / 任务名,并释放锁。"""
+# ``_forget`` 的默认期望值：不校验当前登记的是哪个进程，无条件清理。
+_ANY_PROCESS = object()
+
+
+def _forget(key: str, expected: Any = _ANY_PROCESS) -> None:
+    """清理 key 对应的进程 / 锁 / 任务名,并释放锁。
+
+    ``expected`` 给定时只在 ``_PROCESSES[key]`` 正是它（或 ``None``：要求该 key
+    当前没有登记进程）时才清理。并发 start()/stop() 交错时，晚到的一方才不会把
+    对方刚登记的新子进程连同账号锁一起误删 —— 锁一释放，同账号就会出现两个
+    写者，正是这个锁要防的事情。``_STATE_LOCK`` 内的「比较并清理」是原子的。
+    """
     with _STATE_LOCK:
+        if expected is not _ANY_PROCESS and _PROCESSES.get(key) is not expected:
+            return
         _PROCESSES.pop(key, None)
         _TASK_NAMES.pop(key, None)
         lock = _LOCKS.pop(key, None)
@@ -262,7 +274,7 @@ def running_tasks() -> Dict[str, bool]:
         if proc.poll() is None:
             result[key] = True
         else:
-            _forget(key)
+            _forget(key, expected=proc)
             result[key] = False
     return result
 
@@ -287,7 +299,7 @@ def status(kind: str, account: str) -> bool:
     if proc is None:
         return False
     if proc.poll() is not None:
-        _forget(key)
+        _forget(key, expected=proc)
         return False
     return True
 
@@ -315,6 +327,14 @@ def start(
         running = proc is not None and proc.poll() is None
     if running:
         return False, f"账号 {account} 的 {kind} 任务已在运行 (PID {proc.pid})"
+    if proc is not None:
+        # 子进程已自行退出，但没有任何人 poll 过它：它的 LockHandle 还留在
+        # _LOCKS 里继续占着 <account>.lock（flock / msvcrt.locking 是按打开的
+        # 文件描述符记账的），下面重新抢锁必然失败，报错还是误导性的
+        # 「正在被其他进程使用」。旧实现只把它留给 running_tasks()/status()/
+        # stop() 顺手清理，于是「子进程自己退了、用户马上点启动」永远起不来。
+        # expected=proc：并发 start 可能已经登记了新子进程，不能连它一起清掉。
+        _forget(key, expected=proc)
     workdir = Path(workdir)
 
     # 抢账号级文件锁(防止跨 WebUI 实例并发启动同账号)
@@ -348,7 +368,10 @@ def start(
         child = subprocess.Popen(
             cmd, stdout=log_fp, stderr=log_fp, env=build_env(proxy)
         )
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
+        # ValueError：任务名里嵌入 NUL 之类的非法参数由 subprocess 自己抛出。
+        # 只兜 OSError 时它会带着已持有的账号锁一起向上冒泡，锁要到 traceback
+        # 被 GC 才释放（违反 test_account_lock.py 的「start 失败不得留锁」不变量）。
         log_fp.close()
         lock.release()
         return False, f"{tasks[0]} 启动失败: {exc}"
@@ -358,13 +381,24 @@ def start(
     # Windows 下父进程残留的句柄会让日志文件无法被轮转/重命名(PermissionError)。
     log_fp.close()
 
+    # 必须赶在宽限期睡眠之前登记：stop()/shutdown_all() 只认 _PROCESSES，晚登记
+    # 的话这段窗口内拉起的子进程既停不掉、又会作为孤儿继续跑（用户看到的是
+    # 「未在运行」，实际进程还活着）。
+    with _STATE_LOCK:
+        _PROCESSES[key] = child
+        _LOCKS[key] = lock
+        _TASK_NAMES[key] = list(tasks)
+
     # 早期失败检测:短暂 wait + poll,如果子进程已退出,说明参数错误/启动异常
     time.sleep(_STARTUP_GRACE_SECONDS)
     rc = child.poll()
     if rc is not None:
         # 收割已退出的子进程,避免 POSIX 下残留僵尸进程
         child.wait()
-        lock.release()
+        # 用 _forget 而不是 lock.release():stop() 可能已经赢了这场竞态并清理过
+        # 条目（_forget 幂等），重复 release 也没问题，但这样不会误留字典项。
+        # expected=child：只清理自己这个子进程，不误删别人刚登记的。
+        _forget(key, expected=child)
         task_disp = (
             tasks[0] if len(tasks) == 1 else f"{tasks[0]} 等 {len(tasks)} 个任务"
         )
@@ -372,10 +406,6 @@ def start(
             f"{task_disp} 启动后立即退出(exit code={rc}),请检查 session 与参数"
         )
 
-    with _STATE_LOCK:
-        _PROCESSES[key] = child
-        _LOCKS[key] = lock
-        _TASK_NAMES[key] = list(tasks)
     task_disp = tasks[0] if len(tasks) == 1 else f"{len(tasks)} 个任务"
     return True, f"{kind} 任务 {task_disp} 已启动 (PID {child.pid})"
 
@@ -385,7 +415,7 @@ def stop(kind: str, account: str) -> Tuple[bool, str]:
     with _STATE_LOCK:
         proc = _PROCESSES.get(key)
     if proc is None or proc.poll() is not None:
-        _forget(key)
+        _forget(key, expected=proc)
         return False, f"账号 {account} 的 {kind} 任务未在运行"
     proc.terminate()
     try:
@@ -395,7 +425,8 @@ def stop(kind: str, account: str) -> Tuple[bool, str]:
         proc.wait(timeout=5)
     # 只有确认子进程已退出(或已被 kill)才释放账号锁:锁一释放,新进程就会
     # 去打开同一份 <account>.session,而旧进程若还活着就是两个写者。
-    _forget(key)
+    # expected=proc：等待期间可能有并发 start() 抢先登记了新子进程，不能误删。
+    _forget(key, expected=proc)
     return True, f"账号 {account} 的 {kind} 任务已停止"
 
 
@@ -422,6 +453,6 @@ def shutdown_all(timeout: float = 5.0) -> List[str]:
                     pass
             except Exception:  # noqa: BLE001
                 pass
-        _forget(key)
+        _forget(key, expected=proc)
         stopped.append(key)
     return stopped

@@ -795,3 +795,177 @@ def test_llm_config_ui_leaves_the_stored_key_blank():
 
     missing = [name for name, text in chunks if "留空表示不修改" not in text]
     assert not missing, f"以下产物的 LLM 配置界面未体现「留空表示不修改」: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# LLM 配置：仅环境变量、以及本地配置文件损坏
+# ---------------------------------------------------------------------------
+
+
+def test_llm_config_saves_with_env_only_key(client, monkeypatch, tmp_path):
+    """密钥只在 ``OPENAI_API_KEY`` 里时，保存 base_url/model 也必须成功。
+
+    代码算了 effective_key（env 感知）却只用它做掩码比较，回退分支读的是本地
+    文件的 stored_key（此时是 ""）。用户看到 UI 显示「已配置」并按保存，得到的
+    却是 400「API Key 不能为空」——base_url / model 永远存不下来。
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env-abcdefgh")
+    resp = client.post(
+        "/api/llm-config",
+        json={
+            "api_key": "",
+            "base_url": "https://env.example/v1",
+            "model": "gpt-4o-env",
+        },
+    )
+    assert resp.status_code == 200, resp.json()
+
+    config = json.loads((tmp_path / ".openai_config.json").read_text("utf-8"))
+    assert config["api_key"] == "sk-env-abcdefgh"
+    assert config["base_url"] == "https://env.example/v1"
+    assert config["model"] == "gpt-4o-env"
+
+    # 掩码回显同样视为「不修改密钥」。
+    mask = client.get("/api/llm-config").json()["config"]["api_key"]
+    resp = client.post("/api/llm-config", json={"api_key": mask})
+    assert resp.status_code == 200, resp.json()
+    assert resp.json()["api_key_unchanged"] is True
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["{}", '{"api_key": null}', '{"api_key": "sk-trunc'],
+    ids=["empty-object", "null-key", "truncated"],
+)
+def test_llm_config_survives_corrupt_file_and_can_repair_it(
+    client, monkeypatch, tmp_path, raw
+):
+    """损坏的 .openai_config.json 不能让三个端点全 500，且必须还能被修好。
+
+    ``load_file_config()`` 会漏出 json.JSONDecodeError（截断文件）与 pydantic
+    ValidationError（{} / api_key=null），两者都是 ValueError 子类。旧实现没有
+    兜底，文件一坏就「连重新填一个 Key 保存」这条修复路径都走不通。
+    """
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    config_file = tmp_path / ".openai_config.json"
+    config_file.write_text(raw, encoding="utf-8")
+
+    got = client.get("/api/llm-config")
+    assert got.status_code == 200, got.text
+    assert got.json()["config"]["api_key"] == ""
+
+    posted = client.post("/api/llm-config", json={"api_key": "sk-repair-12345678"})
+    assert posted.status_code == 200, posted.json()
+    repaired = json.loads(config_file.read_text("utf-8"))
+    assert repaired["api_key"] == "sk-repair-12345678"
+
+
+def test_llm_config_test_endpoint_survives_corrupt_file(client, monkeypatch, tmp_path):
+    """连通性测试端点也必须容忍损坏的文件：报「Key 不能为空」而不是 500。"""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    (tmp_path / ".openai_config.json").write_text("{oops", encoding="utf-8")
+
+    resp = client.post("/api/llm-config/test", json={"api_key": ""})
+    assert resp.status_code == 400, resp.text
+    assert "API Key" in resp.json()["detail"]
+
+    # 环境变量里有 Key 时，损坏的本地文件不应妨碍测试连通性。
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env-87654321")
+    seen = {}
+
+    async def fake_test(api_key, base_url=None, model=None):
+        seen["api_key"] = api_key
+        return True, "ok"
+
+    monkeypatch.setattr(server, "test_openai_connection", fake_test)
+    resp = client.post("/api/llm-config/test", json={"api_key": ""})
+    assert resp.status_code == 200, resp.text
+    assert seen["api_key"] == "sk-env-87654321"
+
+
+# ---------------------------------------------------------------------------
+# 损坏的本地数据（SQLite / me.json / YAML）不能让接口 500
+# ---------------------------------------------------------------------------
+
+
+def test_records_endpoint_survives_corrupt_sqlite(client, tmp_path):
+    """data.sqlite3 损坏（file is not a database）时 /api/records 不能 500。"""
+    (tmp_path / "data.sqlite3").write_bytes(b"this is not a sqlite database")
+
+    resp = client.get("/api/records")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == []
+
+
+def test_chats_endpoint_survives_non_object_me_json(client, tmp_path):
+    """users/<id>/me.json 是合法 JSON 但不是对象时 /api/chats 不能 500。"""
+    user_dir = tmp_path / "users" / "u1"
+    user_dir.mkdir(parents=True)
+    (user_dir / "me.json").write_text("null", encoding="utf-8")
+
+    resp = client.get("/api/chats")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == []
+
+
+def test_automation_config_with_invalid_yaml_returns_400(client, tmp_path):
+    """语法坏掉的 config.yaml 必须是 400 而不是 500（yaml.YAMLError 不是 ValueError）。"""
+    pytest.importorskip("yaml")
+    auto_dir = tmp_path / "automations" / "broken"
+    auto_dir.mkdir(parents=True)
+    (auto_dir / "config.yaml").write_text("rules: [\n  - id: x\n", encoding="utf-8")
+
+    resp = client.get("/api/configs/automation/broken")
+    assert resp.status_code == 400, resp.text
+    assert "YAML" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# 账号登出：不存在的账号不得发起真实连接
+# ---------------------------------------------------------------------------
+
+
+def test_logout_nonexistent_account_does_not_connect(client, monkeypatch):
+    """没有 session 的账号不存在可登出的登录态，不能为它构造 client 去 connect。"""
+    constructed = []
+
+    def boom(*args, **kwargs):
+        constructed.append(args)
+        raise AssertionError("不应为不存在的账号构造 client")
+
+    monkeypatch.setattr(server.account_mod, "_new_client", boom)
+
+    resp = client.post("/api/accounts/logout", json={"account": "ghost"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["ok"] is False
+    assert "无需登出" in resp.json()["message"]
+    assert constructed == []
+
+
+def test_logout_existing_account_still_reports_ok(client, monkeypatch, tmp_path):
+    """有 session 的正常登出路径不能被新守卫误伤。"""
+    (tmp_path / "acc.session").write_text("x", encoding="utf-8")
+
+    class FakeStorage:
+        async def delete(self):
+            return None
+
+    class FakeClient:
+        is_connected = False
+        storage = FakeStorage()
+
+        async def connect(self):
+            return True
+
+        async def log_out(self):
+            return None
+
+        async def disconnect(self):
+            self.is_connected = False
+
+    monkeypatch.setattr(server.account_mod, "_new_client", lambda *a, **k: FakeClient())
+
+    resp = client.post("/api/accounts/logout", json={"account": "acc"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["ok"] is True
+    assert "已登出" in resp.json()["message"]

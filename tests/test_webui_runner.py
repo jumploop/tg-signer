@@ -1,5 +1,6 @@
 import importlib.util
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -478,3 +479,183 @@ def test_start_isolates_child_log_dir(monkeypatch, tmp_path):
     assert runner.child_stdout_log(tmp_path, "automation", "acc").is_file()
     assert not (tmp_path / "logs" / runner.DEFAULT_LOG_FILE_NAME).exists()
     runner._forget("automation:acc")
+
+
+# ---------------------------------------------------------------------------
+# 已退出子进程的清理 / Popen 失败 / 启动宽限期内的 stop
+# ---------------------------------------------------------------------------
+
+
+def test_start_after_child_exited_by_itself_releases_stale_lock(monkeypatch, tmp_path):
+    """子进程自行退出后立即重启，不能报「正在被其他进程使用」。
+
+    已死子进程的 LockHandle 仍留在 _LOCKS 里继续占着 <account>.lock
+    （flock / msvcrt.locking 按打开的文件描述符记账），而只有
+    running_tasks()/status()/stop() 会顺手清理它 —— 于是「子进程自己退了、
+    用户马上再点启动」必然失败，错误信息还是误导性的账号占用。
+    """
+    monkeypatch.setattr(runner, "_STARTUP_GRACE_SECONDS", 0.0)
+    monkeypatch.setattr(
+        runner,
+        "build_command",
+        lambda *a, **k: [sys.executable, "-c", "import time; time.sleep(0.3)"],
+    )
+    ok, msg = runner.start("signer", "t_stale", tmp_path, "acc")
+    assert ok, msg
+    key = runner.process_key("signer", "acc")
+    # 子进程自己退出；没有任何人 poll / stop 过它。
+    runner._PROCESSES[key].wait(timeout=15)
+    assert runner._PROCESSES[key].poll() is not None
+    assert key in runner._LOCKS
+
+    monkeypatch.setattr(
+        runner,
+        "build_command",
+        lambda *a, **k: [sys.executable, "-c", "import time; time.sleep(60)"],
+    )
+    ok2, msg2 = runner.start("signer", "t_stale", tmp_path, "acc")
+    assert ok2, msg2
+    assert "其他进程" not in msg2
+    runner.stop("signer", "acc")
+
+
+def test_start_popen_value_error_releases_account_lock(tmp_path):
+    """Popen 抛 ValueError（任务名含 NUL）时不得把账号锁漏在 _LOCKS 里。
+
+    ``start()`` 在拉起子进程前已经抢到账号锁；只兜 OSError 时 ValueError 会带着
+    锁一起冒泡，锁要到 traceback 被 GC 才释放（违反 test_account_lock.py 的
+    「start 失败不得留锁」不变量）。
+    """
+    ok, msg = runner.start("signer", "bad\x00task", tmp_path, "acc")
+    assert ok is False
+    assert "启动失败" in msg
+    assert "signer:acc" not in runner._LOCKS
+    assert "signer:acc" not in runner._PROCESSES
+
+    # 锁必须真的释放了：同一个进程再抢一次必须成功。
+    lock = runner._acquire_account_lock(tmp_path, "acc")
+    lock.release()
+
+
+class _SlowChild:
+    """假子进程：只有在被 terminate()/kill() 之后才算退出。"""
+
+    pid = 4321
+
+    def __init__(self):
+        self.terminated = False
+        self.returncode = None
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self.terminated = True
+        self.returncode = -15
+
+    def kill(self):
+        self.terminated = True
+        self.returncode = -9
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+def _start_in_thread(results, tmp_path, tasks="t_grace"):
+    thread = threading.Thread(
+        target=lambda: results.setdefault(
+            "value", runner.start("signer", tasks, tmp_path, "acc")
+        )
+    )
+    thread.start()
+    return thread
+
+
+def _wait_registered(key, timeout=0.4):
+    """在启动宽限期的前半段内等子进程登记。
+
+    timeout 必须明显小于 ``_STARTUP_GRACE_SECONDS``：只有「宽限期还没结束就已经
+    登记」才算修复成功，等到宽限期结束后才登记是旧行为（那段时间里 stop 看不到它）。
+    """
+    deadline = time.time() + timeout
+    while key not in runner._PROCESSES and time.time() < deadline:
+        time.sleep(0.01)
+    return key in runner._PROCESSES
+
+
+def test_stop_during_startup_grace_can_still_stop_child(monkeypatch, tmp_path):
+    """启动宽限期内 stop() 不能报「未在运行」而把子进程留成孤儿。
+
+    子进程原来要等 _STARTUP_GRACE_SECONDS 之后才登记进 _PROCESSES，这段窗口里
+    stop()/shutdown_all() 完全看不到它：用户看到「未在运行」，进程却已经拉起，
+    且再也没人能停它。
+    """
+    child = _SlowChild()
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *a, **k: child)
+    monkeypatch.setattr(runner, "_STARTUP_GRACE_SECONDS", 1.0)
+
+    results = {}
+    thread = _start_in_thread(results, tmp_path)
+    key = runner.process_key("signer", "acc")
+    try:
+        assert _wait_registered(key), "子进程未在宽限期内登记，stop() 无从下手"
+        ok, msg = runner.stop("signer", "acc")
+        assert ok, msg
+        assert child.terminated, "宽限期内拉起的子进程没有被终止，成为孤儿"
+    finally:
+        thread.join(timeout=10)
+        runner._forget(key)
+
+    assert runner._PROCESSES == {}
+    assert runner._LOCKS == {}
+    started_ok, started_msg = results["value"]
+    assert started_ok is False
+    assert "启动后立即退出" in started_msg
+
+
+def test_shutdown_all_during_startup_grace_stops_child(monkeypatch, tmp_path):
+    """shutdown_all() 同样必须覆盖启动宽限期内的子进程（WebUI 关闭不留孤儿）。"""
+    child = _SlowChild()
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *a, **k: child)
+    monkeypatch.setattr(runner, "_STARTUP_GRACE_SECONDS", 1.0)
+
+    results = {}
+    thread = _start_in_thread(results, tmp_path)
+    key = runner.process_key("signer", "acc")
+    try:
+        assert _wait_registered(key), "子进程未在宽限期内登记，shutdown_all() 无从下手"
+        assert runner.shutdown_all(timeout=1.0) == [key]
+        assert child.terminated
+    finally:
+        thread.join(timeout=10)
+        runner._forget(key)
+
+    assert runner._PROCESSES == {}
+    assert runner._LOCKS == {}
+
+
+def test_forget_guarded_by_identity_spares_newer_process(tmp_path):
+    """并发 start/stop 交错时，晚到的一方的 _forget 不能误删别人刚登记的进程。
+
+    start() 现在会在发现「已退出的旧子进程」时先 _forget 再抢锁，stop() /
+    running_tasks() 也在等待/轮询后才清理；如果清理不校验身份，晚到的一方可
+    把对方刚登记的新子进程连同账号锁一起删掉，同账号随即出现两个写者。
+    """
+    key = "signer:acc"
+    old = _SlowChild()
+    new = _SlowChild()
+    lock = runner._acquire_account_lock(tmp_path, "acc")
+    with runner._STATE_LOCK:
+        runner._PROCESSES[key] = new
+        runner._LOCKS[key] = lock
+        runner._TASK_NAMES[key] = ["new"]
+
+    runner._forget(key, expected=old)
+    assert runner._PROCESSES[key] is new
+    assert runner._LOCKS[key] is lock
+    assert runner._TASK_NAMES[key] == ["new"]
+
+    runner._forget(key, expected=new)
+    assert key not in runner._PROCESSES
+    assert key not in runner._LOCKS
+    assert key not in runner._TASK_NAMES

@@ -411,6 +411,11 @@ def cancel_login(account: str) -> None:
 async def logout_account(account: str, workdir) -> str:
     """Log out from Telegram and delete local session files."""
     workdir = pathlib.Path(workdir)
+    if not _session_file_usable(account, workdir):
+        # 账号连本地 session 都没有：不存在可登出的登录态。旧实现照样
+        # _new_client(...).connect()，为一个不存在的账号发起真实 Telegram 连接
+        # —— 既是无意义的外联，也会在无网络时把请求拖到超时。
+        return f"{account} 未登录或 session 不存在，无需登出"
     client = _new_client(account, workdir)
     try:
         is_authorized = await client.connect()

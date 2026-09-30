@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 import os
 import pathlib
 import secrets
@@ -30,6 +31,8 @@ from tg_signer.webui import data as data_mod
 from tg_signer.webui import runner as runner_mod
 
 AUTH_CODE_ENV = "TG_SIGNER_GUI_AUTHCODE"
+
+logger = logging.getLogger("tg-signer")
 
 # 视为「仅本机可访问」的监听地址；其余地址必须配合授权码启动。
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
@@ -389,6 +392,34 @@ def list_users(_: None = Depends(require_auth)) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def _llm_manager() -> OpenAIConfigManager:
+    return OpenAIConfigManager(state.workdir)
+
+
+def _safe_llm_config(
+    manager: OpenAIConfigManager, *, effective: bool
+) -> Dict[str, Any]:
+    """读取 LLM 配置，损坏的文件视为「未配置」而不是让三个端点全部 500。
+
+    ``OpenAIConfigManager.load_file_config()`` 会直接抛出底层错误：文件被截断时
+    是 ``json.JSONDecodeError``，内容是 ``{}`` / ``"api_key": null`` 时是 pydantic
+    ``ValidationError``（两者都是 ``ValueError`` 子类）。GET/POST/连通性测试此前
+    都没有兜底，``<workdir>/.openai_config.json`` 一旦损坏，UI 里连「重新填一个
+    Key 保存」这条修复路径也走不通 —— 于是永远修不回来。返回空配置后 POST 仍可
+    正常覆写该文件。
+
+    ``effective=True`` 取「环境变量优先」的有效配置，否则只读本地文件配置。
+    """
+    try:
+        cfg = manager.load_config() if effective else manager.load_file_config()
+    except (ValueError, OSError) as exc:
+        logger.warning(
+            "读取 LLM 配置失败，按未配置处理: %s: %s", type(exc).__name__, exc
+        )
+        return {}
+    return dict(cfg or {})
+
+
 def _mask_api_key(api_key: str) -> str:
     """把密钥渲染成仅供展示的掩码,明文不出服务端。"""
     key = (api_key or "").strip()
@@ -399,19 +430,15 @@ def _mask_api_key(api_key: str) -> str:
     return f"****{key[-4:]}"
 
 
-def _llm_manager() -> OpenAIConfigManager:
-    return OpenAIConfigManager(state.workdir)
-
-
 @app.get("/api/llm-config")
 def get_llm_config(_: None = Depends(require_auth)) -> Dict[str, Any]:
     manager = _llm_manager()
     has_env = manager.has_env_config()
-    cfg = manager.load_config() or {}
+    cfg = _safe_llm_config(manager, effective=True)
     return {
         "has_env": has_env,
         "config": {
-            "api_key": _mask_api_key(cfg.get("api_key", "")),
+            "api_key": _mask_api_key(cfg.get("api_key") or ""),
             "base_url": cfg.get("base_url") or "",
             "model": cfg.get("model") or "",
         },
@@ -428,8 +455,15 @@ def save_llm_config(
     这样前端即使把回显值原样提交回来也不会覆盖真实密钥。
     """
     manager = _llm_manager()
-    stored_key = (manager.load_file_config() or {}).get("api_key", "").strip()
-    effective_key = (manager.load_config() or {}).get("api_key", "").strip()
+    stored_key = (
+        _safe_llm_config(manager, effective=False).get("api_key") or ""
+    ).strip()
+    # 有效密钥要「环境变量优先」：只有环境变量里有 Key 时，UI 显示的也是掩码，
+    # 用户按「保存」时不能因为本地文件里没有密钥就报「API Key 不能为空」——
+    # 那样 base_url / model 根本无法保存。
+    effective_key = (
+        _safe_llm_config(manager, effective=True).get("api_key") or ""
+    ).strip()
 
     posted = (body.api_key or "").strip()
     if posted and posted not in (
@@ -439,6 +473,8 @@ def save_llm_config(
         api_key = posted
     elif stored_key:
         api_key = stored_key
+    elif effective_key:
+        api_key = effective_key
     else:
         raise HTTPException(status_code=400, detail="API Key 不能为空")
 
@@ -455,12 +491,13 @@ async def test_llm_config(
     body: LmConfigBody, _: None = Depends(require_auth)
 ) -> Dict[str, Any]:
     manager = _llm_manager()
+    effective_key = (
+        _safe_llm_config(manager, effective=True).get("api_key") or ""
+    ).strip()
     api_key = (body.api_key or "").strip()
-    if not api_key or api_key == _mask_api_key(
-        (manager.load_config() or {}).get("api_key", "")
-    ):
+    if not api_key or api_key == _mask_api_key(effective_key):
         # 前端回显的是掩码(或留空)时,用服务端已保存的密钥去测连通性。
-        api_key = (manager.load_config() or {}).get("api_key", "").strip()
+        api_key = effective_key
     if not api_key:
         raise HTTPException(status_code=400, detail="API Key 不能为空")
     ok, message = await test_openai_connection(
@@ -519,11 +556,23 @@ async def account_authorized(
 async def account_logout(
     body: AccountBody, _: None = Depends(require_auth)
 ) -> Dict[str, Any]:
+    # 先做纯本地检查：账号连 session 文件都没有时，本就不存在可登出的登录态，
+    # 旧实现照样 _new_client(...).connect() —— 为一个不存在的账号发起真实
+    # Telegram 连接（account.logout_account 内有同名守卫兜底）。
+    try:
+        has_session = account_mod._session_file_usable(body.account, state.workdir)
+    except ValueError as exc:  # 账号名不是单一路径分量
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not has_session:
+        return {
+            "ok": False,
+            "message": f"{body.account} 未登录或 session 不存在，无需登出",
+        }
     try:
         message = await account_mod.logout_account(body.account, state.workdir)
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"message": message}
+    return {"ok": True, "message": message}
 
 
 # ---------------------------------------------------------------------------

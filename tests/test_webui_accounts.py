@@ -154,6 +154,24 @@ async def test_logout_account_removes_files_for_session_string_only(
     assert not (tmp_path / "acc.session_string").exists()
 
 
+@pytest.mark.asyncio
+async def test_logout_missing_session_never_constructs_client(monkeypatch, tmp_path):
+    """不存在的账号没有任何登录态可登出，不得为它构造 client 去 connect。
+
+    旧实现无条件 ``_new_client(...).connect()``：为一个连 session 文件都没有的
+    账号发起一次真实 Telegram 连接（无意义的外联，无网络时还会把请求拖到超时）。
+    """
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("不应为不存在的账号构造 client")
+
+    monkeypatch.setattr(account, "_new_client", boom)
+
+    msg = await account.logout_account("ghost", tmp_path)
+    assert "无需登出" in msg
+    assert not (tmp_path / "ghost.session").exists()
+
+
 def test_save_and_remove_account_user_mapping(tmp_path):
     account.save_account_user("acc1", "123", tmp_path)
     assert account.load_account_users(tmp_path) == {"acc1": "123"}

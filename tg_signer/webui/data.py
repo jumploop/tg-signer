@@ -1,8 +1,10 @@
 import json
+import logging
 import os
 import re
 import secrets
 import shutil
+import sqlite3
 import threading
 from collections import deque
 from dataclasses import dataclass
@@ -12,6 +14,8 @@ from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 from tg_signer.config import AutomationConfig, BaseJSONConfig, SignConfigV3
 from tg_signer.sign_record_store import SignRecordStore
 from tg_signer.utils import resolve_log_under, resolve_under
+
+logger = logging.getLogger("tg-signer")
 
 ConfigKind = Literal["signer"]
 NameGenKind = Literal["signer", "automation"]
@@ -160,8 +164,13 @@ def _read_automation_payload(path: Path) -> Dict[str, Any]:
             import yaml  # type: ignore
         except ModuleNotFoundError as exc:
             raise ValueError("未安装 pyyaml，无法读取 YAML 配置") from exc
-        with open(path, "r", encoding="utf-8") as fp:
-            payload = yaml.safe_load(fp) or {}
+        try:
+            with open(path, "r", encoding="utf-8") as fp:
+                payload = yaml.safe_load(fp) or {}
+        except yaml.YAMLError as exc:
+            # yaml.YAMLError 不是 ValueError 子类（已核实），原样冒泡会让
+            # server 的 400 兜底失效，把一份手改坏的 YAML 变成 500。
+            raise ValueError(f"YAML 解析失败: {exc}") from exc
         if not isinstance(payload, dict):
             raise ValueError("YAML 配置必须是字典结构")
         return payload
@@ -370,6 +379,11 @@ def load_user_infos(workdir: Optional[Path | str] = None) -> List[UserInfo]:
                 data = json.load(fp)
             except json.JSONDecodeError:
                 continue
+        # me.json 里是合法 JSON 但不是对象时（手改成 null / []），下游按 dict
+        # 取字段会 AttributeError / TypeError，把 /api/chats 打成 500。
+        # 与 latest_chats.json 的非数组守卫同理：跳过该条目。
+        if not isinstance(data, dict):
+            continue
 
         latest_chats = []
         chats_file = user_dir / "latest_chats.json"
@@ -404,6 +418,26 @@ def _record_target(path: Path, signs_root: Path) -> Tuple[str, Optional[str]]:
     return task, user_id
 
 
+def _record_dedup_key(
+    path: Path, signs_root: Path, store: SignRecordStore
+) -> Tuple[str, Optional[str]]:
+    """计算 JSON 记录的去重键，必须与 SQLite 行的 (task, user_id) 对齐。
+
+    老的 2 段布局 ``signs/<task>/sign_record.json`` 没有 user_id 段，
+    ``_record_target`` 会给出 ``None``；而迁移到 SQLite 时
+    ``SignRecordStore.resolve_record_target`` 会把它推断成当时唯一的 user_id。
+    两边键不一致，同一个文件就会在 UI 里出现两次（「优先用已迁移的 SQLite 行」
+    的去重注释因此形同虚设）。先问 store 要标准答案，拿不到再退回旧逻辑。
+    """
+    try:
+        resolved = store.resolve_record_target(path)
+    except ValueError:
+        resolved = None
+    if resolved is not None:
+        return resolved
+    return _record_target(path, signs_root)
+
+
 def load_sign_records(workdir: Optional[Path | str] = None) -> List[SignRecord]:
     base = get_workdir(workdir)
     signs_dir = base / "signs"
@@ -412,7 +446,14 @@ def load_sign_records(workdir: Optional[Path | str] = None) -> List[SignRecord]:
 
     store = SignRecordStore(base)
     if store.db_path.is_file():
-        for group in store.list_record_groups():
+        try:
+            groups = store.list_record_groups()
+        except sqlite3.Error as exc:
+            # data.sqlite3 损坏（「file is not a database」）或被长时间锁住时，
+            # 记录页不应该整个 500：退化成「只展示 JSON 记录」。
+            logger.warning("读取 SQLite 签到记录失败，仅展示 JSON 记录: %s", exc)
+            groups = []
+        for group in groups:
             key = (group.task_name, group.user_id)
             existing_keys.add(key)
             records.append(
@@ -433,7 +474,7 @@ def load_sign_records(workdir: Optional[Path | str] = None) -> List[SignRecord]:
                 data = json.load(fp)
         except (json.JSONDecodeError, OSError):
             continue
-        task, user_id = _record_target(record_file, signs_dir)
+        task, user_id = _record_dedup_key(record_file, signs_dir, store)
         key = (task, user_id)
         # Prefer the migrated SQLite rows when both sources exist so the same
         # task/user pair does not appear twice in the UI.
@@ -465,23 +506,51 @@ def tail_file(path: Path, limit: int = 200) -> List[str]:
         fp.seek(0, os.SEEK_END)
         position = fp.tell()
         leftover = b""
+        have_leftover = False
+        first_chunk = True
         while position > 0 and len(buffer) < limit:
             read_size = min(chunk_size, position)
             position -= read_size
             fp.seek(position)
             chunk = fp.read(read_size)
+            # ``data`` 跨块拼回同一行，因此被块边界劈开的 UTF-8 序列也能还原。
             data = chunk + leftover
             lines = data.split(b"\n")
             leftover = lines[0]
-            for line in reversed(lines[1:]):
+            have_leftover = True
+            tail = lines[1:]
+            if first_chunk:
+                first_chunk = False
+                # 文件以换行结尾时 split 会在末尾多出一个空串；它不是真实的空行，
+                # 却会白占一个 limit 名额（limit=3 的 3 行文件只回 2 行 + 一条
+                # 伪空行）。只丢文件末尾这一个空段，中间的空行是真实空行。
+                if tail and tail[-1] == b"":
+                    tail = tail[:-1]
+            for line in reversed(tail):
                 buffer.appendleft(line.decode("utf-8", errors="ignore").rstrip("\r"))
                 if len(buffer) >= limit:
                     break
 
-        if len(buffer) < limit and leftover:
+        # 走到文件头时 leftover 才是真正的一行（可能本身就是空行）；提前凑够
+        # limit 而中断时它只是半行，此时 len(buffer) >= limit，不会追加。
+        if len(buffer) < limit and have_leftover:
             buffer.appendleft(leftover.decode("utf-8", errors="ignore").rstrip("\r"))
 
     return list(buffer)
+
+
+def _is_readable_log(base: Path, candidate: Path) -> bool:
+    """该路径是否是通过 ``/api/logs?path=`` 能真正读到的日志文件。
+
+    列表与读取必须用同一套形状规则（``resolve_log_under``：最多一层子目录 +
+    ``.log`` 后缀），否则会出现「列得出来、一点就 400」的文件 —— 这正是
+    commit e450719 修过的「列得出读不到」问题在更深一层目录上的翻版。
+    """
+    try:
+        resolve_log_under(base, candidate)
+    except ValueError:
+        return False
+    return True
 
 
 def list_log_files(log_dir: Optional[Path | str] = None) -> List[Path]:
@@ -493,7 +562,9 @@ def list_log_files(log_dir: Optional[Path | str] = None) -> List[Path]:
     # RotatingFileHandler,否则多个 handler 会互相截断同一个文件)。原来的
     # ``glob("*.log")`` 只看顶层,于是所有真正有内容的任务日志都列不出来,
     # 日志页只剩一个 0 字节的 ``tg-signer.log`` 顶着,表现为「整页空白」。
-    files = [p for p in base.rglob("*.log") if p.is_file()]
+    files = [
+        p for p in base.rglob("*.log") if p.is_file() and _is_readable_log(base, p)
+    ]
 
     # 排序即「默认选中项」:非空的排前面,同级按 mtime 倒序,于是 ``files[0]``
     # 就是最值得先看的那个。顶层 ``tg-signer.log`` 只有在 WebUI「运行」页启动过

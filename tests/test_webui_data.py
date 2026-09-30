@@ -628,3 +628,191 @@ def test_load_group_chats_tolerates_malformed_latest_chats(tmp_path, payload):
     (user_dir / "me.json").write_text(json.dumps({"id": 1}), encoding="utf-8")
     (user_dir / "latest_chats.json").write_text(json.dumps(payload), encoding="utf-8")
     assert data.load_group_chats(tmp_path) == []
+
+
+@pytest.mark.parametrize("payload", [None, [], "text", 3], ids=lambda p: repr(p))
+def test_load_user_infos_skips_non_object_me_json(tmp_path, payload):
+    """me.json 是合法 JSON 但不是对象时跳过该条目，不能把 /api/chats 打成 500。
+
+    与 ``latest_chats.json`` 的非数组守卫同源：``null`` 会让下游
+    ``info.data.get(...)`` 抛 AttributeError，``[]`` 抛 TypeError。
+    """
+    user_dir = tmp_path / "users" / "u1"
+    user_dir.mkdir(parents=True)
+    (user_dir / "me.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    assert data.load_user_infos(tmp_path) == []
+    assert data.load_group_chats(tmp_path) == []
+
+
+# ---------------------------------------------------------------------------
+# tail_file：只应丢掉「文件末尾换行」产生的空段
+# ---------------------------------------------------------------------------
+
+
+def _write_log(tmp_path, content: bytes):
+    path = tmp_path / "app.log"
+    path.write_bytes(content)
+    return path
+
+
+def test_tail_file_drops_trailing_newline_artifact(tmp_path):
+    """'l1\\nl2\\nl3\\n' 是 3 行，不能回出 4 项（末尾伪空行）。"""
+    path = _write_log(tmp_path, b"l1\nl2\nl3\n")
+    assert data.tail_file(path, limit=200) == ["l1", "l2", "l3"]
+
+
+def test_tail_file_returns_limit_real_lines(tmp_path):
+    """伪空行不再白占 limit 名额：limit=3 必须回满 3 行。"""
+    path = _write_log(tmp_path, b"l1\nl2\nl3\n")
+    assert data.tail_file(path, limit=3) == ["l1", "l2", "l3"]
+    assert data.tail_file(path, limit=2) == ["l2", "l3"]
+
+
+def test_tail_file_keeps_real_blank_lines(tmp_path):
+    """中间的空行是真实空行，只有文件末尾那一个空段该丢。"""
+    path = _write_log(tmp_path, b"l1\n\nl3\n")
+    assert data.tail_file(path, limit=200) == ["l1", "", "l3"]
+
+
+def test_tail_file_without_trailing_newline(tmp_path):
+    path = _write_log(tmp_path, b"l1\nl2\nl3")
+    assert data.tail_file(path, limit=200) == ["l1", "l2", "l3"]
+
+
+def test_tail_file_handles_empty_file_and_lone_newline(tmp_path):
+    assert data.tail_file(_write_log(tmp_path, b""), limit=10) == []
+    # 只含一个换行的文件就是「一行空行」：换行空段丢掉后，空行本身要留下。
+    assert data.tail_file(_write_log(tmp_path, b"\n"), limit=10) == [""]
+    assert data.tail_file(tmp_path / "missing.log", limit=10) == []
+
+
+def test_tail_file_reassembles_long_line_spanning_chunks(tmp_path):
+    """跨多个 8KiB 块的长行必须原样拼回，不能被截断。"""
+    long_line = "x" * 20000
+    path = _write_log(tmp_path, f"{long_line}\nend\n".encode())
+    assert data.tail_file(path, limit=200) == [long_line, "end"]
+
+
+def test_tail_file_keeps_order_across_many_chunks(tmp_path):
+    lines = [f"line{i:05d}" for i in range(3000)]
+    path = _write_log(tmp_path, ("\n".join(lines) + "\n").encode())
+    assert data.tail_file(path, limit=200) == lines[-200:]
+
+
+def test_tail_file_preserves_utf8_split_across_chunks(tmp_path):
+    """块边界劈开的多字节字符必须完好：拼行是按字节做的跨块重组。"""
+    first = "中" * 8000
+    content = (first + "\nend\n").encode("utf-8")
+    path = _write_log(tmp_path, content)
+    assert len(content) > 8192 * 2, "需要跨多个块才能覆盖边界劈裂"
+    assert data.tail_file(path, limit=200) == [first, "end"]
+
+
+# ---------------------------------------------------------------------------
+# 签到记录：SQLite / 遗留 JSON 去重，以及损坏的 SQLite
+# ---------------------------------------------------------------------------
+
+
+def test_load_sign_records_dedups_two_part_legacy_json_against_sqlite(tmp_path):
+    """同一个 2 段遗留文件在迁移到 SQLite 后只能出现一次。
+
+    ``_record_target`` 对 ``signs/<task>/sign_record.json`` 给 user_id=None，
+    而 ``SignRecordStore.resolve_record_target`` 会把它推断成当时唯一的 user_id
+    ——两边键不一致，去重永远命中不了，「优先用已迁移的 SQLite 行」形同虚设。
+    """
+    from tg_signer.sign_record_store import SignRecordStore
+
+    store = SignRecordStore(tmp_path)
+    store.upsert_record("daily", "1001", "2024-01-01", "2024-01-01 06:00:00")
+
+    # 只有一个 users/<id>，store 才能把 2 段布局推断到这个 user_id 上。
+    user_dir = tmp_path / "users" / "1001"
+    user_dir.mkdir(parents=True)
+    (user_dir / "me.json").write_text("{}", encoding="utf-8")
+
+    task_dir = tmp_path / "signs" / "daily"
+    task_dir.mkdir(parents=True)
+    (task_dir / "sign_record.json").write_text(
+        json.dumps({"2024-01-01": "2024-01-01 06:00:00"}), encoding="utf-8"
+    )
+
+    records = data.load_sign_records(tmp_path)
+    assert [(r.task, r.user_id) for r in records] == [("daily", "1001")]
+
+
+def test_load_sign_records_keeps_distinct_user_rows(tmp_path):
+    """去重不能过度：不同 user_id 的记录仍要分别出现。"""
+    from tg_signer.sign_record_store import SignRecordStore
+
+    store = SignRecordStore(tmp_path)
+    store.upsert_record("daily", "1001", "2024-01-01", "2024-01-01 06:00:00")
+
+    record_file = tmp_path / "signs" / "daily" / "2002" / "sign_record.json"
+    record_file.parent.mkdir(parents=True)
+    record_file.write_text(
+        json.dumps({"2024-01-01": "2024-01-01 06:00:00"}), encoding="utf-8"
+    )
+
+    records = data.load_sign_records(tmp_path)
+    assert sorted((r.task, r.user_id) for r in records) == [
+        ("daily", "1001"),
+        ("daily", "2002"),
+    ]
+
+
+def test_load_sign_records_survives_corrupt_sqlite_file(tmp_path):
+    """data.sqlite3 损坏时退化成「只展示 JSON 记录」，不能把 /api/records 打成 500。"""
+    (tmp_path / "data.sqlite3").write_bytes(b"not a sqlite database at all")
+    task_dir = tmp_path / "signs" / "daily" / "1001"
+    task_dir.mkdir(parents=True)
+    (task_dir / "sign_record.json").write_text(
+        json.dumps({"2024-01-01": "2024-01-01 06:00:00"}), encoding="utf-8"
+    )
+
+    records = data.load_sign_records(tmp_path)
+    assert [(r.task, r.user_id) for r in records] == [("daily", "1001")]
+
+
+# ---------------------------------------------------------------------------
+# 日志文件列表：只能列出读得到的那些
+# ---------------------------------------------------------------------------
+
+
+def test_list_log_files_only_lists_paths_the_reader_accepts(tmp_path):
+    """列表必须与读取用同一套形状规则（最多一层子目录 + .log）。
+
+    更深一层的文件以前会被列出来，点开却必然 400 —— 「列得出读不到」。
+    """
+    (tmp_path / "tg-signer.log").write_text("", encoding="utf-8")
+    task_dir = tmp_path / "signer-demo"
+    task_dir.mkdir()
+    (task_dir / "tg-signer.log").write_text("task\n", encoding="utf-8")
+    nested = tmp_path / "sub" / "nested"
+    nested.mkdir(parents=True)
+    deep_log = nested / "x.log"
+    deep_log.write_text("deep\n", encoding="utf-8")
+
+    listed = data.list_log_files(tmp_path)
+    relative = sorted(str(p.relative_to(tmp_path)).replace("\\", "/") for p in listed)
+    assert relative == ["signer-demo/tg-signer.log", "tg-signer.log"]
+    assert deep_log.resolve() not in [p.resolve() for p in listed]
+
+    # 列表给出的每个路径都必须能被 reader 接受（往返不 400）。
+    for path in listed:
+        data.load_logs(limit=10, log_path=path, log_dir=tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# automation YAML：语法错误必须是 ValueError（→ 400），不是 500
+# ---------------------------------------------------------------------------
+
+
+def test_load_automation_config_reports_invalid_yaml_as_value_error(tmp_path):
+    pytest.importorskip("yaml")
+    auto_dir = tmp_path / "automations" / "broken"
+    auto_dir.mkdir(parents=True)
+    (auto_dir / "config.yaml").write_text("rules: [\n  - id: x\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="YAML"):
+        data.load_automation_config("broken", tmp_path)
