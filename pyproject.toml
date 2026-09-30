@@ -19,7 +19,9 @@ classifiers = [
 dependencies = [
     "kurigram>=2.2.19,<2.3.0",
     "click",
-    "pydantic",
+    # 代码使用 ConfigDict / model_validate / model_validator,均是 pydantic v2 API。
+    # 不写下界时,环境里已装的 pydantic v1 会满足要求,import 阶段直接失败。
+    "pydantic>=2",
     "openai",
     "croniter",
     "json_repair",
@@ -35,6 +37,9 @@ dev = [
     "pytest-asyncio>=1.3.0",
     "fastapi",
     "uvicorn",
+    # 与 fastapi/uvicorn 同理:测试要覆盖可选能力的真实路径(YAML 配置的
+    # 读取/导出/导入往返),不能只测到 importorskip 的跳过分支。
+    "pyyaml",
 ]
 
 [project.optional-dependencies]
@@ -94,9 +99,10 @@ addopts = [
     "-W=ignore::DeprecationWarning:pyrogram.utils",
     "-p", "pytest_asyncio"
 ]
+# pytest-asyncio 只认这一个配置项(`asyncio_mode`)。此前写成
+# `[tool.pytest_asyncio] auto_mode = true`,不是它认识的键,属于静默失效 ——
+# 之所以一直没暴露,只是因为所有 async 用例都显式打了 @pytest.mark.asyncio。
+asyncio_mode = "auto"
 markers = [
     "asyncio: mark test as async"
 ]
-
-[tool.pytest_asyncio]
-auto_mode = true
