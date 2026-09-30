@@ -22,6 +22,7 @@ from pydantic import (
     Field,
     ValidationError,
     field_validator,
+    model_validator,
 )
 from typing_extensions import Self, TypeAlias
 
@@ -495,7 +496,9 @@ class SignConfigV3(BaseJSONConfig):
     _version: Literal[3] = 3
     chats: List[SignChatV3]
     sign_at: str  # 签到时间，time或crontab表达式
-    random_seconds: int = 0
+    # 下界必须校验:负数会让 random.randint(0, random_seconds) 抛
+    # ValueError(empty range),把整个签到任务打死。
+    random_seconds: int = Field(default=0, ge=0)
     sign_interval: int = 1  # 连续签到的间隔时间，单位秒
 
     @field_validator("sign_at")
@@ -556,7 +559,8 @@ class TimerTriggerParams(ChatRefsMixin):
     chat_id: Optional[Union[int, str]] = None
     cron: Optional[str] = None
     interval_seconds: Optional[int] = None
-    random_seconds: int = 0
+    # 同 SignConfigV3.random_seconds:负数会在 engine 里炸 randint。
+    random_seconds: int = Field(default=0, ge=0)
 
 
 class StartupTriggerParams(ChatRefsMixin):
@@ -620,6 +624,29 @@ class AutomationConfig(BaseJSONConfig):
     is_current: ClassVar = True
 
     rules: List[RuleConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_unique_ids(self) -> Self:
+        """rule id 与 trigger id 必须唯一。
+
+        重复的 rule id 会让两条规则共用同一个 state 桶(rules.<id>.vars 互相
+        覆盖),重复的 trigger id 会让 timer 的下次执行时间互相覆盖 —— 都是
+        「配置合法、行为静默错乱」,所以在校验层直接拦住。
+        """
+        seen_rule_ids: set[str] = set()
+        for rule in self.rules:
+            if rule.id in seen_rule_ids:
+                raise ValueError(f"重复的 rule id: {rule.id!r}；每条规则的 id 必须唯一")
+            seen_rule_ids.add(rule.id)
+            seen_trigger_ids: set[str] = set()
+            for index, trigger in enumerate(rule.triggers):
+                trigger_id = trigger.id or f"{rule.id}:{index}"
+                if trigger_id in seen_trigger_ids:
+                    raise ValueError(
+                        f"rule {rule.id!r} 内重复的 trigger id: {trigger_id!r}"
+                    )
+                seen_trigger_ids.add(trigger_id)
+        return self
 
     @property
     def requires_ai(self) -> bool:

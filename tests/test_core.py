@@ -2,7 +2,7 @@ import asyncio
 import json
 import pathlib
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -1876,3 +1876,383 @@ async def test_sign_once_persists_the_current_cycle_time(signer_factory, monkeyp
     await signer.normal_run(only_once=True)
 
     assert persisted == [(str(frozen.date()), frozen.isoformat())]
+
+
+class _DummyApp:
+    """驱动 normal_run 用的最小 app 替身(不触碰 Telegram)。"""
+
+    key = "dummy-app"
+
+    def add_handler(self, *_args, **_kwargs):
+        return None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+
+def _signer_for_run(
+    signer_factory, monkeypatch, *, task_name, sign_at, now, chats=None
+):
+    import tg_signer.core as core
+
+    signer = signer_factory(task_name=task_name)
+    signer.user = SimpleNamespace(id=123456)
+    signer.load_config = lambda _cls: SignConfigV3(
+        chats=chats or [SignChatV3(chat_id=1, actions=[SendTextAction(text="签到")])],
+        sign_at=sign_at,
+        sign_interval=0,
+    )
+    monkeypatch.setattr(core, "get_now", lambda: now)
+    signer.app = _DummyApp()
+    return signer
+
+
+@pytest.mark.asyncio
+async def test_normal_run_waits_until_today_scheduled_time(signer_factory, monkeypatch):
+    """早于 sign_at 启动时不能立刻签一次、到点再签一次。
+
+    旧实现只要「今天还没有记录」就立刻签，于是 05:00 启动 + sign_at=06:00 会
+    在同一天签到两次。
+    """
+    import tg_signer.core as core
+
+    clock = {"now": datetime(2026, 9, 30, 5, 0, tzinfo=timezone(timedelta(hours=8)))}
+    signer = _signer_for_run(
+        signer_factory,
+        monkeypatch,
+        task_name="wait_until_due",
+        sign_at="0 6 * * *",
+        now=clock["now"],
+    )
+    monkeypatch.setattr(core, "get_now", lambda: clock["now"])
+
+    real_sleep = core.asyncio.sleep
+    signed_at = []
+
+    class _StopLoop(Exception):
+        pass
+
+    async def fake_sleep(seconds):
+        seconds = seconds or 0
+        if seconds > 0:
+            clock["now"] += timedelta(seconds=seconds)
+            if clock["now"] > datetime(2026, 9, 30, 7, 0, tzinfo=clock["now"].tzinfo):
+                raise _StopLoop
+        await real_sleep(0)
+
+    monkeypatch.setattr(core.asyncio, "sleep", fake_sleep)
+
+    async def fake_sign_a_chat(chat):
+        signed_at.append(clock["now"].isoformat())
+
+    signer.sign_a_chat = fake_sign_a_chat
+
+    with pytest.raises(_StopLoop):
+        await signer.normal_run()
+
+    assert signed_at == ["2026-09-30T06:00:00+08:00"]
+
+
+@pytest.mark.asyncio
+async def test_normal_run_catches_up_when_started_after_todays_time(
+    signer_factory, monkeypatch
+):
+    """启动时已过今天的计划时刻，应当立刻补签一次（补签能力不能被改没）。"""
+    clock = {"now": datetime(2026, 9, 30, 7, 0, tzinfo=timezone(timedelta(hours=8)))}
+    signer = _signer_for_run(
+        signer_factory,
+        monkeypatch,
+        task_name="catch_up",
+        sign_at="0 6 * * *",
+        now=clock["now"],
+    )
+
+    signed = []
+
+    async def fake_sign_a_chat(chat):
+        signed.append(clock["now"].isoformat())
+
+    signer.sign_a_chat = fake_sign_a_chat
+
+    await signer.normal_run(only_once=True)
+
+    assert signed == ["2026-09-30T07:00:00+08:00"]
+    assert "2026-09-30" in signer.load_sign_record()
+
+
+@pytest.mark.asyncio
+async def test_normal_run_signs_daily_midnight_cron(signer_factory, monkeypatch):
+    """零点命中的每日 cron 必须能签到。
+
+    把 croniter 锚在「当天 00:00」上取 ``next()`` 会得到明天的 00:00（严格晚于
+    锚点），于是每天都判「今日无计划时刻」而永不签到 —— 本用例守住该回归。
+    """
+    clock = {"now": datetime(2026, 9, 30, 23, 0, tzinfo=timezone(timedelta(hours=8)))}
+    signer = _signer_for_run(
+        signer_factory,
+        monkeypatch,
+        task_name="midnight_cron",
+        sign_at="0 0 * * *",
+        now=clock["now"],
+    )
+
+    signed = []
+
+    async def fake_sign_a_chat(chat):
+        signed.append(clock["now"].isoformat())
+
+    signer.sign_a_chat = fake_sign_a_chat
+
+    await signer.normal_run(only_once=True)
+
+    assert signed == ["2026-09-30T23:00:00+08:00"]
+
+
+@pytest.mark.asyncio
+async def test_normal_run_retries_the_round_when_every_chat_fails(
+    signer_factory, monkeypatch
+):
+    """全部失败时不能直接睡到下一个计划时刻，应退避后重试本轮（而不是等一天）。"""
+    import tg_signer.core as core
+
+    frozen = datetime(2026, 9, 30, 7, 0, tzinfo=timezone(timedelta(hours=8)))
+    signer = _signer_for_run(
+        signer_factory,
+        monkeypatch,
+        task_name="retry_all_failed",
+        sign_at="0 6 * * *",
+        now=frozen,
+    )
+
+    real_sleep = core.asyncio.sleep
+    attempts = []
+    retry_waits = []
+
+    class _StopLoop(Exception):
+        pass
+
+    async def fake_sleep(seconds):
+        seconds = seconds or 0
+        if seconds >= core._ALL_FAILED_RETRY_SECONDS:
+            retry_waits.append(seconds)
+            if len(retry_waits) >= 2:
+                # 已观察到「失败 → 退避 → 再失败 → 再退避」，收工
+                raise _StopLoop
+        await real_sleep(0)
+
+    monkeypatch.setattr(core.asyncio, "sleep", fake_sleep)
+
+    async def failing_sign_a_chat(chat):
+        attempts.append(1)
+        raise RuntimeError("网络失败")
+
+    signer.sign_a_chat = failing_sign_a_chat
+
+    with pytest.raises(_StopLoop):
+        await signer.normal_run()
+
+    assert len(attempts) >= 2
+    assert retry_waits == [core._ALL_FAILED_RETRY_SECONDS] * 2
+    assert signer.load_sign_record() == {}
+
+
+@pytest.mark.asyncio
+async def test_normal_run_non_daily_cron_only_signs_on_matching_weekday(
+    signer_factory, monkeypatch
+):
+    """非每日 cron（每周一 06:00）在周三启动时不能签，否则退化成每天签一次。"""
+    import tg_signer.core as core
+
+    # 2026-09-30 是周三，下一次命中是 2026-10-05（周一）06:00
+    clock = {"now": datetime(2026, 9, 30, 8, 0, tzinfo=timezone(timedelta(hours=8)))}
+    signer = _signer_for_run(
+        signer_factory,
+        monkeypatch,
+        task_name="weekly_cron",
+        sign_at="0 6 * * 1",
+        now=clock["now"],
+    )
+    monkeypatch.setattr(core, "get_now", lambda: clock["now"])
+
+    real_sleep = core.asyncio.sleep
+    signed = []
+
+    class _StopLoop(Exception):
+        pass
+
+    async def fake_sleep(seconds):
+        seconds = seconds or 0
+        if seconds > 0:
+            clock["now"] += timedelta(seconds=seconds)
+            if clock["now"] > datetime(2026, 10, 6, tzinfo=clock["now"].tzinfo):
+                raise _StopLoop
+        await real_sleep(0)
+
+    monkeypatch.setattr(core.asyncio, "sleep", fake_sleep)
+
+    async def fake_sign_a_chat(chat):
+        signed.append(clock["now"].isoformat())
+
+    signer.sign_a_chat = fake_sign_a_chat
+
+    with pytest.raises(_StopLoop):
+        await signer.normal_run()
+
+    assert signed == ["2026-10-05T06:00:00+08:00"]
+
+
+@pytest.mark.asyncio
+async def test_normal_run_does_not_record_when_every_chat_fails(
+    signer_factory, monkeypatch
+):
+    """所有 chat 都失败时不能写「今日已签到」，否则当天再也不会重试。"""
+    frozen = datetime(2026, 9, 30, 6, 0, tzinfo=timezone(timedelta(hours=8)))
+    signer = _signer_for_run(
+        signer_factory,
+        monkeypatch,
+        task_name="all_failed",
+        sign_at="* * * * *",
+        now=frozen,
+    )
+
+    async def failing_sign_a_chat(chat):
+        raise RuntimeError("网络失败")
+
+    signer.sign_a_chat = failing_sign_a_chat
+
+    await signer.normal_run(only_once=True)
+
+    assert signer.load_sign_record() == {}
+
+
+@pytest.mark.asyncio
+async def test_normal_run_records_when_at_least_one_chat_succeeds(
+    signer_factory, monkeypatch
+):
+    """部分成功仍要落库，否则重试会给已经成功的 chat 重复发消息。"""
+    frozen = datetime(2026, 9, 30, 6, 0, tzinfo=timezone(timedelta(hours=8)))
+    chats = [
+        SignChatV3(chat_id=1, actions=[SendTextAction(text="签到")]),
+        SignChatV3(chat_id=2, actions=[SendTextAction(text="签到")]),
+    ]
+    signer = _signer_for_run(
+        signer_factory,
+        monkeypatch,
+        task_name="partial_ok",
+        sign_at="* * * * *",
+        now=frozen,
+        chats=chats,
+    )
+
+    async def flaky_sign_a_chat(chat):
+        if chat.chat_id == 1:
+            raise RuntimeError("第一个 chat 失败")
+
+    signer.sign_a_chat = flaky_sign_a_chat
+
+    await signer.normal_run(only_once=True)
+
+    assert "2026-09-30" in signer.load_sign_record()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "record_value,task_name",
+    [("2026-09-30T06:00:00", "naive_record"), ("不是时间", "broken_record")],
+)
+async def test_normal_run_tolerates_broken_sign_record_values(
+    signer_factory, monkeypatch, record_value, task_name
+):
+    """历史 naive 时间戳/被改坏的记录不能让整个 run 崩掉。
+
+    旧实现里 naive 值会在 `_next_run > now` 抛 TypeError，解析失败会抛
+    ValueError，两者都不在 normal_run 的捕获集合内，表现为整个任务崩溃。
+    """
+    frozen = datetime(2026, 9, 30, 7, 0, tzinfo=timezone(timedelta(hours=8)))
+    signer = _signer_for_run(
+        signer_factory,
+        monkeypatch,
+        task_name=task_name,
+        sign_at="0 6 * * *",
+        now=frozen,
+    )
+    signer.load_sign_record = lambda: {"2026-09-30": record_value}
+
+    signed = []
+
+    async def fake_sign_a_chat(chat):
+        signed.append(chat)
+
+    signer.sign_a_chat = fake_sign_a_chat
+
+    await signer.normal_run(only_once=True)
+
+    # 今日已有(坏)记录：既不能崩，也不该再签一次
+    assert signed == []
+
+
+@pytest.mark.asyncio
+async def test_wait_for_processes_message_edited_later_in_the_list(signer_factory):
+    """较早的消息被编辑(队尾没变)也必须被处理。
+
+    旧实现只比对队尾消息，机器人把较早那条编辑成带键盘的形态时会被永久忽略，
+    表现为点击类签到一直等到超时。
+    """
+    signer = signer_factory()
+    signer.context = signer.ensure_ctx()
+    chat = SignChatV3(chat_id=123, actions=[ClickKeyboardByTextAction(text="签到")])
+    route_key = signer.get_route_key(123, None)
+    original = SimpleNamespace(id=100, text="A", photo=None, reply_markup=None)
+    trailing = SimpleNamespace(id=200, text="B", photo=None, reply_markup=None)
+    edited = SimpleNamespace(id=100, text="A-edited", photo=None, reply_markup=None)
+    signer.context.chat_messages[route_key][100] = original
+    signer.context.chat_messages[route_key][200] = trailing
+
+    clicked = []
+    original_processed = asyncio.Event()
+
+    async def clicker(action, message):
+        if message is original:
+            original_processed.set()
+            return False
+        if message is edited:
+            clicked.append(message)
+            return True
+        return False
+
+    signer._click_keyboard_by_text = clicker
+
+    task = asyncio.create_task(signer.wait_for(chat, chat.actions[0], timeout=3.0))
+    # 等旧消息确实被处理过一次之后再编辑它，避免依赖固定时序
+    await asyncio.wait_for(original_processed.wait(), timeout=2.0)
+    signer.context.chat_messages[route_key][100] = edited
+    await task
+
+    assert clicked == [edited]
+
+
+@pytest.mark.asyncio
+async def test_on_message_tolerates_messages_without_from_user(signer_factory):
+    """频道原生帖子没有 from_user，日志不能因此抛异常把消息丢掉。"""
+    signer = signer_factory()
+    signer.context = signer.ensure_ctx()
+    route_key = signer.get_route_key(-100123, None)
+    signer.context.sign_chats[route_key].append(
+        SignChatV3(chat_id=-100123, actions=[SendTextAction(text="签到")])
+    )
+    message = SimpleNamespace(
+        id=1,
+        text="频道公告",
+        chat=SimpleNamespace(id=-100123, username="channel_username"),
+        message_thread_id=None,
+        from_user=None,
+        photo=None,
+        reply_markup=None,
+    )
+
+    await signer.on_message(None, message)
+
+    assert signer.context.chat_messages[route_key][1] is message

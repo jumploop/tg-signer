@@ -1,11 +1,16 @@
 """配置校验：字段明细透出 + sign_at cron 合法性。"""
 
 import pytest
+from pydantic import ValidationError
 
 from tg_signer.config import (
+    AutomationConfig,
     FilterConfig,
+    HandlerConfig,
     MessageTriggerConfig,
+    RuleConfig,
     SignConfigV3,
+    TimerTriggerConfig,
     format_validation_error,
     normalize_sign_at,
 )
@@ -235,3 +240,60 @@ def test_filter_numeric_string_chat_id_becomes_int():
     assert FilterConfig(chat_id="-1001234567890").chat_id == -1001234567890
     assert FilterConfig(chat_id="@neo").chat_id == "@neo"
     assert FilterConfig(chat_ids=["1", "@a"]).chat_ids == [1, "@a"]
+
+
+# ---------------------------------------------------------------------------
+# 负数随机秒：运行期会炸 random.randint(0, n)，必须在配置层拦住
+# ---------------------------------------------------------------------------
+
+
+def test_sign_config_v3_rejects_negative_random_seconds():
+    with pytest.raises(ValidationError):
+        SignConfigV3(chats=[], sign_at="0 6 * * *", random_seconds=-1)
+
+
+def test_timer_trigger_rejects_negative_random_seconds():
+    with pytest.raises(ValidationError):
+        TimerTriggerConfig(
+            type="timer",
+            params={"interval_seconds": 60, "random_seconds": -5},
+        )
+
+
+def test_sign_config_v3_accepts_zero_and_positive_random_seconds():
+    assert SignConfigV3(chats=[], sign_at="0 6 * * *").random_seconds == 0
+    assert (
+        SignConfigV3(chats=[], sign_at="0 6 * * *", random_seconds=30).random_seconds
+        == 30
+    )
+
+
+# ---------------------------------------------------------------------------
+# automation：rule id / trigger id 必须唯一，否则 state 桶与 next_run_at 互相覆盖
+# ---------------------------------------------------------------------------
+
+
+def _rule(rule_id: str, triggers=None) -> RuleConfig:
+    return RuleConfig(
+        id=rule_id,
+        triggers=triggers or [MessageTriggerConfig(type="message", params={})],
+        handlers=[HandlerConfig(handler="send_text", params={"text": "x"})],
+    )
+
+
+def test_automation_config_rejects_duplicate_rule_ids():
+    with pytest.raises(ValidationError, match="重复的 rule id"):
+        AutomationConfig(rules=[_rule("dup"), _rule("dup")])
+
+
+def test_automation_config_rejects_duplicate_trigger_ids():
+    triggers = [
+        MessageTriggerConfig(type="message", params={}, id="t1"),
+        MessageTriggerConfig(type="message", params={}, id="t1"),
+    ]
+    with pytest.raises(ValidationError, match="重复的 trigger id"):
+        AutomationConfig(rules=[_rule("r1", triggers)])
+
+
+def test_automation_config_accepts_distinct_ids():
+    AutomationConfig(rules=[_rule("a"), _rule("b")])

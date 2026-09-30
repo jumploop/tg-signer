@@ -22,7 +22,7 @@ from typing import (
 )
 from urllib import parse
 
-from croniter import croniter
+from croniter import CroniterError, croniter
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pyrogram import Client as BaseClient
 from pyrogram import errors, filters
@@ -101,6 +101,23 @@ def readable_message(message: Message):
 
 def _get_message_text(message: Message) -> str:
     return getattr(message, "text", None) or getattr(message, "caption", None) or ""
+
+
+def _message_sender_label(message: Message) -> str:
+    """消息发送者标签,用于日志。
+
+    频道原生帖子、匿名管理员发言、服务消息都可能没有 ``from_user``,直接取
+    ``message.from_user.username`` 会抛 AttributeError 并把这条消息丢掉。
+    """
+    sender = getattr(message, "from_user", None)
+    if sender is not None:
+        return str(sender.username or sender.id)
+    chat = getattr(message, "chat", None)
+    if chat is None:
+        return "未知发送者"
+    if getattr(chat, "username", None):
+        return f"@{chat.username}"
+    return f"chat {getattr(chat, 'id', '?')}"
 
 
 def _normalize_option_text(text: str) -> str:
@@ -231,6 +248,10 @@ _API_LAST_CALL_AT: dict[str, float] = {}
 _API_MIN_INTERVAL_SECONDS = 0.35
 _API_FLOODWAIT_PADDING_SECONDS = 0.5
 _API_MAX_FLOODWAIT_RETRIES = 2
+
+# 一轮签到里所有 chat 都失败时的重试间隔(秒)。不能直接等到下一个 sign_at,
+# 否则一次网络抖动就等同于当天漏签。
+_ALL_FAILED_RETRY_SECONDS = 60
 
 RouteKey = tuple[ChatId, Optional[int]]
 get_timezone = _get_timezone
@@ -1260,9 +1281,13 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 f"sign_at 配置非法,无法计算下次运行时间: {config.sign_at!r}"
             )
 
-        async def sign_once(now: datetime):
-            # now 必须由参数传入而不是闭包捕获:闭包里读到的是外层 while 循环
-            # 每轮重新绑定的同名变量,一旦改成并发调用就会拿到别的时间点。
+        async def sign_once(now: datetime) -> bool:
+            """执行一轮签到,返回本轮是否应视为「今日已完成」。
+
+            now 必须由参数传入而不是闭包捕获:闭包里读到的是外层 while 循环
+            每轮重新绑定的同名变量,一旦改成并发调用就会拿到别的时间点。
+            """
+            succeeded = 0
             for chat in config.chats:
                 route_key = None
                 try:
@@ -1276,17 +1301,68 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     logger.warning(_e, exc_info=True)
                     continue
 
+                succeeded += 1
                 if route_key is not None:
                     self.context.chat_messages[route_key].clear()
                 await asyncio.sleep(config.sign_interval)
-            self.persist_sign_record(sign_record, str(now.date()), now.isoformat())
+
+            if succeeded or not config.chats:
+                self.persist_sign_record(sign_record, str(now.date()), now.isoformat())
+                return True
+            # 所有 chat 都失败时不能记为「今日已签到」:否则当天再也不会重试,
+            # 一次网络抖动就等同于整天漏签。
+            self.log("本轮所有 chat 均签到失败，不写入今日签到记录", level="WARNING")
+            return False
+
+        def today_first_scheduled_time() -> Optional[datetime]:
+            """今天第一个计划签到时刻;今天没有计划时刻时返回 None。
+
+            锚点取「当天 00:00 的前一秒」:croniter 的 ``next()`` 严格晚于锚点,
+            直接锚在 00:00 上会让 ``0 0 * * *`` 这种零点命中被算成明天,于是每天
+            都判定「今日无计划时刻」而永不签到。
+            """
+            day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            anchor = day_start - timedelta(seconds=1)
+            try:
+                first_run: datetime = croniter(sign_at, anchor).next(datetime)
+            except (CroniterError, ValueError) as exc:  # 配置层已校验,这里只兜底
+                self.log(f"无法计算今日计划签到时刻: {exc}", level="WARNING")
+                return None
+            return first_run if first_run.date() == now.date() else None
 
         def need_sign(last_date_str):
             if force_rerun:
                 return True
             if last_date_str not in sign_record:
-                return True
-            _last_sign_at = datetime.fromisoformat(sign_record[last_date_str])
+                # 今天还没有记录时不能无条件立刻签:进程若在计划时刻之前启动,
+                # 立刻签一次、到点又会再签一次(同一天两次)。只有「今天有
+                # 计划时刻、且已经到点」才在本次循环执行(当天补签)。
+                today_scheduled = today_first_scheduled_time()
+                if today_scheduled is None:
+                    # 例如 `0 6 * * 1` 这种非每日 cron:今天不是命中日就不签,
+                    # 否则会退化成「每天都签一次」。
+                    self.log("今日无计划签到时刻，本次循环不签到")
+                    return False
+                if today_scheduled <= now:
+                    return True
+                self.log(f"今日计划签到时刻 {today_scheduled} 未到，等到点后再签")
+                return False
+            raw_last_sign_at = sign_record[last_date_str]
+            try:
+                _last_sign_at = datetime.fromisoformat(raw_last_sign_at)
+            except (TypeError, ValueError):
+                # 记录被手工改坏或格式变更时按「今日已签到」处理:与其因为解析
+                # 异常打死整个 run,不如少发一次;确需强制可用 `run-once`
+                # (它走 force_rerun 分支)。
+                self.log(
+                    f"签到记录时间无法解析，按今日已签到处理: {raw_last_sign_at!r}",
+                    level="WARNING",
+                )
+                return False
+            if _last_sign_at.tzinfo is None:
+                # 兼容历史上写入的 naive 时间戳:否则下面的比较会抛
+                # TypeError(naive vs aware)并中断整个 run。
+                _last_sign_at = _last_sign_at.replace(tzinfo=now.tzinfo)
             self.log(f"上次执行时间: {_last_sign_at}")
             _cron_it = croniter(sign_at, _last_sign_at)
             _next_run: datetime = _cron_it.next(datetime)
@@ -1309,7 +1385,14 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     now_date_str = str(now.date())
                     self.context = self.ensure_ctx()
                     if need_sign(now_date_str):
-                        await sign_once(now)
+                        if not await sign_once(now) and not only_once:
+                            # 全部失败:退避后重试本轮,而不是等到明天的计划时刻。
+                            self.log(
+                                f"{_ALL_FAILED_RETRY_SECONDS}s 后重试本轮签到",
+                                level="WARNING",
+                            )
+                            await asyncio.sleep(_ALL_FAILED_RETRY_SECONDS)
+                            continue
 
             except (OSError, errors.Unauthorized) as e:
                 logger.exception(e)
@@ -1385,13 +1468,13 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
 
     async def on_message(self, client: Client, message: Message):
         self.log(
-            f"收到来自「{message.from_user.username or message.from_user.id}」的消息: {readable_message(message)}"
+            f"收到来自「{_message_sender_label(message)}」的消息: {readable_message(message)}"
         )
         await self._on_message(client, message)
 
     async def on_edited_message(self, client, message: Message):
         self.log(
-            f"收到来自「{message.from_user.username or message.from_user.id}」对消息的更新，消息: {readable_message(message)}"
+            f"收到来自「{_message_sender_label(message)}」对消息的更新，消息: {readable_message(message)}"
         )
         # 避免更新正在处理的消息，等待处理完成
         while (
@@ -1542,20 +1625,20 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         route_key = self.get_runtime_route_key(chat)
         self.context.waiter.add(route_key)
         start = time.perf_counter()
-        last_message = None
+        # 逐条记录「已经处理过的那次对象」,用对象身份判断有没有新内容。
+        # 不能只比对队尾:机器人把较早的一条消息编辑成带键盘的形态时队尾没有
+        # 变化,只看队尾会把这次编辑永久忽略,一直等到超时(签到直接失败)。
+        processed: dict[int, Message] = {}
         while time.perf_counter() - start < timeout:
             await asyncio.sleep(0.3)
             messages_dict = self.context.chat_messages.get(route_key)
             if not messages_dict:
                 continue
             messages = list(messages_dict.values())
-            # 暂无新消息
-            if messages[-1] == last_message:
-                continue
-            last_message = messages[-1]
             for message in messages:
-                if message is None:
+                if message is None or processed.get(message.id) is message:
                     continue
+                processed[message.id] = message
                 self.context.waiting_message = message
                 try:
                     ok = False
@@ -1613,6 +1696,8 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         message_thread_id: Optional[int] = None,
     ):
         now = get_now()
+        # 负数会让 random.randint(0, random_seconds) 抛 ValueError(empty range)。
+        random_seconds = max(int(random_seconds), 0)
         it = croniter(crontab, start_time=now)
         if self.user is None:
             await self.login(print_chat=False)
