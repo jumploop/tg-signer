@@ -9,8 +9,10 @@ from typing import (
     List,
     Literal,
     Optional,
+    Self,
     Tuple,
     Type,
+    TypeAlias,
     Union,
 )
 
@@ -24,7 +26,6 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from typing_extensions import Self, TypeAlias
 
 ChatId: TypeAlias = Union[int, str]
 

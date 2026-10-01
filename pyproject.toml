@@ -25,6 +25,10 @@ dependencies = [
     "openai",
     "croniter",
     "json_repair",
+    # 不能删:ai_tools.py 的 OpenAIConfig 用的是 typing_extensions.TypedDict。
+    # pydantic 在 Python < 3.12 上明确拒绝 typing.TypedDict(PydanticUserError),
+    # 实测 3.11.13 + pydantic 2.13.5 仍会失败 —— 只要最低版本还是 3.11,这就是
+    # 一个必须显式声明的直接依赖(而不是"反正 pydantic 会带进来")。
     "typing-extensions",
     "httpx",
 ]

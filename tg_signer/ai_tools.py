@@ -7,6 +7,12 @@ from typing import TYPE_CHECKING, Optional, Union
 
 import json_repair
 from pydantic import TypeAdapter
+
+# 这里必须用 typing_extensions.TypedDict,不能用 standard library 的
+# typing.TypedDict:pydantic 在 Python < 3.12 上会直接拒绝后者
+# (PydanticUserError: Please use `typing_extensions.TypedDict` instead of
+# `typing.TypedDict` on Python < 3.12)。实测 3.11.13 + pydantic 2.13.5 仍会报错,
+# 3.12/3.13 才放行 —— 所以只要最低支持版本还是 3.11,这个导入就不能"顺手清理"。
 from typing_extensions import Required, TypedDict
 
 if TYPE_CHECKING:
