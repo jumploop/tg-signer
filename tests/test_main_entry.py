@@ -19,7 +19,10 @@ _SUBPROCESS_TEXT_KWARGS = {
     "text": True,
     "encoding": "utf-8",
     "errors": "replace",
-    "timeout": 30,
+    # 导入 tg_signer 会拉起 pyrogram/kurigram，本机单次子进程约 8~9s；机器负荷高
+    # 或杀软扫描新进程时会更慢 —— 30s 曾在并发跑测试时把整个套件拖红（假失败）。
+    # 放宽到 120s：它仍然是「卡死」的守卫，而不是性能断言。
+    "timeout": 120,
 }
 
 
