@@ -12,7 +12,7 @@ This file guides agents/developers collaborating in the `tg-signer` repository. 
   - Optional next steps
 
 ## Current Code Facts
-- Project type: Python 3.10+ CLI tool. The entry command is `tg-signer = tg_signer.__main__:signer`.
+- Project type: Python 3.11+ CLI tool. The entry command is `tg-signer = tg_signer.__main__:signer`.
 - The main capabilities are split into 4 parts:
   - Check-in: `UserSigner` in `tg_signer/core.py`
   - Automation rule engine: `tg_signer/automation/`
@@ -110,7 +110,7 @@ This file guides agents/developers collaborating in the `tg-signer` repository. 
   - `python -m ruff check .`
   - `python -m ruff format .`
   - `python -m pytest -vv tests/`
-- Run `tox` for cross-Python validation when needed (`py310`, `py311`, `py312`).
+- Run `tox` for cross-Python validation when needed (`py311`, `py312`).
 
 ## Change Strategy
 - Automation only: all rule-driven capabilities go into `tg_signer/automation/`. The `monitor` subsystem no longer exists.
