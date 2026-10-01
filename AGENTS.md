@@ -110,7 +110,7 @@ This file guides agents/developers collaborating in the `tg-signer` repository. 
   - `python -m ruff check .`
   - `python -m ruff format .`
   - `python -m pytest -vv tests/`
-- Run `tox` for cross-Python validation when needed (`py311`, `py312`).
+- Run `tox` for cross-Python validation when needed (`py311`, `py312`, `py313`).
 
 ## Change Strategy
 - Automation only: all rule-driven capabilities go into `tg_signer/automation/`. The `monitor` subsystem no longer exists.
