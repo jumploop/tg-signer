@@ -47,9 +47,13 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        # v4 内部跑在 Node 20 上，已被 GitHub 强制迁移到 Node 24 并告警；
+        # v5 起改用 node24（v7 只是 ESM 迁移 + 缓存输出增强，对「只用
+        # node-version」的用法无破坏性变更）。
+        uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          # Node 20 已于 2026-04 EOL；e2e 在本地较新的 Node 上同样通过。
+          node-version: '24'
 
       - name: Install dependencies
         run: npm ci
