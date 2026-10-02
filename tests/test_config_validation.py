@@ -9,11 +9,17 @@ from tg_signer.config import (
     HandlerConfig,
     MessageTriggerConfig,
     RuleConfig,
+    SignChatV3,
     SignConfigV3,
     TimerTriggerConfig,
     format_validation_error,
     normalize_sign_at,
 )
+
+
+def _chat(chat_id=123456789):
+    """一个最小可用的签到 chat（``chats: []`` 已被校验层拒绝）。"""
+    return SignChatV3(chat_id=chat_id, actions=[])
 
 
 @pytest.mark.parametrize(
@@ -280,11 +286,25 @@ def test_timer_trigger_rejects_negative_random_seconds():
 
 
 def test_sign_config_v3_accepts_zero_and_positive_random_seconds():
-    assert SignConfigV3(chats=[], sign_at="0 6 * * *").random_seconds == 0
+    assert SignConfigV3(chats=[_chat()], sign_at="0 6 * * *").random_seconds == 0
     assert (
-        SignConfigV3(chats=[], sign_at="0 6 * * *", random_seconds=30).random_seconds
+        SignConfigV3(
+            chats=[_chat()], sign_at="0 6 * * *", random_seconds=30
+        ).random_seconds
         == 30
     )
+
+
+def test_sign_config_v3_rejects_empty_chats():
+    """``chats: []`` 必须在校验层就被拒绝。
+
+    回归：空列表能通过校验，于是 ``sign_once`` 里
+    ``succeeded or not config.chats`` 走的是「写入今日签到记录并返回成功」
+    这一支 —— 记录页显示今日已签到、run-once 退出 0、当天不再重试，而实际
+    一条签到消息都没发。这是「配置合法、行为静默错乱」。
+    """
+    with pytest.raises(ValidationError, match="chats 不能为空"):
+        SignConfigV3(chats=[], sign_at="0 6 * * *")
 
 
 # ---------------------------------------------------------------------------

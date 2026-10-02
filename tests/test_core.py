@@ -1851,11 +1851,23 @@ async def test_sign_once_persists_the_current_cycle_time(signer_factory, monkeyp
     signer = signer_factory(task_name="cycle_now")
     signer.user = SimpleNamespace(id=123456)
     signer.load_config = lambda _cls: SignConfigV3(
-        chats=[], sign_at="* * * * *", sign_interval=0
+        chats=[SignChatV3(chat_id=1, actions=[SendTextAction(text="签到")])],
+        sign_at="* * * * *",
+        sign_interval=0,
     )
     signer.load_sign_record = lambda: {}
     persisted = []
     signer.persist_sign_record = lambda record, date, at: persisted.append((date, at))
+
+    async def fake_sign_a_chat(chat):
+        return True
+
+    signer.sign_a_chat = fake_sign_a_chat
+
+    async def fake_resolve(chat):
+        return chat.chat_id
+
+    signer.resolve_chat_route_key = fake_resolve
 
     frozen = datetime(2026, 9, 29, 6, 0, tzinfo=timezone.utc)
     monkeypatch.setattr(core, "get_now", lambda: frozen)
@@ -2553,6 +2565,43 @@ async def test_run_once_reports_failure_when_action_chain_incomplete(
 
     assert await signer.run_once(0) is False
     assert signer.sign_record_store.load_records("run_once_incomplete", "42") == {}
+
+
+# ---------------------------------------------------------------------------
+# 回归：没有配置任何 chat 时，绝不能记成「今日已签到」
+#   旧实现是 `if succeeded or not config.chats:` —— 空列表让 `not config.chats`
+#   为真，于是直接写记录并返回成功。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_empty_chats_never_persists_a_signed_record(monkeypatch, signer_factory):
+    """回归：``chats: []`` 曾被当成「今日已完成」写入签到记录。
+
+    用户可见后果：记录页显示今日已签到、``run-once`` 退出 0、当天不再重试，
+    而实际上**一条签到消息都没发**。
+
+    现在配置层已拒绝空 ``chats``（``SignConfigV3._check_has_chats``），这里绕过
+    校验直接构造对象，验证 ``sign_once`` 这一层仍有兜底。
+    """
+    import tg_signer.core as core
+
+    patch_client_methods(monkeypatch, core)
+
+    signer = signer_factory(task_name="empty_chats")
+    signer.user = SimpleNamespace(id=42)
+    # 用 model_construct 绕过校验，专门测运行期兜底
+    config = SignConfigV3.model_construct(
+        chats=[], sign_at="* * * * *", sign_interval=0, random_seconds=0
+    )
+    signer.load_config = lambda _cls: config
+    signer.load_sign_record = lambda: {}
+    monkeypatch.setattr(signer, "login", _noop_login())
+
+    assert await signer.run_once(0) is False, "空 chats 被当成了签到成功"
+    assert signer.sign_record_store.load_records("empty_chats", "42") == {}, (
+        "空 chats 竟然写入了签到记录"
+    )
 
 
 # ---------------------------------------------------------------------------

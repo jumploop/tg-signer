@@ -1402,6 +1402,18 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             now 必须由参数传入而不是闭包捕获:闭包里读到的是外层 while 循环
             每轮重新绑定的同名变量,一旦改成并发调用就会拿到别的时间点。
             """
+            if not config.chats:
+                # 配置层已经拒绝空 chats（SignConfigV3._check_has_chats），这里是
+                # 兜底：绝不能把「没有 chat 可签」记成「今日已签到」。
+                # 原来这一支是 `succeeded or not config.chats`，空列表会让它直接
+                # 写记录并返回 True —— 记录页显示今日已签到、run-once 退出 0、
+                # 当天不再重试，而实际上一条消息都没发。
+                self.log(
+                    "配置未包含任何 chat，本轮不签到也不写入今日签到记录",
+                    level="ERROR",
+                )
+                return False
+
             # 必须先把本轮**所有** chat 的路由登记进 sign_chats,再开始逐个处理。
             # 原来边处理边登记时,sign_chats 里只会有「正在处理的那个 chat」:
             # 在 A 群等待键盘的 30s 里,B 群机器人推来的消息会因为 sign_chats
@@ -1442,7 +1454,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 self.context.chat_messages[route_key].clear()
                 await asyncio.sleep(config.sign_interval)
 
-            if succeeded or not config.chats:
+            if succeeded:
                 self.persist_sign_record(sign_record, str(now.date()), now.isoformat())
                 return True
             # 所有 chat 都失败时不能记为「今日已签到」:否则当天再也不会重试,

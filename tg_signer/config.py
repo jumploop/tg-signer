@@ -527,6 +527,25 @@ class SignConfigV3(BaseJSONConfig):
         normalize_sign_at(value)
         return value
 
+    @model_validator(mode="after")
+    def _check_has_chats(self) -> Self:
+        """``chats`` 不能为空。
+
+        一个没有配置任何 chat 的签到任务不会发出任何签到消息，但
+        ``sign_once`` 里的 ``succeeded or not config.chats`` 仍会走
+        「写入今日签到记录并返回成功」这一支 —— 于是记录页显示今日已签到、
+        ``run-once`` 退出 0、当天不再重试，而实际上什么都没发生。
+        这属于「配置合法、行为静默错乱」，与 ``AutomationConfig`` 拒绝重复
+        rule/trigger id 是同一类问题，所以在校验层直接拦住并说明原因。
+        """
+        if not self.chats:
+            raise ValueError(
+                "chats 不能为空：一个没有配置任何 chat 的签到任务不会发送任何"
+                "签到消息，但会被记成「今日已签到」且当天不再重试。"
+                "请至少配置一个要签到的群/频道"
+            )
+        return self
+
     @property
     def requires_ai(self) -> bool:
         return any(chat.requires_ai for chat in self.chats)

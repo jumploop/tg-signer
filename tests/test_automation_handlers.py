@@ -88,6 +88,36 @@ async def test_extract_regex_sets_var(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_extract_regex_default_var_is_referenceable(tmp_path):
+    """未指定 ``var`` 时写入的名字必须能被模板引用。
+
+    回归：旧实现退化成 ``var = str(group)``，也就是写进一个名为 ``"1"`` 的变量。
+    而 ``{1}`` 在 ``str.format`` 里是**位置字段**而不是变量名，
+    ``render_template`` 会直接抛 ``TemplateRenderError``（Replacement index 1 out
+    of range）。于是 extract_regex 既没报错也没产出任何可用结果：规则链照常往下
+    走，只是用户写下的捕获结果永远用不上，state.json 里还多出一个叫 ``"1"``
+    的垃圾键。
+    """
+    from tg_signer.automation import handlers as handlers_mod
+
+    ctx = _render_ctx(tmp_path)
+    recorded = []
+    ctx.log = lambda msg, level="INFO": recorded.append((level, msg))
+
+    result = await extract_regex(
+        _render_event("cooldown 42"), ctx, {"pattern": r"(\d+)"}
+    )
+
+    assert result == "continue"
+    assert "1" not in ctx.vars, "仍写入了无法引用的数字变量名"
+    var = handlers_mod._EXTRACT_REGEX_DEFAULT_VAR
+    assert ctx.vars[var] == "42"
+    # 这个名字必须真的能在模板里取到（这正是旧行为拿不到的部分）
+    assert render_template(f"剩 {{{var}}} 分钟", _render_event(), ctx) == "剩 42 分钟"
+    assert any(level == "WARNING" for level, _msg in recorded)
+
+
+@pytest.mark.asyncio
 async def test_schedule_next_writes_state(tmp_path):
     """schedule_next 应写入 trigger 的 next_run_at。"""
     state = RuleStateStore(tmp_path / "state.json", logging.getLogger("test"))

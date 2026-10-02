@@ -452,6 +452,11 @@ async def reply_text(
     return "continue"
 
 
+# extract_regex 未显式指定 var 时使用的默认变量名。必须是一个能写成 {name}
+# 引用的标识符 —— 数字开头的名字在 str.format 里是位置字段，永远引用不到。
+_EXTRACT_REGEX_DEFAULT_VAR = "extracted"
+
+
 async def extract_regex(
     event: Event, ctx: AutomationContext, params: Dict[str, Any]
 ) -> HandlerResult:
@@ -478,7 +483,17 @@ async def extract_regex(
     except Exception:  # noqa: BLE001
         value = match.group(0)
     if not var:
-        var = str(group)
+        # 原来这里退化成 var = str(group)，也就是把结果写进名为 "1" 的变量 ——
+        # 而 "{1}" 在 str.format 里是**位置字段**（不是变量名），没有任何方式能
+        # 引用到它。extract_regex 于是既没报错也没产出可用结果：规则链照常往下
+        # 走，只是用户写下的捕获结果永远用不上。这个默认值是纯损失。
+        # 现改为一个能被模板引用的名字，并告警让用户知道自己该显式写 var。
+        var = _EXTRACT_REGEX_DEFAULT_VAR
+        ctx.log(
+            f"extract_regex: 未指定 var，结果写入默认变量 {var!r}"
+            "（如需其它名字请显式设置 var）",
+            level="WARNING",
+        )
     ctx.vars[var] = value
     ctx.log(f"extract_regex: 写入变量 {var}={value}", level="DEBUG")
     return "continue"
