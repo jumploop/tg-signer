@@ -201,6 +201,10 @@ tg-signer login --from-folder 2
 
 如果你需要按特定时区计算下次执行时间，直接在运行前设置 `TZ` 即可。
 
+> Windows 上时区库由 `tzdata` 这个 pip 包提供（安装本项目时会自动带上）；
+> 如果运行环境无法确认 `TZ` 是否生效，可执行 `python -c "from tg_signer.utils import get_timezone; print(get_timezone())"`
+> 确认返回的是预期时区而不是 UTC —— 时区被忽略时定时任务会静默整体偏移。
+
 ### 获取群组话题 ID
 
 ```sh

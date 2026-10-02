@@ -215,6 +215,13 @@ time zone in the following order:
 If you need schedules to follow a specific time zone, set `TZ` before starting
 the process.
 
+> On Windows the time zone database comes from the `tzdata` pip package (installed
+> automatically with this project). If you cannot confirm that `TZ` is being
+> honoured in your environment, run
+> `python -c "from tg_signer.utils import get_timezone; print(get_timezone())"`
+> and check that it prints the expected zone rather than UTC — a silently ignored
+> time zone shifts every scheduled task.
+
 ### Get Group Topic IDs
 
 ```sh
