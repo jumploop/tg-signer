@@ -2149,7 +2149,12 @@ async def test_normal_run_does_not_record_when_every_chat_fails(
 async def test_normal_run_records_when_at_least_one_chat_succeeds(
     signer_factory, monkeypatch
 ):
-    """部分成功仍要落库，否则重试会给已经成功的 chat 重复发消息。"""
+    """部分成功**不**落库：失败的 chat 必须还有重试机会。
+
+    回归：旧实现是 ``if succeeded`` —— 3 个群里成功 1 个就把整天标记为已完成，
+    记录里写「今日已签到」，而另外 2 个 chat 当天再也不会被重试（``need_sign``
+    因为已有记录直接返回 False）。
+    """
     frozen = datetime(2026, 9, 30, 6, 0, tzinfo=timezone(timedelta(hours=8)))
     chats = [
         SignChatV3(chat_id=1, actions=[SendTextAction(text="签到")]),
@@ -2171,9 +2176,138 @@ async def test_normal_run_records_when_at_least_one_chat_succeeds(
 
     signer.sign_a_chat = flaky_sign_a_chat
 
-    await signer.normal_run(only_once=True)
+    result = await signer.normal_run(only_once=True)
 
+    assert result is False, "部分成功被当成了今日已完成"
+    assert "2026-09-30" not in signer.load_sign_record(), (
+        "部分成功却写入了今日签到记录，失败的 chat 当天再也不会重试"
+    )
+
+
+@pytest.mark.asyncio
+async def test_normal_run_retries_only_failed_chats_then_records(
+    signer_factory, monkeypatch
+):
+    """第二轮只重试失败的 chat；全部成功后补写今日记录。
+
+    这是「部分成功不落库」的另一半：不能因为重试就把已经签到的 chat 重签一遍
+    （每隔 60 秒往已签到的群里再发一次签到消息）。
+    """
+    import tg_signer.core as core
+
+    frozen = datetime(2026, 9, 30, 6, 0, tzinfo=timezone(timedelta(hours=8)))
+    chats = [
+        SignChatV3(chat_id=1, actions=[SendTextAction(text="签到")]),
+        SignChatV3(chat_id=2, actions=[SendTextAction(text="签到")]),
+    ]
+    signer = _signer_for_run(
+        signer_factory,
+        monkeypatch,
+        task_name="partial_retry",
+        # 用每日 cron：全部成功后的「等到下次计划时刻」会睡 ~24h，
+        # 与部分失败的 60s 重试退避区分得开。
+        sign_at="0 6 * * *",
+        now=frozen,
+        chats=chats,
+    )
+
+    attempts: list[int] = []
+
+    async def flaky_sign_a_chat(chat):
+        attempts.append(chat.chat_id)
+        # 只第一次失败，之后成功 —— 模拟「第一次网络抖动，后续恢复」
+        if chat.chat_id == 2 and attempts.count(2) == 1:
+            raise RuntimeError("第二个 chat 暂时失败")
+        return True
+
+    signer.sign_a_chat = flaky_sign_a_chat
+
+    real_sleep = core.asyncio.sleep
+
+    class _StopLoop(Exception):
+        pass
+
+    async def fake_sleep(seconds):
+        seconds = seconds or 0
+        if seconds > 1000:
+            # 「等到下次计划时刻」的长睡眠：说明本轮已判定完成，跳出循环。
+            raise _StopLoop
+        await real_sleep(0)
+
+    monkeypatch.setattr(core.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(_StopLoop):
+        await signer.normal_run()
+
+    # 第一轮 [1,2]（2 失败）→ 60s 后第二轮只重试 [2]（成功）
+    assert attempts == [1, 2, 2], f"重试应只针对失败的 chat，实际尝试序列为 {attempts}"
     assert "2026-09-30" in signer.load_sign_record()
+
+
+@pytest.mark.asyncio
+async def test_normal_run_gives_up_after_partial_retry_limit(
+    signer_factory, monkeypatch
+):
+    """部分 chat 连续失败到上限后，必须写入记录并报 ERROR 点名。
+
+    否则 run 会每 60 秒空转到明天，期间还朝那个永久失败的群反复重发签到消息。
+    """
+    import tg_signer.core as core
+
+    frozen = datetime(2026, 9, 30, 6, 0, tzinfo=timezone(timedelta(hours=8)))
+    chats = [
+        SignChatV3(chat_id=1, actions=[SendTextAction(text="签到")]),
+        SignChatV3(chat_id=2, actions=[SendTextAction(text="签到")]),
+    ]
+    signer = _signer_for_run(
+        signer_factory,
+        monkeypatch,
+        task_name="partial_give_up",
+        sign_at="0 6 * * *",
+        now=frozen,
+        chats=chats,
+    )
+
+    errors: list[str] = []
+    signer.log = lambda msg, level="INFO": (
+        errors.append(msg) if level == "ERROR" else None
+    )
+    attempts: list[int] = []
+
+    async def flaky_sign_a_chat(chat):
+        attempts.append(chat.chat_id)
+        if chat.chat_id == 2:
+            raise RuntimeError("永久失败：机器人已退群")
+        return True
+
+    signer.sign_a_chat = flaky_sign_a_chat
+    monkeypatch.setattr(core, "_MAX_PARTIAL_RETRIES", 2)
+
+    real_sleep = core.asyncio.sleep
+
+    class _StopLoop(Exception):
+        pass
+
+    async def fake_sleep(seconds):
+        if (seconds or 0) > 1000:
+            # 到上限后 sign_once 返回 True，normal_run 进入「等到下次计划时刻」
+            # 的 ~24h 长睡眠 —— 在这里跳出。
+            raise _StopLoop
+        await real_sleep(0)
+
+    monkeypatch.setattr(core.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(_StopLoop):
+        await signer.normal_run()
+
+    assert "2026-09-30" in signer.load_sign_record(), (
+        "达到重试上限后仍未写入记录，run 会空转到明天"
+    )
+    assert errors and any("2" in msg for msg in errors), (
+        f"没有用 ERROR 点名失败的 chat: {errors}"
+    )
+    # 上限为 2：第一轮 + 2 轮重试 = chat 2 共尝试 3 次，之后不再重试
+    assert attempts.count(2) == 3, f"重试次数超出上限: {attempts}"
 
 
 @pytest.mark.asyncio

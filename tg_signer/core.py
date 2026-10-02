@@ -13,6 +13,7 @@ from typing import (
     Awaitable,
     BinaryIO,
     Callable,
+    Dict,
     Generic,
     List,
     Optional,
@@ -253,6 +254,13 @@ _API_MAX_FLOODWAIT_RETRIES = 2
 # 一轮签到里所有 chat 都失败时的重试间隔(秒)。不能直接等到下一个 sign_at,
 # 否则一次网络抖动就等同于当天漏签。
 _ALL_FAILED_RETRY_SECONDS = 60
+
+# 「部分 chat 失败」时的最大重试轮数。超过就写入今日签到记录并报 ERROR,
+# 点名是哪几个 chat 没签上。
+# 必须设上限:否则某个 chat 永久失败(机器人已退群 / 账号被移除)会让 run 每
+# 60 秒重试一次、直到明天,期间还朝那个群反复重发签到消息。
+# 不影响「全部 chat 都失败」——那种情况本来就应该一直重试到签上为止。
+_MAX_PARTIAL_RETRIES = 10
 
 RouteKey = tuple[ChatId, Optional[int]]
 get_timezone = _get_timezone
@@ -1401,7 +1409,13 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
 
             now 必须由参数传入而不是闭包捕获:闭包里读到的是外层 while 循环
             每轮重新绑定的同名变量,一旦改成并发调用就会拿到别的时间点。
+
+            部分成功的处理:``signed_route_keys`` 记住本进程内**已经签到成功**的
+            chat,重试时跳过它们,只重试失败的;只有全部 chat 都成功了才写入今日
+            签到记录。旧实现是 ``if succeeded`` —— 3 个群里成功 1 个就把整天
+            标记为已完成,另外 2 个当天再也不会重试。
             """
+            sign_date = str(now.date())
             if not config.chats:
                 # 配置层已经拒绝空 chats（SignConfigV3._check_has_chats），这里是
                 # 兜底：绝不能把「没有 chat 可签」记成「今日已签到」。
@@ -1414,6 +1428,13 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 )
                 return False
 
+            # 只保留当天的进度,避免长跑进程无限增长（跨天后重新计数）。
+            if set(signed_route_keys) != {sign_date}:
+                signed_route_keys.clear()
+                partial_rounds.clear()
+                signed_route_keys[sign_date] = set()
+            done: set = signed_route_keys.setdefault(sign_date, set())
+
             # 必须先把本轮**所有** chat 的路由登记进 sign_chats,再开始逐个处理。
             # 原来边处理边登记时,sign_chats 里只会有「正在处理的那个 chat」:
             # 在 A 群等待键盘的 30s 里,B 群机器人推来的消息会因为 sign_chats
@@ -1422,6 +1443,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             # 有第二次机会)。等真正轮到 B 时那条消息早就没了,B 必然等满
             # timeout 签到失败,而日志里只留一行「忽略意料之外的聊天」。
             resolved: List[Tuple[SignChatV3, RouteKey]] = []
+            failed: List[SignChatV3] = []
             for chat in config.chats:
                 try:
                     resolved.append((chat, await self.resolve_chat_route_key(chat)))
@@ -1431,36 +1453,73 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                         f"解析 chat 路由失败: {_e} \nchat: \n{chat}", level="WARNING"
                     )
                     logger.warning(_e, exc_info=True)
+                    failed.append(chat)
             for _chat, route_key in resolved:
                 self.context.sign_chats[route_key].append(_chat)
 
             succeeded = 0
             for chat, route_key in resolved:
+                if route_key in done:
+                    # 本进程内这个 chat 今天已经签到成功了,重试时不再重复签
+                    # （部分成功场景下避免每隔 60s 就往已签到的群里再发一次）。
+                    self.log(f"该 chat 今日已签到成功，跳过: {chat}", level="DEBUG")
+                    succeeded += 1
+                    continue
                 try:
                     if not await self.sign_a_chat(chat):
                         # 动作链没走完（机器人未回复 / 点击被拒 / 超时）。
                         # 以前这里只要不抛异常就算成功，于是「按钮从没被点到」
                         # 也会写入今日签到记录、run-once 退出 0，当天不再重试。
                         self.log(f"签到未完成: \nchat: \n{chat}", level="WARNING")
+                        failed.append(chat)
                         continue
                 except Exception as _e:  # noqa: BLE001
                     # 单个 chat 的失败(含大模型返回异常、动作链抛错)只跳过这个
                     # chat;不能让它逃逸出 normal_run 把整个签到任务打死。
                     self.log(f"签到失败: {_e} \nchat: \n{chat}", level="WARNING")
                     logger.warning(_e, exc_info=True)
+                    failed.append(chat)
                     continue
 
                 succeeded += 1
+                done.add(route_key)
                 self.context.chat_messages[route_key].clear()
                 await asyncio.sleep(config.sign_interval)
 
-            if succeeded:
-                self.persist_sign_record(sign_record, str(now.date()), now.isoformat())
+            # 只要还有 chat 没签到成功，就**不**写今日签到记录：记录一落库
+            # need_sign 当天就不会再进这里，失败的 chat 也就永远没有第二次机会
+            # （旧实现是 `if succeeded`，3 个群成功 1 个就标记整天完成）。
+            if not failed:
+                self.persist_sign_record(sign_record, sign_date, now.isoformat())
                 return True
-            # 所有 chat 都失败时不能记为「今日已签到」:否则当天再也不会重试,
-            # 一次网络抖动就等同于整天漏签。
-            self.log("本轮所有 chat 均签到失败，不写入今日签到记录", level="WARNING")
-            return False
+
+            rounds = partial_rounds.get(sign_date, 0) + 1
+            partial_rounds[sign_date] = rounds
+            names = ", ".join(str(getattr(c, "chat_id", c)) for c in failed)
+            if not succeeded:
+                # 一个都没成功：无限重试是有意义的（旧行为就是这样），
+                # 不受部分成功的重试上限约束。
+                self.log(
+                    f"本轮所有 chat 均签到失败，不写入今日签到记录（{len(failed)} 个）",
+                    level="WARNING",
+                )
+                return False
+            if rounds <= _MAX_PARTIAL_RETRIES:
+                self.log(
+                    f"部分 chat 未签到成功（第 {rounds}/{_MAX_PARTIAL_RETRIES} 轮重试）: "
+                    f"{names}；本轮不写入今日签到记录，稍后只重试这些",
+                    level="WARNING",
+                )
+                return False
+            # 重试用尽：仍然写入记录，否则 run 会每 60 秒空转到明天，而每次重试
+            # 都会朝这些群重发签到消息。写之前必须把没成功的 chat 明确说出来。
+            self.log(
+                f"部分 chat 连续 {_MAX_PARTIAL_RETRIES} 轮未签到成功: {names}；"
+                "已写入今日签到记录以避免无限重试（这些 chat 需要手工检查）",
+                level="ERROR",
+            )
+            self.persist_sign_record(sign_record, sign_date, now.isoformat())
+            return True
 
         def today_first_scheduled_time() -> Optional[datetime]:
             """今天第一个计划签到时刻;今天没有计划时刻时返回 None。
@@ -1525,6 +1584,10 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             MessageHandler(self.on_message, filters.chat(chat_ids)),
             EditedMessageHandler(self.on_edited_message, filters.chat(chat_ids)),
         ]
+        # 签到进度按天记录：{日期: 本进程内已签到成功的 chat 路由}，
+        # 以及 {日期: 部分失败的重试轮数}。见 sign_once。
+        signed_route_keys: Dict[str, set] = {}
+        partial_rounds: Dict[str, int] = {}
 
         while True:
             try:
