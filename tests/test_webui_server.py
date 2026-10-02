@@ -13,6 +13,9 @@ import json
 import logging
 import pathlib
 import re
+import sys
+import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -969,3 +972,268 @@ def test_logout_existing_account_still_reports_ok(client, monkeypatch, tmp_path)
     assert resp.status_code == 200, resp.text
     assert resp.json()["ok"] is True
     assert "已登出" in resp.json()["message"]
+
+
+# ---------------------------------------------------------------------------
+# 切换工作目录这条路径的回归
+#
+# POST /api/state 是同步端点（跑在 Starlette 线程池里，两个请求可以真的并发），
+# 而且它一改，全服务都跟着换目录：配置读写、任务启停、日志、账号登录会话全部按
+# ``state.workdir`` 解析。下面的用例逐个钉住这条路径上曾经悄悄失守的地方。
+# ---------------------------------------------------------------------------
+
+
+class _FakeLoginSession:
+    """最小登录会话替身：``close_all_login_sessions`` 只需要能关闭它。
+
+    ``created_at`` 故意取「刚刚」—— 这正是「发验证码 → 切目录 → 粘贴验证码」
+    这条最常见流程里会话的年龄。
+    """
+
+    def __init__(self, name: str) -> None:
+        self.account = name
+        self.created_at = time.monotonic()
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+        with server.account_mod._LOGIN_SESSIONS_LOCK:
+            if server.account_mod.LOGIN_SESSIONS.get(self.account) is self:
+                server.account_mod.LOGIN_SESSIONS.pop(self.account, None)
+
+
+@pytest.fixture()
+def clean_login_sessions():
+    """登录会话注册表是模块级全局状态，用例前后都要清干净。"""
+
+    def _clear() -> None:
+        with server.account_mod._LOGIN_SESSIONS_LOCK:
+            server.account_mod.LOGIN_SESSIONS.clear()
+
+    _clear()
+    yield
+    _clear()
+
+
+def test_switch_workdir_closes_live_login_sessions(
+    client, tmp_path, clean_login_sessions
+):
+    """切换工作目录必须回收**全部**登录会话，而不只是过了 TTL 的那些。
+
+    回归：``set_state`` 只调 ``prune_login_sessions()``，而它只回收
+    ``LOGIN_SESSION_TTL_SECONDS``（600s）之前的会话。可登录会话在构造时就把
+    workdir 绑死了（``_AccountLoginSession.__init__``），于是「发验证码 → 切目录
+    → 粘贴验证码」这条最常见的路径里，会话只有几秒大、活过了切换；
+    complete-login 随后把 ``.session``、``users/<id>/`` 缓存和
+    ``webui_accounts.json`` 全写进刚切走的旧目录，并如实返回「登录成功」——
+    而当前目录里这个账号根本不存在，用户也无从找回。
+    """
+    session = _FakeLoginSession("acc")
+    with server.account_mod._LOGIN_SESSIONS_LOCK:
+        server.account_mod.LOGIN_SESSIONS["acc"] = session
+    # 前置条件：这个会话远未到 TTL，按 TTL 回收抓不到它。
+    assert server.account_mod.prune_login_sessions() == []
+
+    resp = client.post("/api/state", json={"workdir": str(tmp_path / "other")})
+    assert resp.status_code == 200, resp.json()
+
+    assert session.close_calls == 1, "切换目录后登录会话仍然活着"
+    with server.account_mod._LOGIN_SESSIONS_LOCK:
+        assert "acc" not in server.account_mod.LOGIN_SESSIONS
+
+
+def test_concurrent_state_switch_cannot_leave_a_stale_workdir(
+    client, tmp_path, monkeypatch
+):
+    """并发切换必须整体互斥：服务端目录不能和「最后一次成功响应」对不上。
+
+    回归：``set_state`` 是对全局 ``state`` 的非原子读-改-写，回滚也只会撤销
+    **自己那次**的快照。两个 POST /api/state 真正并发时可以交错成：
+
+        W1 --A 切 W2--> 重绑日志失败 …… --B 切 W3 成功并已把 W3 返回前端-->
+        …… A 回滚到自己的快照 W1
+
+    于是前端显示 W3，服务端干的是 W1：之后所有配置保存、任务启动、日志读取、
+    账号会话都落在错误目录，而且**没有任何报错**。
+    """
+    workdir_2 = tmp_path / "two"
+    workdir_3 = tmp_path / "three"
+
+    real_setup = server.data_mod._setup_webui_logger
+    a_parked = threading.Event()  # A 已切到 W2、卡在「重绑日志」这一步上
+    b_done = threading.Event()  # B 已经跑完（成功切换并返回）
+    results: dict = {}
+    errors: list = []
+
+    def fake_setup(workdir):
+        if pathlib.Path(workdir).resolve() == workdir_2.resolve():
+            # 模拟「切到新目录后日志重绑失败」。这里等 B 是为了让**旧实现**的
+            # 交错必然发生；有了 _STATE_SWITCH_LOCK，B 根本进不来，只会超时。
+            a_parked.set()
+            b_done.wait(timeout=0.05)
+            raise OSError("模拟磁盘故障")
+        return real_setup(workdir)
+
+    monkeypatch.setattr(server.data_mod, "_setup_webui_logger", fake_setup)
+
+    def switch(key, target):
+        try:
+            results[key] = client.post("/api/state", json={"workdir": str(target)})
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(f"{key}: {exc!r}")
+
+    a = threading.Thread(target=switch, args=("a", workdir_2))
+    a.start()
+    assert a_parked.wait(timeout=10), "A 没有走到被模拟的失败点"
+
+    b = threading.Thread(target=switch, args=("b", workdir_3))
+    b.start()
+    a.join(timeout=30)
+    b.join(timeout=30)
+    assert not a.is_alive() and not b.is_alive(), "请求没有在超时内结束"
+    assert errors == [], f"请求本身失败了: {errors}"
+
+    assert results["a"].status_code == 400, results["a"].json()
+    assert results["b"].status_code == 200, results["b"].json()
+
+    # B 的响应告诉前端「现在是 W3」，服务端就必须真的在 W3 上服务。
+    told = results["b"].json()["workdir"]
+    live = client.get("/api/state").json()
+    assert told == str(workdir_3), told
+    assert live["workdir"] == told, "服务端目录与最后一次成功响应不一致"
+    assert pathlib.Path(live["log_path"]) == workdir_3 / "logs" / data_mod.LOG_FILE_NAME
+
+
+class _AliveProc:
+    """``poll()`` 恒为 None 的假子进程：始终「在运行」。"""
+
+    pid = 4242
+
+    def poll(self):
+        return None
+
+
+def test_run_status_hides_processes_from_other_workdirs(client, tmp_path):
+    """「运行中」列表只能包含**当前目录**的进程。
+
+    回归：``run_status`` 调 ``running_tasks()`` / ``running_task_names()`` 时不带
+    workdir，把注册表里所有目录的进程都列了出来；而 ``run_stop`` 用的是
+    ``state.workdir`` 去解析 key。于是切换目录后，旧目录里仍在跑的任务照样显示
+    「运行中」，用户点那一行的「停止」只会收到一句「未在运行」—— 按钮全废。
+    """
+    key_here = server.runner_mod.process_key("signer", "acc_here", tmp_path)
+    key_elsewhere = server.runner_mod.process_key(
+        "signer", "acc_elsewhere", tmp_path / "other"
+    )
+    with server.runner_mod._STATE_LOCK:
+        server.runner_mod._PROCESSES[key_here] = _AliveProc()
+        server.runner_mod._TASK_NAMES[key_here] = ["task_here"]
+        server.runner_mod._PROCESSES[key_elsewhere] = _AliveProc()
+        server.runner_mod._TASK_NAMES[key_elsewhere] = ["task_elsewhere"]
+    try:
+        payload = client.get("/api/run").json()
+        assert payload["tasks"] == {"signer:acc_here": True}
+        assert payload["task_names"] == {"signer:acc_here": ["task_here"]}
+
+        # 旧目录那一行不该出现；而且即便手工提交它的停止请求，也确实是「未在运行」
+        # —— 这正是「显示运行中、按钮点了没反应」时用户看到的组合。
+        stop = client.post(
+            "/api/run/stop", json={"kind": "signer", "account": "acc_elsewhere"}
+        )
+        assert stop.json()["ok"] is False
+        assert "未在运行" in stop.json()["message"]
+    finally:
+        with server.runner_mod._STATE_LOCK:
+            for key in (key_here, key_elsewhere):
+                server.runner_mod._PROCESSES.pop(key, None)
+                server.runner_mod._TASK_NAMES.pop(key, None)
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="依赖 Windows 对已打开文件句柄的删除锁定"
+)
+def test_delete_config_reports_failure_instead_of_faked_success(client, tmp_path):
+    """配置删不掉时必须报错，不能回一句 ``{"ok": true}``。
+
+    回归：数据层用 ``shutil.rmtree(..., ignore_errors=True)``。Windows 上只要
+    目录里有文件被别的句柄占着（另一个请求正开着它、编辑器、tail、杀软……），
+    删除就会失败，却被静默吞掉，接口照样返回 ok=true —— 前端弹「已删除」，一
+    刷新配置又回来了；用户以为配置已被销毁，实际一点没动。
+    """
+    saved = client.post("/api/configs/signer/demo", json=SIGNER_PAYLOAD)
+    assert saved.status_code == 200, saved.text
+    config_file = tmp_path / "signs" / "demo" / "config.json"
+
+    with open(config_file, "rb"):  # 占住文件 → 删不掉
+        resp = client.delete("/api/configs/signer/demo")
+
+    assert resp.status_code != 200, f"删不掉却回报成功: {resp.text}"
+    assert resp.json().get("ok") is not True
+    assert config_file.is_file(), "删除失败却把配置弄丢了"
+    assert client.get("/api/configs/signer").json()["names"] == ["demo"]
+
+
+def test_interactive_api_docs_are_not_served(client, monkeypatch):
+    """``/docs``、``/redoc``、``/openapi.json`` 必须不对外提供。
+
+    FastAPI 默认无条件挂这三条路由，而它们**不挂** require_auth：设了访问码 +
+    ``--host 0.0.0.0`` 时，同网段任何人不用任何凭据就能拿到完整的接口地图
+    （全部端点的路径、参数与作用），而 ``/openapi.json`` 里连 Bearer 认证方案都
+    没声明，那张图还是错的。
+    """
+    monkeypatch.setenv(server.AUTH_CODE_ENV, "secret123")
+
+    registered = {route.path for route in server.app.routes}
+    assert not {"/docs", "/redoc", "/openapi.json"} & registered, "仍注册着接口地图路由"
+
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        resp = client.get(path)
+        assert resp.status_code == 404, f"{path} 仍然对外提供: {resp.status_code}"
+        assert "/api/" not in resp.text, f"{path} 泄露了接口地图"
+
+
+@pytest.fixture(autouse=True)
+def reset_auth_login_throttle(monkeypatch):
+    """登录限速表是模块级全局状态，且默认最小间隔是 1.0s。
+
+    用例前后清空并把间隔压到测试值：否则本文件里「连续 5 次错误登录」的既有用例
+    会实打实睡掉 4 秒，上一个用例残留的记录还会继续拖慢下一个。
+    """
+
+    def _clear() -> None:
+        with server._AUTH_LOGIN_LOCK:
+            server._AUTH_LOGIN_LAST.clear()
+
+    _clear()
+    monkeypatch.setattr(server, "_AUTH_LOGIN_MIN_INTERVAL", 0.01)
+    yield
+    _clear()
+
+
+def test_auth_login_throttles_repeated_guesses_of_the_same_code(
+    client, monkeypatch, reset_auth_storage
+):
+    """重复猜测**同一个**码必须被最小间隔限速。
+
+    回归：计数式锁定（「连错 N 次锁 M 秒」）对在线猜解几乎无效 —— 每个请求都要
+    先比对、再判定锁定，所以正确的那个猜测无论锁定期内还是锁定期外都能通过；
+    攻击者以行速率持续试探，任何一个正确的都被接受（4 位码约 1 万次里总有）。
+    现在登录端点对「同一个提交的码」强制 ``_AUTH_LOGIN_MIN_INTERVAL`` 的最小
+    间隔，把在线猜解压到每秒一次；已经认证的客户端不会再走这个端点，正常使用
+    不受影响。
+    """
+    monkeypatch.setenv(server.AUTH_CODE_ENV, "secret123")
+    interval = 0.05
+    monkeypatch.setattr(server, "_AUTH_LOGIN_MIN_INTERVAL", interval)
+
+    started = time.perf_counter()
+    for _ in range(3):
+        resp = client.post("/api/auth/login", json={"code": "guess"})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["ok"] is False
+    elapsed = time.perf_counter() - started
+
+    # 第一次没有上次记录可等（last 缺省 0.0），后两次各必须等满一个间隔。
+    assert elapsed >= 2 * interval * 0.9, (
+        f"连续猜测同一码未被限速，3 次只耗时 {elapsed:.3f}s"
+    )

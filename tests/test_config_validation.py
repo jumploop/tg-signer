@@ -30,6 +30,25 @@ def test_normalize_sign_at_accepts_time_and_cron(value, expected):
     assert normalize_sign_at(value) == expected
 
 
+def test_normalize_sign_at_preserves_seconds():
+    """带秒的时间不能被静默截断成整分（回归：曾返回 "0 6 * * *" 丢掉 30 秒）。"""
+    assert normalize_sign_at("06:00:30") == "0 6 * * * 30"
+    assert normalize_sign_at("23:59:59") == "59 23 * * * 59"
+
+
+def test_normalize_sign_at_with_seconds_schedules_at_the_right_instant():
+    """归一化结果必须真的把秒带上，而不是只满足字符串相等。"""
+    from datetime import datetime, timezone
+
+    from croniter import croniter
+
+    now = datetime(2024, 1, 1, 0, 0, tzinfo=timezone.utc)
+    expr = normalize_sign_at("06:00:30")
+    assert croniter(expr, now).next(datetime) == datetime(
+        2024, 1, 1, 6, 0, 30, tzinfo=timezone.utc
+    )
+
+
 @pytest.mark.parametrize("value", ["", "   ", "不是 cron", "每晚六点", "60 6 * * *"])
 def test_normalize_sign_at_rejects_garbage(value):
     with pytest.raises(ValueError):

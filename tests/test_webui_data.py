@@ -3,6 +3,8 @@
 import json
 import os
 import re
+import threading
+import time
 
 import pytest
 
@@ -419,6 +421,39 @@ def test_automation_config_delete_removes_dir(tmp_path):
     assert data.list_automation_names(tmp_path) == []
 
 
+def test_delete_config_raises_when_the_directory_cannot_be_removed(
+    tmp_path, monkeypatch
+):
+    """删不掉时必须抛 ``OSError``，不能静默吞掉后照报成功。
+
+    回归：删除走的是 ``shutil.rmtree(..., ignore_errors=True)``。Windows 上只要
+    目录里有文件被别的句柄占着（另一个请求正开着它、编辑器、tail、杀软……），
+    ``rmtree`` 就失败，而这个失败被 ignore_errors 吃掉 —— 调用方
+    ``DELETE /api/configs/...`` 仍然返回 ``{"ok": true}``：前端弹「已删除」，
+    列表一刷新配置又出现了，用户被告知配置已被销毁、实际一点没动。
+    """
+
+    def _busy(directory, *args, **kwargs):
+        raise PermissionError(32, "另一个进程正在使用此文件")
+
+    monkeypatch.setattr(data.shutil, "rmtree", _busy)
+
+    task_dir = tmp_path / "signs" / "my_task"
+    task_dir.mkdir(parents=True)
+    (task_dir / "config.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(OSError):
+        data.delete_config("signer", "my_task", workdir=tmp_path)
+    assert task_dir.is_dir(), "删除失败却把配置目录弄丢了"
+
+    # 自动化的删除走同一个 helper，语义必须一致。
+    auto_dir = tmp_path / "automations" / "auto_task"
+    auto_dir.mkdir(parents=True)
+    (auto_dir / "config.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(OSError):
+        data.delete_automation_config("auto_task", tmp_path)
+    assert auto_dir.is_dir()
+
+
 def test_delete_config_removes_whole_dir_and_records(tmp_path):
     workdir = tmp_path
     task_dir = workdir / "signs" / "my_task"
@@ -557,6 +592,134 @@ def test_save_config_error_lists_field_path(tmp_path):
     }
     with pytest.raises(ValueError, match=r"chats\.0\.actions"):
         data.save_config("signer", "bad", payload, workdir=tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# 配置读写的副作用与原子性
+# ---------------------------------------------------------------------------
+
+
+def _v1_payload():
+    """一个会被自动迁移的 V1 配置。"""
+    return {
+        "chat_id": 123,
+        "sign_text": "老配置",
+        "sign_at": "06:00:00",
+        "random_seconds": 0,
+    }
+
+
+def test_load_config_does_not_write_to_disk(tmp_path):
+    """读配置不得产生写副作用。
+
+    回归：``from_old`` 分支原本会 ``save_config(...)`` 回写，于是
+    「打开配置」「列表页」这类纯读操作会改磁盘 —— 只读挂载或无写权限时，
+    明明已经读成功却抛 OSError，整个页面 500；而且每次读都把配置截断重写一次。
+    """
+    cfg_file = tmp_path / "signs" / "old" / "config.json"
+    cfg_file.parent.mkdir(parents=True)
+    raw = json.dumps(_v1_payload(), ensure_ascii=False)
+    cfg_file.write_text(raw, encoding="utf-8")
+
+    entry = data.load_config("signer", "old", workdir=tmp_path)
+
+    assert entry.updated_from_old is True, "仍应标记为「已从旧结构迁移」"
+    assert cfg_file.read_text(encoding="utf-8") == raw, "读操作改写了磁盘"
+
+
+def test_load_config_succeeds_on_read_only_workdir(tmp_path, monkeypatch):
+    """配置目录不可写时，读取必须成功而不是抛 OSError。"""
+    cfg_file = tmp_path / "signs" / "old" / "config.json"
+    cfg_file.parent.mkdir(parents=True)
+    cfg_file.write_text(json.dumps(_v1_payload()), encoding="utf-8")
+
+    real_open = open
+
+    def _read_only_open(path, mode="r", *args, **kwargs):
+        if "w" in mode and "signs" in str(path):
+            raise PermissionError(f"拒绝写入: {path}")
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", _read_only_open)
+
+    entry = data.load_config("signer", "old", workdir=tmp_path)
+    assert entry.name == "old"
+
+
+def _v3_payload(chat_id=1, width=1):
+    return {
+        "sign_at": "0 6 * * *",
+        "chats": [{"chat_id": chat_id, "actions": []}] * width,
+    }
+
+
+def test_save_config_never_leaves_a_partial_file(tmp_path, monkeypatch):
+    """写到一半失败时不得留下残缺的 config.json。
+
+    回归：直接 ``open(path, "w")`` 会先截断，``json.dump`` 途中抛异常就会把用户
+    唯一的配置留在半个 JSON 的状态（且此后每次读都报「配置损坏」）。
+    """
+    data.save_config("signer", "ok", _v3_payload(), workdir=tmp_path)
+    cfg_file = tmp_path / "signs" / "ok" / "config.json"
+    before = cfg_file.read_text(encoding="utf-8")
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("磁盘满了")
+
+    monkeypatch.setattr(data.json, "dump", _boom)
+    with pytest.raises(RuntimeError):
+        data.save_config("signer", "ok", _v3_payload(), workdir=tmp_path)
+
+    assert cfg_file.read_text(encoding="utf-8") == before, "配置文件被写坏了"
+    leftovers = [p.name for p in cfg_file.parent.iterdir() if ".tmp-" in p.name]
+    assert leftovers == [], f"残留临时文件: {leftovers}"
+
+
+def test_concurrent_save_and_load_never_break_each_other(tmp_path):
+    """并发保存与读取配置时，两者都必须稳定成功。
+
+    WebUI 是 FastAPI 线程池并发处理请求的，保存与打开配置会真实地同时发生。
+    两个失败模式都要挡住：
+    1. 非原子写 → 读者读到半个 JSON，报「配置损坏」；
+    2. Windows 上 ``os.replace`` 要求目标无未共享删除的打开句柄，
+       而 ``open(path, "r")`` 不共享删除 → 并发读直接把保存打成 WinError 5。
+    """
+    data.save_config("signer", "big", _v3_payload(0, width=400), workdir=tmp_path)
+
+    stop = threading.Event()
+    errors: list[str] = []
+
+    def _reader():
+        while not stop.is_set():
+            try:
+                data.load_config("signer", "big", workdir=tmp_path)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"reader: {exc!r}")
+
+    def _writer():
+        i = 0
+        while not stop.is_set():
+            i += 1
+            try:
+                data.save_config(
+                    "signer", "big", _v3_payload(i, width=400), workdir=tmp_path
+                )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"writer: {exc!r}")
+
+    threads = [threading.Thread(target=_reader) for _ in range(3)]
+    threads.append(threading.Thread(target=_writer))
+    for t in threads:
+        t.start()
+    time.sleep(1.0)
+    stop.set()
+    for t in threads:
+        t.join()
+
+    assert errors == [], f"并发读写出现失败: {errors[:3]}"
+    # 收尾：读到的最终内容必须是完整且合法的 JSON
+    final = data.load_config("signer", "big", workdir=tmp_path)
+    assert len(final.payload["chats"]) == 400
 
 
 def test_save_automation_config_error_lists_field_path(tmp_path):
@@ -734,6 +897,34 @@ def test_load_sign_records_dedups_two_part_legacy_json_against_sqlite(tmp_path):
     task_dir = tmp_path / "signs" / "daily"
     task_dir.mkdir(parents=True)
     (task_dir / "sign_record.json").write_text(
+        json.dumps({"2024-01-01": "2024-01-01 06:00:00"}), encoding="utf-8"
+    )
+
+    records = data.load_sign_records(tmp_path)
+    assert [(r.task, r.user_id) for r in records] == [("daily", "1001")]
+
+
+def test_load_sign_records_dedups_two_json_layouts_without_sqlite(tmp_path):
+    """两种 legacy JSON 布局解析出同一个 key 时只能出现一行。
+
+    回归：``existing_keys`` 原本只在遍历 SQLite 分组时被填充，JSON 分支
+    只查不加，于是 ``signs/<task>/sign_record.json`` 与
+    ``signs/<task>/<user_id>/sign_record.json`` 会同时出现在记录页，
+    且各自只带着一半的历史。
+    """
+    user_dir = tmp_path / "users" / "1001"
+    user_dir.mkdir(parents=True)
+    (user_dir / "me.json").write_text("{}", encoding="utf-8")
+
+    three_part = tmp_path / "signs" / "daily" / "1001"
+    three_part.mkdir(parents=True)
+    (three_part / "sign_record.json").write_text(
+        json.dumps({"2024-01-02": "2024-01-02 06:00:00"}), encoding="utf-8"
+    )
+
+    two_part = tmp_path / "signs" / "daily"
+    two_part.mkdir(parents=True, exist_ok=True)
+    (two_part / "sign_record.json").write_text(
         json.dumps({"2024-01-01": "2024-01-01 06:00:00"}), encoding="utf-8"
     )
 

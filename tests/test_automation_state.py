@@ -1,9 +1,60 @@
+import json
 import logging
 from datetime import datetime, timezone
 
 import pytest
 
 from tg_signer.automation.models import RuleStateStore
+
+
+def test_save_coerces_non_json_native_values(tmp_path):
+    """YAML 里的时间戳会被 safe_load 解析成 datetime，不能让 save 崩掉。
+
+    回归：``json.dump`` 抛 ``TypeError`` 后异常逃出 ``_run_rule``，timer 的
+    next_run_at 不会被推进 —— 一条 ``interval_seconds=3600`` 的规则会在每个
+    tick 重新触发（实测 0.2 秒发了 12 条消息）。
+    """
+    path = tmp_path / "state.json"
+    store = RuleStateStore(path, logging.getLogger("test"))
+    store.set_rule_vars(
+        "r1",
+        {"when": datetime(2024, 6, 1, 12, 0, 0), "tags": {"a", "b"}},
+    )
+    store.save(force=True)
+
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["rules"]["r1"]["vars"]["when"] == "2024-06-01T12:00:00"
+    assert sorted(saved["rules"]["r1"]["vars"]["tags"]) == ["a", "b"]
+
+
+def test_non_string_next_run_at_is_treated_as_corrupt(tmp_path):
+    """``next_run_at`` 是数字时必须按损坏处理，而不是让 TypeError 逃逸。
+
+    回归：``_validate_shape`` 只校验容器、不校验叶子值类型，
+    ``datetime.fromisoformat(int)`` 抛的是 TypeError 而非 ValueError，会逃出
+    ``get_trigger_next_run`` 的捕获，每秒打断一次 ``_tick_timers`` ——
+    该配置里所有 timer 规则随之静默停摆。
+    """
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {"rules": {"r1": {"triggers": {"t1": {"next_run_at": 1735689600}}}}}
+        ),
+        encoding="utf-8",
+    )
+    store = RuleStateStore(path, logging.getLogger("test"))
+
+    assert store.get_trigger_next_run("r1", "t1") is None
+    assert list(tmp_path.glob("*.corrupt-*")), "损坏状态文件未被备份"
+
+
+def test_get_trigger_next_run_survives_non_string_value(tmp_path):
+    """即使状态绕过了校验（非 str 叶子值），读取也必须安全返回 None。"""
+    path = tmp_path / "state.json"
+    store = RuleStateStore(path, logging.getLogger("test"))
+    store._data = {"rules": {"r1": {"triggers": {"t1": {"next_run_at": 1735689600}}}}}
+
+    assert store.get_trigger_next_run("r1", "t1") is None
 
 
 def test_rule_state_store_roundtrip(tmp_path):

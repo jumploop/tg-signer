@@ -91,7 +91,7 @@ def test_start_rejects_when_account_already_running(monkeypatch, tmp_path):
     assert "已在运行" in msg2
 
     # stop 后可再 start
-    ok_stop, _ = runner.stop("signer", "alice")
+    ok_stop, _ = runner.stop("signer", "alice", tmp_path)
     assert ok_stop
     ok3, _ = runner.start("signer", "t3", tmp_path, "alice")
     assert ok3
@@ -205,7 +205,13 @@ def test_different_accounts_run_independently(monkeypatch, tmp_path):
     ok2, _ = runner.start("signer", "t1", tmp_path, "bob")
     ok3, _ = runner.start("signer", "t2", tmp_path, "charlie")
     assert ok1 and ok2 and ok3
-    assert set(runner._LOCKS) == {"signer:alice", "signer:bob", "signer:charlie"}
+    # 注册表键按 workdir 作用域，但账号维度仍各自独立
+    assert {k.split("|", 1)[-1] for k in runner._LOCKS} == {
+        "signer:alice",
+        "signer:bob",
+        "signer:charlie",
+    }
+    assert all(k.startswith(str(tmp_path.resolve()) + "|") for k in runner._LOCKS)
 
     # 同账号下 signer 已在跑 → automation 启动被拒(锁互斥)
     ok4, msg4 = runner.start("automation", "a1", tmp_path, "alice")

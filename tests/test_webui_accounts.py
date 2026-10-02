@@ -1,4 +1,5 @@
 import importlib.util
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -155,6 +156,41 @@ async def test_logout_account_removes_files_for_session_string_only(
 
 
 @pytest.mark.asyncio
+async def test_logout_failure_does_not_wipe_local_state(monkeypatch, tmp_path):
+    """Telegram 侧登出失败时，不能在 finally 里把本地 session 与缓存删光。
+
+    回归：本地清理原先挂在 finally 上无条件执行，于是 API 返回「登出失败」
+    的同时 session 文件、users/<id> 缓存和账号映射已经被清掉了。
+    """
+
+    class FakeClient:
+        is_connected = False
+
+        async def connect(self):
+            return True
+
+        async def disconnect(self):
+            self.is_connected = False
+
+        async def log_out(self):
+            raise RuntimeError("FloodWait: retry after 900s")
+
+    monkeypatch.setattr(account, "_new_client", lambda *_args: FakeClient())
+    (tmp_path / "acc.session").write_text("x", encoding="utf-8")
+    account.save_account_user("acc", "42", tmp_path)
+    user_dir = tmp_path / "users" / "42"
+    user_dir.mkdir(parents=True)
+    (user_dir / "me.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="登出失败"):
+        await account.logout_account("acc", tmp_path)
+
+    assert (tmp_path / "acc.session").is_file(), "登出失败却删掉了 session 文件"
+    assert user_dir.exists(), "登出失败却删掉了 users 缓存"
+    assert account.load_account_users(tmp_path) == {"acc": "42"}
+
+
+@pytest.mark.asyncio
 async def test_logout_missing_session_never_constructs_client(monkeypatch, tmp_path):
     """不存在的账号没有任何登录态可登出，不得为它构造 client 去 connect。
 
@@ -175,7 +211,6 @@ async def test_logout_missing_session_never_constructs_client(monkeypatch, tmp_p
 def test_save_and_remove_account_user_mapping(tmp_path):
     account.save_account_user("acc1", "123", tmp_path)
     assert account.load_account_users(tmp_path) == {"acc1": "123"}
-
     user_dir = tmp_path / "users" / "123"
     user_dir.mkdir(parents=True)
     (user_dir / "me.json").write_text("x", encoding="utf-8")
@@ -183,6 +218,35 @@ def test_save_and_remove_account_user_mapping(tmp_path):
     account.remove_account_user("acc1", tmp_path)
     assert account.load_account_users(tmp_path) == {}
     assert not user_dir.exists()
+
+
+def test_concurrent_account_user_saves_do_not_lose_entries(tmp_path):
+    """并发登录写入账号映射不得互相覆盖。
+
+    回归：读-改-写之间没有锁，两个账号同时登录完成时都读到同一份旧映射，
+    各自整份写回，后写者把前者的条目整段抹掉（只剩最后一个账号）。
+    """
+    barrier = threading.Barrier(8)
+
+    def _save(i):
+        barrier.wait()
+        account.save_account_user(f"acc{i}", str(100 + i), tmp_path)
+
+    threads = [threading.Thread(target=_save, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert account.load_account_users(tmp_path) == {
+        f"acc{i}": str(100 + i) for i in range(8)
+    }
+
+
+def test_account_user_file_is_never_left_half_written(tmp_path):
+    """写映射必须是「临时文件 + 原子替换」，不得原地覆盖。"""
+    account.save_account_user("acc1", "123", tmp_path)
+    assert not list(tmp_path.glob("webui_accounts.json.*")), "残留临时文件"
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +297,32 @@ def test_prune_login_sessions_reaps_only_expired(clean_login_sessions):
         assert set(account.LOGIN_SESSIONS) == {"fresh"}
 
 
+def test_close_all_login_sessions_reaps_fresh_sessions_too(clean_login_sessions):
+    """切目录必须连**未过期**的会话一起回收。
+
+    回归：``set_state`` 切工作目录时调的是 ``prune_login_sessions()``，只看
+    ``LOGIN_SESSION_TTL_SECONDS``（600s）。而登录会话在构造时就把 workdir 绑死
+    了，「发验证码 → 切目录 → 粘贴验证码」这条最常见的路径里它只有几秒大、活过
+    了切换，随后 complete-login 把 ``.session``、``users/<id>/`` 缓存和
+    ``webui_accounts.json`` 全写进刚切走的旧目录，并如实返回「登录成功」。
+    """
+    fresh = _FakeLoginSession("fresh")
+    stale = _FakeLoginSession("stale", age=account.LOGIN_SESSION_TTL_SECONDS + 1)
+    with account._LOGIN_SESSIONS_LOCK:
+        account.LOGIN_SESSIONS.update({"fresh": fresh, "stale": stale})
+
+    # 前置条件：按 TTL 回收只抓到过期那个 —— 这就是旧实现在切目录时的全部行为，
+    # 新鲜会话活过了切换。
+    assert account.prune_login_sessions() == ["stale"]
+    assert fresh.close_calls == 0
+
+    assert account.close_all_login_sessions() == ["fresh"]
+    assert fresh.close_calls == 1
+    assert stale.close_calls == 1
+    with account._LOGIN_SESSIONS_LOCK:
+        assert account.LOGIN_SESSIONS == {}
+
+
 def test_send_login_code_prunes_expired_sessions_first(
     clean_login_sessions, monkeypatch, tmp_path
 ):
@@ -261,6 +351,57 @@ def test_send_login_code_prunes_expired_sessions_first(
     assert created == [("acc", Path(tmp_path))]
     with account._LOGIN_SESSIONS_LOCK:
         assert set(account.LOGIN_SESSIONS) == {"acc"}
+
+
+def test_concurrent_send_login_code_leaves_no_orphan_session(
+    clean_login_sessions, monkeypatch, tmp_path
+):
+    """同账号并发「发送验证码」不得留下孤儿会话。
+
+    回归：旧实现「弹出旧会话」与「登记新会话」是两次独立加锁，中间还夹着
+    close() 和构造两次慢操作。两个并发请求各自建一个会话，后登记的直接覆盖
+    先登记的 —— 被覆盖的那个既离开了 LOGIN_SESSIONS 又永远不会被 close()，
+    线程 / event loop / Telegram 连接三重泄漏；而用户拿到的是第二个验证码，
+    用第一个必然失败。
+    """
+    created: list = []
+    barrier = threading.Barrier(2)
+
+    class _SlowNewSession:
+        def __init__(self, name, workdir):
+            self.account = name
+            self.created_at = time.monotonic()
+            self.close_calls = 0
+            created.append(self)
+            # 真实会话构造要起线程、走 pyrogram Client 初始化，耗时可观。
+            # 这里模拟这段延迟，把「弹出旧会话」与「登记新会话」之间的竞态窗口撑开，
+            # 否则两个线程未必能都挤进窗口里，测试会假通过。
+            time.sleep(0.05)
+
+        def close(self):
+            self.close_calls += 1
+
+        def send_code(self, phone):
+            return "ok", "sent"
+
+    monkeypatch.setattr(account, "_AccountLoginSession", _SlowNewSession)
+
+    def _send():
+        barrier.wait()
+        account.send_login_code("acc", "+10086", tmp_path)
+
+    threads = [threading.Thread(target=_send) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(created) == 2, "两个请求各自建了会话"
+    # 后一个必须关掉前一个；不能有「建了但既没登记也没关闭」的。
+    assert sum(s.close_calls for s in created) == 1, "存在未被关闭的孤儿会话"
+    with account._LOGIN_SESSIONS_LOCK:
+        registered = account.LOGIN_SESSIONS["acc"]
+    assert registered is created[-1], "注册表里不是最后建立的那个"
 
 
 def test_send_login_code_closes_replaced_session(

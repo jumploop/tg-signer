@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import pathlib
 import shutil
 import threading
@@ -22,6 +23,21 @@ LOGIN_SESSION_TTL_SECONDS = 10 * 60
 _LOGIN_SESSIONS_LOCK = threading.Lock()
 LOGIN_SESSIONS: Dict[str, "_AccountLoginSession"] = {}
 _ACCOUNT_USERS_FILE = "webui_accounts.json"
+# 登录在各自的线程里并发进行，映射文件的读-改-写必须串行，否则互相覆盖。
+_ACCOUNT_USERS_LOCK = threading.Lock()
+# 每个账号一把锁，用来把「关旧会话 -> 建新会话 -> 登记」这段串行化。
+# 不能直接用 _LOGIN_SESSIONS_LOCK：close() 和会话构造都是慢操作（前者要 join
+# 线程，最多 5s），持有全局锁会连累所有其它账号的登录与 TTL 回收。
+_LOGIN_LOCKS: Dict[str, threading.Lock] = {}
+
+
+def _account_login_lock(account: str) -> threading.Lock:
+    with _LOGIN_SESSIONS_LOCK:
+        lock = _LOGIN_LOCKS.get(account)
+        if lock is None:
+            lock = threading.Lock()
+            _LOGIN_LOCKS[account] = lock
+        return lock
 
 
 def _account_path(account: str, workdir, suffix: str = "") -> pathlib.Path:
@@ -72,31 +88,47 @@ def load_account_users(workdir) -> Dict[str, str]:
     return {str(key): str(value) for key, value in data.items()}
 
 
-def save_account_user(account: str, user_id: Any, workdir) -> None:
-    """Record the WebUI-created account->user_id mapping."""
-    workdir = pathlib.Path(workdir)
-    data = load_account_users(workdir)
-    data[account] = str(user_id)
+def _update_account_users(workdir: pathlib.Path, mutate) -> None:
+    """在锁内完成「读 -> 改 -> 原子写」，并把 load 与 save 之间做成临界区。
+
+    登录在各自的线程里跑，两个账号同时登录完成时会并发进入
+    ``save_account_user``：都读到同一份旧映射，各自追加一条再整份写回，
+    后写者把前者的条目整段覆盖掉（实测并发登录只剩最后一个账号）。
+    写文件也改成「临时文件 + os.replace」，否则进程中途被杀会留下半个 JSON，
+    下次 load 直接当损坏处理、映射整体丢失。
+    """
     workdir.mkdir(parents=True, exist_ok=True)
     mapping_file = workdir / _ACCOUNT_USERS_FILE
-    mapping_file.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    with _ACCOUNT_USERS_LOCK:
+        data = load_account_users(workdir)
+        result = mutate(data)
+        payload = json.dumps(data, ensure_ascii=False, indent=2)
+        tmp = mapping_file.with_suffix(mapping_file.suffix + ".tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, mapping_file)
+        return result
+
+
+def save_account_user(account: str, user_id: Any, workdir) -> None:
+    """Record the WebUI-created account->user_id mapping."""
+    _update_account_users(
+        pathlib.Path(workdir), lambda data: data.__setitem__(account, str(user_id))
     )
 
 
 def remove_account_user(account: str, workdir) -> None:
     """Delete the cached users/<user_id> directory recorded for the account."""
     workdir = pathlib.Path(workdir)
-    data = load_account_users(workdir)
-    user_id = data.pop(account, None)
-    if user_id is not None and str(user_id).isdigit():
-        user_dir = workdir / "users" / str(user_id)
-        if user_dir.is_dir():
-            shutil.rmtree(user_dir, ignore_errors=True)
-        mapping_file = workdir / _ACCOUNT_USERS_FILE
-        mapping_file.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+
+    def _mutate(data):
+        user_id = data.pop(account, None)
+        if user_id is not None and str(user_id).isdigit():
+            user_dir = workdir / "users" / str(user_id)
+            if user_dir.is_dir():
+                shutil.rmtree(user_dir, ignore_errors=True)
+        return user_id
+
+    _update_account_users(workdir, _mutate)
 
 
 class _AccountLoginSession:
@@ -109,15 +141,18 @@ class _AccountLoginSession:
         self.phone = ""
         self.phone_code_hash: Optional[str] = None
         self.loop = asyncio.new_event_loop()
+        # 线程排在 get_client 之后再启动：get_client() 可能抛（session 文件不可用、
+        # 参数非法），而在它之前就 run_forever 的话，每次失败的登录尝试都会留下
+        # 一个仍在跑的线程和一个未关闭的 event loop，反复登录就持续堆积。
         self.thread = threading.Thread(
             target=self.loop.run_forever,
             daemon=True,
             name=f"webui-login-{account}",
         )
-        self.thread.start()
         self.client = get_client(
             account, get_proxy(), workdir=str(self.workdir), loop=self.loop
         )
+        self.thread.start()
 
     def run(self, coro, timeout: float):
         future = asyncio.run_coroutine_threadsafe(coro, self.loop)
@@ -207,6 +242,10 @@ class _AccountLoginSession:
                 tg_core.forget_client(self.client.key)
                 self.loop.call_soon_threadsafe(self.loop.stop)
                 self.thread.join(timeout=5)
+                # loop 也要 close：每个登录会话都新建一个，反复登录/重登会持续
+                # 泄漏未关闭的 event loop（Windows 上还各占一个 select 句柄）。
+                if not self.loop.is_closed():
+                    self.loop.close()
             except Exception:  # noqa: BLE001
                 pass
 
@@ -240,16 +279,52 @@ def prune_login_sessions() -> List[str]:
     return closed
 
 
+def close_all_login_sessions() -> List[str]:
+    """关闭并移除**全部**登录会话,返回被回收的账号名。
+
+    与 :func:`prune_login_sessions` 的区别在于不看 TTL。切换工作目录时必须用
+    这个:登录会话在构造时就固定了 workdir（``_AccountLoginSession.__init__``）,
+    而「发验证码 → 切目录 → 粘贴验证码」这条最常见的路径里,会话只有几秒大,
+    远未到 TTL。原实现只调用 prune,于是会话活过切换,随后 complete-login 把
+    .session / users/<id>/ 缓存 / webui_accounts.json 全部写进**刚切走的旧目录**,
+    并如实返回「登录成功」—— 而当前目录里这个账号根本不存在,用户也无从找回。
+    """
+    with _LOGIN_SESSIONS_LOCK:
+        accounts = list(LOGIN_SESSIONS)
+        sessions = list(LOGIN_SESSIONS.values())
+        LOGIN_SESSIONS.clear()
+    # close() 在锁外做阻塞收尾；它内部会再进 _LOGIN_SESSIONS_LOCK 摘自己，
+    # 而此时注册表已空，`if LOGIN_SESSIONS.get(...) is self` 不成立，天然幂等。
+    for session in sessions:
+        try:
+            session.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return accounts
+
+
 def send_login_code(account: str, phone: str, workdir) -> Tuple[str, str]:
     prune_login_sessions()
-    with _LOGIN_SESSIONS_LOCK:
-        existing = LOGIN_SESSIONS.pop(account, None)
-    if existing is not None:
-        existing.close()
-    session = _AccountLoginSession(account, pathlib.Path(workdir))
-    with _LOGIN_SESSIONS_LOCK:
-        LOGIN_SESSIONS[account] = session
-    return session.send_code(phone)
+    # 整段「关旧会话 -> 建新会话 -> 登记」必须按账号串行。
+    # 原来「弹出旧会话」和「登记新会话」是两次独立的加锁，中间还夹着两次慢操作
+    # (close() 要 join 线程、构造要起线程)。两个并发请求(重复点「发送验证码」)
+    # 会各自建一个会话,后登记的直接覆盖先登记的 —— 先登记的那个既离开了
+    # LOGIN_SESSIONS 又不会被 close(),线程 / event loop / Telegram 连接三重泄漏,
+    # 而用户拿到的是第二个验证码,用第一个必然失败。
+    with _account_login_lock(account):
+        with _LOGIN_SESSIONS_LOCK:
+            existing = LOGIN_SESSIONS.pop(account, None)
+        if existing is not None:
+            existing.close()
+        session = _AccountLoginSession(account, pathlib.Path(workdir))
+        try:
+            with _LOGIN_SESSIONS_LOCK:
+                LOGIN_SESSIONS[account] = session
+        except Exception:  # noqa: BLE001
+            # 登记不上就不能让它变成孤儿。
+            session.close()
+            raise
+        return session.send_code(phone)
 
 
 def complete_login(
@@ -417,6 +492,7 @@ async def logout_account(account: str, workdir) -> str:
         # —— 既是无意义的外联，也会在无网络时把请求拖到超时。
         return f"{account} 未登录或 session 不存在，无需登出"
     client = _new_client(account, workdir)
+    failed: Optional[str] = None
     try:
         is_authorized = await client.connect()
         if is_authorized:
@@ -424,20 +500,34 @@ async def logout_account(account: str, workdir) -> str:
         else:
             await client.storage.delete()
     except Exception as exc:  # noqa: BLE001
-        try:
-            await client.storage.delete()
-        except Exception:  # noqa: BLE001
-            pass
-        raise RuntimeError(f"登出失败: {exc}") from exc
+        failed = str(exc)
     finally:
         try:
             if client.is_connected:
                 await client.disconnect()
         except Exception:  # noqa: BLE001
             pass
-        remove_account_user(account, workdir)
-        for suffix in (".session", ".session-journal", ".session_string"):
-            session_file = _account_path(account, workdir, suffix)
+    # 本地清理放在异常处理之后，而不是 finally：
+    # Telegram 侧登出失败（FloodWait / 断网 / session 被吊销）时，API 会如实
+    # 返回失败，而清理动作此前在 finally 里无条件执行 —— 用户看到「登出失败」
+    # 却发现 session 文件和 users/<id> 缓存已被删光，且没有任何途径撤销。
+    if failed is not None:
+        raise RuntimeError(f"登出失败: {failed}")
+    remove_account_user(account, workdir)
+    # Windows 上 <account>.session 是 SQLite 文件，可能仍被子进程占用，
+    # unlink() 会抛 PermissionError（OSError 不在 server 的 400 捕获集合里，
+    # 会变成 500 + traceback）。
+    failures: List[str] = []
+    for suffix in (".session", ".session-journal", ".session_string"):
+        session_file = _account_path(account, workdir, suffix)
+        try:
             if session_file.is_file():
                 session_file.unlink()
+        except OSError as exc:
+            failures.append(f"{session_file.name}: {exc}")
+    if failures:
+        raise RuntimeError(
+            f"{account} 已在 Telegram 侧登出，但本地 session 文件删除失败（文件可能"
+            f"仍被任务进程占用）：" + "；".join(failures)
+        )
     return f"已登出并删除 session 文件: {account}"

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -6,14 +7,17 @@ from types import SimpleNamespace
 import pytest
 
 from tg_signer.automation.handlers import (
+    TemplateRenderError,
     ai_reply,
     blacklist_filter,
+    delay,
     external_forward,
     extract_regex,
     load_plugins,
     random_pick,
     render_template,
     schedule_next,
+    store_state,
 )
 from tg_signer.automation.models import AutomationContext, Event, RuleStateStore
 
@@ -274,6 +278,58 @@ def test_load_plugins_registers_handlers(tmp_path):
     assert get_handler("plugin_hello") is not None
 
 
+def test_load_plugins_skips_sync_handlers(tmp_path):
+    """同步 handler 必须在加载期就被拒绝并留下警告。
+
+    回归：只校验 ``callable``，同步函数会被注册进注册表，直到规则执行到它
+    才在引擎里抛 ``object str can't be used in 'await' expression`` ——
+    报错里既没有插件文件名也没有 handler 名。
+    """
+    handlers_dir = tmp_path / "handlers"
+    handlers_dir.mkdir(parents=True, exist_ok=True)
+    (handlers_dir / "plugin.py").write_text(
+        "def sync_handler(event, ctx, params):\n"
+        "    return 'continue'\n\n"
+        "async def ok_handler(event, ctx, params):\n"
+        "    return 'continue'\n\n"
+        "HANDLERS = {'sync_one': sync_handler, 'ok_one': ok_handler}\n",
+        encoding="utf-8",
+    )
+
+    load_plugins(handlers_dir, logging.getLogger("test"))
+
+    from tg_signer.automation.handlers import get_handler
+
+    assert get_handler("sync_one") is None
+    assert get_handler("ok_one") is not None
+
+
+def test_blacklist_filter_tolerates_non_string_keyword(tmp_path):
+    """YAML 里不带引号的 ``- 123`` 会解析成 int，不得让 handler 中途 AttributeError。"""
+    ctx = _render_ctx(tmp_path)
+
+    result = asyncio.run(
+        blacklist_filter(
+            _render_event(text="hello 123 world"),
+            ctx,
+            {"keywords": [123, "hello"]},
+        )
+    )
+
+    assert result == "stop", "合法关键词应照常命中"
+
+
+def test_blacklist_filter_skips_bad_keyword_without_crashing(tmp_path):
+    """只有非法关键词时不应崩溃，应跳过并继续。"""
+    ctx = _render_ctx(tmp_path)
+
+    result = asyncio.run(
+        blacklist_filter(_render_event(text="hello"), ctx, {"keywords": [123]})
+    )
+
+    assert result == "continue"
+
+
 # ---------------------------------------------------------------------------
 # P2 修复:模板取值收敛(禁止 dunder 属性链 / 下标)+ 配置正则的边界护栏
 # ---------------------------------------------------------------------------
@@ -311,9 +367,38 @@ def test_render_template_substitutes_documented_placeholders(tmp_path):
     assert render_template("topic={message.chat.id}", event, ctx) == "topic=123"
 
 
-def test_render_template_keeps_unknown_placeholders_verbatim(tmp_path):
+def test_render_template_raises_on_unknown_placeholder(tmp_path):
+    """引用不存在的变量必须抛异常，不能静默原样返回。
+
+    回归：``render_template`` 原来 ``except Exception: return text``，而
+    ``SafeFormatDict.__missing__`` 会把未知变量原样返回成 ``{nope}`` ——
+    渲染「成功」了，输出却和输入一模一样。调用方拿到的就是这串字面量并直接
+    发给 Telegram：群里看到 ``{nope}``，日志里一条告警都没有。
+    """
     ctx = _render_ctx(tmp_path)
-    assert render_template("{nope}", _render_event(), ctx) == "{nope}"
+    with pytest.raises(TemplateRenderError, match="nope"):
+        render_template("{nope}", _render_event(), ctx)
+
+
+def test_render_template_allows_literal_braces_in_json_body(tmp_path):
+    """正文里本来就带花括号（如 HTTP 回调的 JSON body）不是模板，必须原样放行。"""
+    ctx = _render_ctx(tmp_path)
+    body = '{"key": "value", "n": [1, 2]}'
+    assert render_template(body, _render_event(), ctx) == body
+
+
+def test_render_template_raises_when_message_is_absent(tmp_path):
+    """``startup``/``timer`` 触发器没有 message，文档化的 {message.chat.title} 必然失败。
+
+    回归：这两类事件 ``event.message is None``，``render_template`` 会塞一个
+    ``SimpleNamespace(chat=None)``，于是 ``chat.title`` 抛 AttributeError 被吞掉，
+    配置里照抄文档的模板就把字面量 ``{message.chat.title}`` 发进了群。
+    """
+    ctx = _render_ctx(tmp_path)
+    event = _render_event()
+    event.message = None
+    with pytest.raises(TemplateRenderError):
+        render_template("{message.chat.title}", event, ctx)
 
 
 @pytest.mark.parametrize(
@@ -332,12 +417,12 @@ def test_render_template_keeps_unknown_placeholders_verbatim(tmp_path):
 def test_render_template_refuses_attribute_chain_escapes(tmp_path, template):
     """模板不能顺着属性链 / 下标读到模块全局变量之类的东西。
 
-    渲染失败时返回原样文本(既有行为),关键是不能把 ``__globals__`` 的内容渲染出来。
+    渲染失败会抛 TemplateRenderError，关键是不能把 ``__globals__`` 的内容渲染出来。
     """
     ctx = _render_ctx(tmp_path)
-    rendered = render_template(template, _render_event(), ctx)
-    assert rendered == template
-    assert "module" not in str(rendered)
+    with pytest.raises(TemplateRenderError) as excinfo:
+        render_template(template, _render_event(), ctx)
+    assert "module" not in str(excinfo.value)
 
 
 @pytest.mark.asyncio
@@ -533,3 +618,224 @@ async def test_include_current_marks_message_missing_from_history(tmp_path):
     _, query = worker.ai_tools.calls[0]
     assert query.count("当前消息") == 1
     assert "[current] 当前消息" in query
+
+
+# ---------------------------------------------------------------------------
+# 静默失效 / 失败开放 类修复
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_blacklist_filter_missing_source_vars_fails_closed(tmp_path):
+    """``source_var`` 指向不存在的变量时必须失败关闭，不能放行。
+
+    回归：``resolve_blacklist_text`` 对缺失变量返回空串，而空串匹配不到任何
+    关键词 —— 过滤器完全不起作用，后面的 ``send_text`` 照样把大模型输出发进群。
+    文档里 ``ai_reply(store_var) → blacklist_filter(source_var) → send_text``
+    这条链，只要 ``store_var`` 写错一个字母，广告/引流过滤就静默消失且无任何提示。
+    """
+    ctx = _render_ctx(tmp_path)
+    ctx.vars["real"] = "干净的回复"
+    event = _render_event()
+
+    with pytest.raises(ValueError, match="missing_var"):
+        await blacklist_filter(event, ctx, {"source_var": "missing_var"})
+
+    with pytest.raises(ValueError):
+        await blacklist_filter(
+            event, ctx, {"source_vars": ["also_missing_a", "also_missing_b"]}
+        )
+
+
+@pytest.mark.asyncio
+async def test_store_state_does_not_persist_none_for_absent_keys(tmp_path):
+    """``store_state`` 不得把尚未产生的键写成 ``null``。
+
+    回归：``ctx.vars.get(k)`` 没有默认值，未产生的键被存成 ``None``。下一轮
+    ``load_state`` 把 ``None`` 灌回 ``ctx.vars`` 后该键就「存在」了，
+    ``SafeFormatDict.__missing__`` 不再兜底，模板把字符串 ``"None"`` 渲染出来
+    并发送进群 —— 而字面量 ``{v}`` 永远看起来是正常的。
+    这在「``extract_regex`` 先失败 / ``ai_reply`` 还没跑」的首轮是很常见的路径。
+    """
+    ctx = _render_ctx(tmp_path)
+    ctx.vars["produced"] = "有值"
+
+    await store_state(
+        _render_event(),
+        ctx,
+        {"keys": ["produced", "not_produced_yet"]},
+    )
+
+    assert "not_produced_yet" not in ctx.vars, "未产生的键被凭空创建成 None"
+    # 引擎正是按 ctx.persist_vars 回写，落盘的也只能是已产生的那个键
+    assert ctx.persist_vars == {"produced": "有值"}
+
+    # 真正落到 state.json 里的内容同样不能出现 null
+    ctx.state.save()
+    on_disk = json.loads(ctx.state.path.read_text(encoding="utf-8"))
+    assert None not in on_disk["rules"]["r1"].values(), (
+        "state.json 里被写进了 null，下次 load_state 会把它灌回 ctx.vars"
+    )
+
+
+@pytest.mark.asyncio
+async def test_store_state_keeps_all_present_keys(tmp_path):
+    """已产生的键必须照常持久化（防止修过头）。"""
+    ctx = _render_ctx(tmp_path)
+    ctx.vars["a"] = 1
+    ctx.vars["b"] = 2
+    ctx.vars["c"] = 3
+
+    await store_state(_render_event(), ctx, {"keys": ["a", "b"]})
+
+    assert ctx.persist_vars == {"a": 1, "b": 2}
+
+
+@pytest.mark.asyncio
+async def test_random_pick_treats_string_choices_as_one_option(tmp_path):
+    """``choices`` 写成字符串时必须整串作为一个选项。
+
+    回归：``list("hello world")`` 把整串拆成单个字符，于是「随机发一条消息」
+    变成随机发一个字母，而日志看起来完全正常、用户以为规则在工作。
+    """
+    ctx = _render_ctx(tmp_path)
+    recorded = []
+    ctx.log = lambda msg, level="INFO": recorded.append((level, msg))
+
+    result = await random_pick(
+        _render_event(), ctx, {"choices": "hello world", "var": "picked"}
+    )
+
+    assert result == "continue"
+    assert ctx.vars["picked"] == "hello world", "字符串被拆成了单个字符"
+    assert any(level == "WARNING" and "字符串" in msg for level, msg in recorded)
+
+
+@pytest.mark.asyncio
+async def test_random_pick_takes_dict_values(tmp_path):
+    """``choices`` 是映射时取其值，并告警。"""
+    ctx = _render_ctx(tmp_path)
+    recorded = []
+    ctx.log = lambda msg, level="INFO": recorded.append((level, msg))
+
+    assert (
+        await random_pick(
+            _render_event(), ctx, {"choices": {"a": "甲", "b": "乙"}, "var": "picked"}
+        )
+        == "continue"
+    )
+
+    assert ctx.vars["picked"] in {"甲", "乙"}
+    assert any(level == "WARNING" and "映射" in msg for level, msg in recorded)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("seconds", [float("inf"), float("-inf"), float("nan")])
+async def test_delay_skips_non_finite_seconds(tmp_path, seconds):
+    """``delay: .inf`` 必须跳过，不能睡到天荒地老。
+
+    回归：``asyncio.sleep(inf)`` 永不返回，而该 task 一直持有该规则的
+    ``asyncio.Lock``，于是这条规则之后的所有触发都排在它后面 —— 规则对进程
+    生命周期而言等于死亡，日志里却没有任何错误。
+    """
+    ctx = _render_ctx(tmp_path)
+    recorded = []
+    ctx.log = lambda msg, level="INFO": recorded.append((level, msg))
+
+    async def _no_sleep(_seconds):
+        raise AssertionError("非有限值不应进入 sleep")
+
+    monkey_sleep = asyncio.sleep
+    asyncio.sleep = _no_sleep
+    try:
+        result = await delay(_render_event(), ctx, {"seconds": seconds})
+    finally:
+        asyncio.sleep = monkey_sleep
+
+    assert result == "continue"
+    assert any(level == "WARNING" for level, _msg in recorded)
+
+
+@pytest.mark.asyncio
+async def test_delay_clamps_oversized_seconds(tmp_path):
+    """超过上限的等待必须按上限截断，避免一条规则挂起好几天。"""
+    import tg_signer.automation.handlers as handlers_mod
+
+    ctx = _render_ctx(tmp_path)
+    recorded = []
+    ctx.log = lambda msg, level="INFO": recorded.append((level, msg))
+    slept = []
+
+    async def _fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkey_sleep = asyncio.sleep
+    asyncio.sleep = _fake_sleep
+    try:
+        result = await delay(_render_event(), ctx, {"seconds": 10**9})
+    finally:
+        asyncio.sleep = monkey_sleep
+
+    assert result == "continue"
+    assert slept == [handlers_mod._MAX_DELAY_SECONDS]
+    assert any(level == "WARNING" and "上限" in msg for level, msg in recorded)
+
+
+def test_load_plugins_survives_plugin_that_calls_sys_exit(tmp_path):
+    """插件在导入时 ``sys.exit()`` 不能带走整个进程的自动化任务。
+
+    回归：``except Exception`` 抓不到 ``SystemExit``，异常直接穿过
+    ``load_plugins``，而 ``UserAutomation.run`` 调用它时没有任何保护 ——
+    一个残留顶层 ``main()`` 的插件文件就能让进程里所有任务一起消失。
+    """
+    from tg_signer.automation import handlers as handlers_mod
+
+    handlers_dir = tmp_path / "handlers"
+    handlers_dir.mkdir()
+    (handlers_dir / "a_evil.py").write_text(
+        "import sys\nsys.exit(1)\n", encoding="utf-8"
+    )
+    (handlers_dir / "b_good.py").write_text(
+        "async def demo_plugin_handler(event, ctx, params):\n"
+        "    return 'continue'\n"
+        "\n"
+        "HANDLERS = {'demo_plugin_handler': demo_plugin_handler}\n",
+        encoding="utf-8",
+    )
+
+    logger = logging.getLogger("test_load_plugins_exit")
+    records = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    cap = _Capture()
+    logger.addHandler(cap)
+    logger.setLevel(logging.DEBUG)
+    handlers_mod._REGISTRY.pop("demo_plugin_handler", None)
+    try:
+        load_plugins(handlers_dir, logger)
+        registered = "demo_plugin_handler" in handlers_mod._REGISTRY
+    finally:
+        logger.removeHandler(cap)
+        handlers_mod._REGISTRY.pop("demo_plugin_handler", None)
+
+    assert registered, "坏插件把同目录的好插件也一起拖死了"
+    assert any("a_evil" in msg and "退出" in msg for msg in records), (
+        f"没有记录跳过了坏插件: {records}"
+    )
+
+
+def test_udp_protocol_error_received_logs_instead_of_printing(caplog):
+    """UDP 错误必须进 tg-signer 日志文件，而不是 stdout。
+
+    回归：``print`` 只到 stdout，在打包后的 CLI / ``multi-run`` 下通常没有可见
+    控制台，「转发地址不可达」这类问题在日志文件里彻底无声。
+    """
+    import tg_signer.automation.handlers as handlers_mod
+
+    with caplog.at_level(logging.WARNING, logger="tg-signer"):
+        handlers_mod._UDPProtocol().error_received(OSError("boom"))
+
+    assert "UDP error received" in caplog.text

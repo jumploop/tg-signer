@@ -24,7 +24,7 @@ This file guides agents/developers collaborating in the `tg-signer` repository. 
   - Environment variables: `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`
   - Workdir file: `<workdir>/.openai_config.json`
 - The current default model in code is `gpt-4o` (see `tg_signer/ai_tools.py`).
-- The current WebUI manages signer configs and check-in records; it is not an automation config editor.
+- The current WebUI manages signer configs, automation configs, and check-in records. `/api/configs/{kind}` accepts both `signer` and `automation`; for `automation` the list endpoint only returns task names (used by the run page), while get/post/delete plus `template` and `suggest-name` are full CRUD.
 
 ## Key Directories
 - `tg_signer/cli/`: CLI command definitions. The main entry is in `signer.py`; automation subcommands are in `automation.py`.
@@ -121,7 +121,7 @@ This file guides agents/developers collaborating in the `tg-signer` repository. 
   - `chat_id` supports both integers and `@username`
   - Multiple commands support `message_thread_id`
   - `run_once` / `send_text` have alias compatibility
-- Confirm WebUI scope before changing it: `webui/data.py` currently only handles `signer` configs and check-in records. Do not assume it already covers `automation`.
+- Confirm WebUI scope before changing it: `webui/data.py` handles `signer` configs, `automation` configs (`load/save/delete_automation_config`, `list_automation_names`), and check-in records. The automation editor does exist; do not assume either way without reading `webui/server.py`'s `/api/configs/{kind}` routes.
 
 ## Security And Privacy
 - Never commit any sessions or sensitive information, for example:

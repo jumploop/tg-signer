@@ -240,6 +240,13 @@ HANDLERS = {"echo": echo}
 {"handler": "echo", "params": {"text": "hi"}}
 ```
 
+> handler **必须是 `async def`**。引擎一律 `await handler(...)`，写成普通 `def`
+> 会在加载时被拒绝（`插件handler不是async，跳过: <name> (<file>.py)`）。
+
+> 一条规则对同一条消息**最多执行一次** handler 链：同一群的 `chat_id` 同时写成
+> `-100123456` 和 `@mychannel` 两种形式时，两个 trigger 都会命中，但只有第一个
+> 会被执行。
+
 ## 8. 常见问题
 
 1. `validate` 通过但不触发？

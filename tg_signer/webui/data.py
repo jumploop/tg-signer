@@ -6,6 +6,7 @@ import secrets
 import shutil
 import sqlite3
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -113,6 +114,56 @@ def _config_path(kind: ConfigKind, name: str, workdir: Optional[Path | str]) -> 
     return resolve_under(_config_root(kind, workdir), name) / "config.json"
 
 
+# 配置读写的进程内互斥锁。
+# Windows 上 os.replace 要求目标文件没有未共享删除的打开句柄,而本模块读配置
+# 用的 open(path, "r") 不共享删除;不加这把锁,一个正在读配置的线程就能让
+# 并发的保存直接 WinError 5 失败(实测)。
+_CONFIG_LOCK = threading.Lock()
+
+
+def _replace_with_retry(src: Path, dst: Path, attempts: int = 6) -> None:
+    """``os.replace`` 在 Windows 上会对「刚写完的文件」偶发 ``Access denied``。
+
+    新建/落盘的临时文件可能被实时扫描或索引器短暂独占,此时
+    ``MoveFileEx`` 直接失败(实测在并发保存下必现)。这是瞬态的,退避重试即可;
+    重试仍失败说明是真的锁住了(例如用户用别的程序占着),照常抛出。
+    """
+    for attempt in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.02 * (attempt + 1))
+
+
+def _write_json_atomic(path: Path, payload: Any) -> None:
+    """写 JSON:临时文件 + ``os.replace``,读者永远看不到半个文件。
+
+    原来直接 ``open(path, "w")`` —— 打开即截断,再流式写。WebUI 是 FastAPI
+    线程池并发的,截断到写完之间的窗口里,任何并发读(列表页 / 打开配置 /
+    定时校验)都会读到截断的 JSON 并抛 JSONDecodeError,表现为「配置损坏」的
+    500。进程在写入途中被杀也会留下同样的残缺文件,而配置是用户唯一的真相。
+
+    ``os.replace`` 在 Windows 上要求目标文件当前没有任何未共享删除的打开句柄,
+    否则报 ``WinError 5``。Python 的 ``open(path, "r")`` 恰好不共享删除权限,
+    所以同一进程里一个正在读配置的线程就能让保存失败(实测即如此)。因此读写
+    必须共用 ``_CONFIG_LOCK``,让「读」和「替换」不重叠。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # 临时名带 pid+线程 id:并发写同一配置时不会互相覆盖临时文件。
+    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}-{threading.get_ident()}")
+    try:
+        with open(tmp, "w", encoding="utf-8") as fp:
+            json.dump(payload, fp, ensure_ascii=False, indent=2)
+        with _CONFIG_LOCK:
+            _replace_with_retry(tmp, path)
+    finally:
+        # replace 成功后临时文件已不存在;失败路径上则不能留下垃圾。
+        tmp.unlink(missing_ok=True)
+
+
 def list_task_names(
     kind: ConfigKind, workdir: Optional[Path | str] = None
 ) -> List[str]:
@@ -186,7 +237,9 @@ def load_automation_config(
         raise FileNotFoundError(
             f"配置不存在: {get_workdir(workdir) / 'automations' / name}"
         )
-    payload = _read_automation_payload(config_file)
+    # 与 _write_json_atomic 共用锁:读期间不与 os.replace 抢同一个文件句柄。
+    with _CONFIG_LOCK:
+        payload = _read_automation_payload(config_file)
     cfg, from_old, err = AutomationConfig.load_checked(payload)
     if cfg is None:
         raise ValueError(f"无法解析配置: {config_file}（{err or '未知原因'}）")
@@ -214,10 +267,22 @@ def save_automation_config(
             raise ValueError(err or "配置校验失败")
     config_dir = resolve_under(get_workdir(workdir) / "automations", name)
     config_file = config_dir / "config.json"
-    config_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(config_file, "w", encoding="utf-8") as fp:
-        json.dump(cfg.to_jsonable(), fp, ensure_ascii=False, indent=2)
+    _write_json_atomic(config_file, cfg.to_jsonable())
     return config_file
+
+
+def _remove_config_dir(directory: Path) -> None:
+    """删除配置目录，失败时抛 ``OSError``（绝不静默忽略）。
+
+    原来用 ``shutil.rmtree(..., ignore_errors=True)``：Windows 上目录里只要有
+    一个文件被其它请求线程、编辑器、tail 或杀软占用，删除就会失败，而调用方
+    ``DELETE /api/configs/...`` 仍然返回 ``{"ok": true}`` —— 前端弹出「已删除」，
+    列表一刷新配置又出现了。用户被告知配置已被销毁，实际没有。
+    """
+    try:
+        shutil.rmtree(directory)
+    except OSError as exc:
+        raise OSError(f"删除目录失败，可能仍被占用: {directory} ({exc})") from exc
 
 
 def delete_automation_config(name: str, workdir: Optional[Path | str] = None) -> Path:
@@ -228,7 +293,7 @@ def delete_automation_config(name: str, workdir: Optional[Path | str] = None) ->
         raise FileNotFoundError(
             f"配置不存在: {get_workdir(workdir) / 'automations' / name}"
         )
-    shutil.rmtree(config_file.parent, ignore_errors=True)
+    _remove_config_dir(config_file.parent)
     return config_file
 
 
@@ -315,14 +380,19 @@ def load_config(
     if not config_file.is_file():
         raise FileNotFoundError(f"配置不存在: {config_file}")
     cfg_cls = CONFIG_KINDS[kind].cfg_cls
-    with open(config_file, "r", encoding="utf-8") as fp:
-        raw = json.load(fp)
+    # 与 _write_json_atomic 共用锁:读期间不与 os.replace 抢同一个文件句柄。
+    with _CONFIG_LOCK:
+        with open(config_file, "r", encoding="utf-8") as fp:
+            raw = json.load(fp)
     cfg, from_old, err = cfg_cls.load_checked(raw)
     if cfg is None:
         raise ValueError(f"无法解析配置: {config_file}（{err or '未知原因'}）")
-    if from_old:
-        # keep the latest structure aligned with current schema
-        save_config(kind, name, cfg, workdir=workdir)
+    # 注意:这里只把 from_old 放进返回值,**不在读路径上回写磁盘**。
+    # 原来此处直接 save_config(...),导致一次纯读操作产生写副作用:只读挂载 /
+    # 无写权限时明明读成功却抛 OSError,列表页与「打开配置」整个 500;而且每次读
+    # 都截断重写一次配置文件,把并发读撞上「半个文件」的概率放大。迁移落盘交给
+    # 用户显式保存时完成 —— 这既与 load_automation_config 一致,也与前端提示
+    # 文案「保存时将写入新格式」一致。
     payload = cfg.to_jsonable()
     return ConfigEntry(
         name=name, path=config_file, updated_from_old=from_old, payload=payload, cfg=cfg
@@ -344,9 +414,7 @@ def save_config(
         if cfg is None:
             raise ValueError(err or "配置校验失败")
     config_file = _config_path(kind, name, workdir)
-    config_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(config_file, "w", encoding="utf-8") as fp:
-        json.dump(cfg.to_jsonable(), fp, ensure_ascii=False, indent=2)
+    _write_json_atomic(config_file, cfg.to_jsonable())
     return config_file
 
 
@@ -358,7 +426,8 @@ def delete_config(
         raise FileNotFoundError(f"配置不存在: {config_file}")
     # 删除整个配置目录(连同遗留 sign_record.json 等),保证删除后不再残留。
     # 签到记录主存储是 SQLite(data.sqlite3),不受影响。
-    shutil.rmtree(config_file.parent, ignore_errors=True)
+    # 失败必须抛出，不能静默忽略：否则接口会谎报「已删除」。
+    _remove_config_dir(config_file.parent)
     return config_file
 
 
@@ -480,6 +549,11 @@ def load_sign_records(workdir: Optional[Path | str] = None) -> List[SignRecord]:
         # task/user pair does not appear twice in the UI.
         if key in existing_keys:
             continue
+        # JSON 记录也必须登记回集合：两种 legacy 布局
+        # (signs/<task>/sign_record.json 与 signs/<task>/<user_id>/sign_record.json)
+        # 解析出同一个 key 时，原实现会把两条都 append 出来，记录页出现同一
+        # task/user 的重复行，且各自只带着一半的历史。
+        existing_keys.add(key)
         items: Iterable[Tuple[str, str]] = (
             data.items() if isinstance(data, dict) else []
         )

@@ -165,6 +165,19 @@ def test_schedule_messages_supports_message_thread_id(dummy_signer, runner):
     assert dummy_signer.calls[0]["message_thread_id"] == 1
 
 
+def test_bare_at_chat_id_reports_usage_error_not_traceback(dummy_signer, runner):
+    """``send-text @ hello`` 必须给出用法错误，而不是裸 ValueError traceback。
+
+    回归：``parse_chat_id`` 里 "@" 分支在 try 之外，
+    ``parse_chat_id_or_username("@")`` 抛的 ValueError 会一路冒到终端。
+    """
+    result = runner.invoke(signer_cli.tg_signer, ["send-text", "@", "hello"])
+
+    assert result.exit_code != 0
+    assert "Traceback" not in (result.output + str(result.exception or ""))
+    assert isinstance(result.exception, SystemExit)
+
+
 def test_schedule_messages_accepts_username_chat_id(dummy_signer, runner):
     result = runner.invoke(
         signer_cli.tg_signer,

@@ -83,6 +83,24 @@ def normalize_sign_at(value: str) -> str:
     except ValueError:
         pass
     else:
+        # 原先这里只输出 f"{minute} {hour} * * *"，把秒直接丢掉：
+        # "06:00:30" 会被算成 "0 6 * * *"，实际早签 30 秒，与
+        # 「返回等价的 crontab 表达式」不符。
+        # 秒为 0 时仍返回 5 段式（绝大多数配置的形态，且存量行为不变）；
+        # 需要秒精度时返回 6 段式 —— croniter 默认把第 6 段当「秒」放在末尾。
+        if parsed.tzinfo is not None:
+            # 带偏移的写法（"06:00:30+08:00"）以前被**静默丢弃**偏移，只留下
+            # "0 6 * * * 30"。而调度时刻最终按 get_now() 的时区（TZ 环境变量
+            # → 本地时区 → DEFAULT_TIMEZONE）解释，于是 TZ=UTC 的机器上，
+            # 本该 +08:00 的签到会提前 8 小时触发，且没有任何提示。
+            # 这里不能悄悄改语义 —— 直接要求用户改用 TZ 表达时区。
+            raise ValueError(
+                f"sign_at 不支持时区偏移: {text!r}。"
+                "签到时刻统一按 TZ 环境变量（缺省为系统本地时区）解释，"
+                "请去掉偏移量，或用 TZ 环境变量指定时区。"
+            )
+        if parsed.second:
+            return f"{parsed.minute} {parsed.hour} * * * {parsed.second}"
         return f"{parsed.minute} {parsed.hour} * * *"
     try:
         croniter(text)

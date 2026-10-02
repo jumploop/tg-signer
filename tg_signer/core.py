@@ -16,6 +16,7 @@ from typing import (
     Generic,
     List,
     Optional,
+    Tuple,
     Type,
     TypeVar,
     Union,
@@ -325,6 +326,14 @@ class Client(SafeGetForumTopics, BaseClient):
                     await self.stop()
                 except ConnectionError:
                     pass
+                except Exception as exc:  # noqa: BLE001
+                    # stop() → terminate() → storage.save() → sqlite commit，
+                    # 库被占用时抛的是 sqlite3.OperationalError —— 既不是
+                    # ConnectionError 也不是 OSError。原来它会直接逃出 __aexit__，
+                    # 下面两行 pop 被跳过（client 与限流时间戳永久残留），异常再
+                    # 一路冒到 normal_run 的 `except (OSError, errors.Unauthorized)`
+                    # 之外，把整个签到守护进程打死。清理必须无条件走完。
+                    logger.warning(f"关闭 client 失败(已忽略): {exc}", exc_info=True)
                 _CLIENT_INSTANCES.pop(self.key, None)
                 # 引用归零即没有任何在途调用，限流时间戳已无意义，顺手回收，
                 # 避免 _API_LAST_CALL_AT 随账号数无界增长。
@@ -432,6 +441,62 @@ ConfigT = TypeVar("ConfigT", bound=BaseJSONConfig)
 ApiCallResultT = TypeVar("ApiCallResultT")
 
 
+def _coerce_delete_after(value) -> float | None:
+    """把 ``delete_after`` 规整为非负秒数；无法解析时返回 ``None``。
+
+    YAML/JSON 里写成 ``delete_after: "5"`` 是很常见的笔误，而 ``asyncio.sleep``
+    收到字符串会抛 ``TypeError`` —— 关键在于**此时消息已经投递出去了**，
+    异常冒泡会让一次成功的签到被判为失败。
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        seconds = float(value)
+    elif isinstance(value, str):
+        try:
+            seconds = float(value.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    if seconds != seconds or seconds in (float("inf"), float("-inf")):
+        # nan / inf：sleep 会立刻返回或永不返回，都不是「等 N 秒后删除」。
+        return None
+    return max(0.0, seconds)
+
+
+async def _delete_message_later(worker, message, delete_after, label: str) -> None:
+    """按 ``delete_after`` 删除刚发出的消息。
+
+    删除失败**绝不能**影响签到结果：消息已经送达、机器人也已经登记，这一步
+    纯粹是本地回收。群里没有删除权限时 Telegram 返回
+    ``MESSAGE_DELETE_FORBIDDEN``（非常常见），原来它会一路冒泡出
+    ``send_message`` → ``sign_a_chat`` → ``sign_once`` 的 ``except``，把一次
+    **成功**的签到判成失败：``run-once`` 退出码 1（cron/监控误报），``run``
+    则每 60 秒重发一次签到消息刷屏。
+    """
+    if delete_after is None:
+        return
+    seconds = _coerce_delete_after(delete_after)
+    if seconds is None:
+        worker.log(
+            f"delete_after 不是有效的秒数，已忽略自动删除: {delete_after!r}",
+            level="WARNING",
+        )
+        return
+    worker.log(f"{label} will be deleted after {seconds} seconds.")
+    worker.log("Waiting...")
+    await asyncio.sleep(seconds)
+    try:
+        await worker._call_telegram_api("messages.DeleteMessages", message.delete)
+    except Exception as exc:  # noqa: BLE001
+        worker.log(
+            f"{label} 删除失败（已忽略，不影响签到结果）: {exc}", level="WARNING"
+        )
+        return
+    worker.log(f"{label} deleted!")
+
+
 class BaseUserWorker(Generic[ConfigT]):
     _workdir = "."
     _tasks_dir = "tasks"
@@ -473,11 +538,12 @@ class BaseUserWorker(Generic[ConfigT]):
         return {}
 
     def app_run(self, coroutine=None):
+        # 返回协程结果:调用方(如 CLI 的 run_once)要靠它判断本轮签到是否成功,
+        # 丢掉返回值就只能一律当成成功。
         if coroutine is not None:
             run = self.loop.run_until_complete
-            run(coroutine)
-        else:
-            self.app.run()
+            return run(coroutine)
+        self.app.run()
 
     @property
     def workdir(self) -> pathlib.Path:
@@ -764,6 +830,12 @@ class BaseUserWorker(Generic[ConfigT]):
         is_authorized = await self.app.connect()
         if not is_authorized:
             await self.app.storage.delete()
+            # session_string 是本项目自己的登录态文件，storage.delete() 只删
+            # pyrogram 的 SQLite session。不删它的话，WebUI 的
+            # _session_file_usable() 仍会认为该账号已登录，而 session 实际已失效
+            # —— 清理范围必须和 webui.account.logout_account 一致。
+            if self.app.session_string_file.is_file():
+                os.remove(self.app.session_string_file)
             _LOGIN_USERS.pop(self.app.key, None)
             self.user = None
             return None
@@ -796,14 +868,9 @@ class BaseUserWorker(Generic[ConfigT]):
             "messages.SendMessage",
             lambda: self.app.send_message(chat_id, text, **send_kwargs),
         )
-        if delete_after is not None:
-            self.log(
-                f"Message「{text}」 to {chat_id} will be deleted after {delete_after} seconds."
-            )
-            self.log("Waiting...")
-            await asyncio.sleep(delete_after)
-            await self._call_telegram_api("messages.DeleteMessages", message.delete)
-            self.log(f"Message「{text}」 to {chat_id} deleted!")
+        await _delete_message_later(
+            self, message, delete_after, f"Message「{text}」 to {chat_id}"
+        )
         return message
 
     async def send_dice(
@@ -835,14 +902,10 @@ class BaseUserWorker(Generic[ConfigT]):
             "messages.SendMedia",
             lambda: self.app.send_dice(chat_id, emoji, **send_kwargs),
         )
-        if message and delete_after is not None:
-            self.log(
-                f"Dice「{emoji}」 to {chat_id} will be deleted after {delete_after} seconds."
+        if message is not None:
+            await _delete_message_later(
+                self, message, delete_after, f"Dice「{emoji}」 to {chat_id}"
             )
-            self.log("Waiting...")
-            await asyncio.sleep(delete_after)
-            await self._call_telegram_api("messages.DeleteMessages", message.delete)
-            self.log(f"Dice「{emoji}」 to {chat_id} deleted!")
         return message
 
     async def search_members(
@@ -873,9 +936,13 @@ class BaseUserWorker(Generic[ConfigT]):
                 )
 
     async def get_forum_topics(self, chat_id: Union[int, str], limit: int = 20):
-        topics = []
-
         async def _collect_topics():
+            # 列表必须建在闭包**内部**：get_forum_topics 是异步生成器，可能在
+            # 迭代到一半时抛 FloodWait，而 _call_telegram_api 会重新调用这个
+            # 闭包。若列表建在闭包外，上一次已经 append 进去的 topic 不会被清掉，
+            # 重试的结果就是「1,2,3,1,2,3」——list-topics 与登录时的 topic 预览
+            # 都会重复打印（每多一次重试就多一份）。
+            topics = []
             async for topic in self.app.get_forum_topics(chat_id, limit=limit):
                 topics.append(topic)
             return topics
@@ -912,7 +979,17 @@ class BaseUserWorker(Generic[ConfigT]):
 
     def ensure_ai_cfg(self):
         cfg_manager = OpenAIConfigManager(self.workdir)
-        cfg = cfg_manager.load_config()
+        # load_file_config() 对损坏文件直接抛底层错误（截断是 JSONDecodeError，
+        # 内容是 {} 是 pydantic ValidationError）。WebUI 的 _safe_llm_config
+        # 已经按「损坏即未配置」兜底，CLI 这条路径以前没有，于是一个坏掉的
+        # .openai_config.json 会让整个签到/自动化任务崩在裸 traceback 上。
+        try:
+            cfg = cfg_manager.load_config()
+        except (ValueError, OSError) as exc:
+            raise ValueError(
+                f"大模型配置 {cfg_manager.get_config_file()} 无法读取（{exc}），"
+                f"请修复该文件或执行 `tg-signer llm-config` 重新配置"
+            ) from exc
         if not cfg:
             cfg = cfg_manager.ask_for_config()
         return cfg
@@ -1211,14 +1288,28 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     async def sign_a_chat(
         self,
         chat: SignChatV3,
-    ):
+    ) -> bool:
+        """执行该 chat 的动作链，返回它是否真的签到成功。
+
+        任一动作没有真正完成（机器人未回复、按钮点击被拒、超时）就返回
+        ``False``：继续执行后面的动作没有意义，而且会把「没签到」记成签到成功。
+        """
         self.log(f"开始执行: \n{chat}")
         for action in chat.actions:
             self.log(f"等待处理动作: {action}")
-            await self.wait_for(chat, action)
+            if not await self.wait_for(chat, action):
+                # 超时或点击被拒 = 这一步没有完成。失败原因已由 wait_for
+                # 记进日志，这里中止后续动作并让整个 chat 判为失败 ——
+                # 动作链是「必须依次完成」的。
+                self.log(
+                    f"动作未完成，中止该 chat 的后续动作: {action}", level="WARNING"
+                )
+                self.context.waiting_message = None
+                return False
             self.log(f"处理完成: {action}")
             self.context.waiting_message = None
             await asyncio.sleep(chat.action_interval)
+        return True
 
     async def run(
         self,
@@ -1249,12 +1340,36 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         folder: Optional[str] = None,
     ):
         async with self.app:
-            await self.normal_run(
+            return await self.normal_run(
                 num_of_dialogs,
                 only_once=only_once,
                 force_rerun=force_rerun,
                 folder=folder,
             )
+
+    def _ensure_message_handlers(self) -> None:
+        """确保消息回调已挂在当前 client 上（幂等）。
+
+        pyrogram 的 ``Client.__aexit__`` 在引用计数归零时调用 ``stop()``，而
+        ``stop()`` 默认 ``clear_handlers=True`` → ``terminate()`` →
+        ``dispatcher.stop()`` → ``dispatcher.groups.clear()``。``normal_run``
+        每轮都重新 ``async with self.app``，因此第一轮结束后所有回调都被清空，
+        且原来的 ``add_handler`` 写在循环之外、再也不会执行 —— 第二轮起
+        ``on_message`` 不再被调用，``context.chat_messages`` 永远是空的，
+        点击按钮 / 回复算术题 / 图片选择全部只能等到 ``wait_for`` 超时。
+
+        这里按需补注册：``add_handler`` 是无条件 append，重复调用会产生重复
+        回调，所以先检查目标 handler 是否已在 ``dispatcher.groups`` 里。
+        """
+        handlers = getattr(self, "_message_handlers", None)
+        if not handlers:
+            return
+        dispatcher = getattr(self.app, "dispatcher", None)
+        groups = getattr(dispatcher, "groups", None)
+        registered = groups.get(0, []) if isinstance(groups, dict) else []
+        for handler in handlers:
+            if handler not in registered:
+                self.app.add_handler(handler)
 
     async def normal_run(
         self,
@@ -1262,7 +1377,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         only_once: bool = False,
         force_rerun: bool = False,
         folder: Optional[str] = None,
-    ):
+    ) -> bool:
         if self.user is None:
             await self.login(num_of_dialogs, print_chat=True, folder=folder)
 
@@ -1287,13 +1402,35 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             now 必须由参数传入而不是闭包捕获:闭包里读到的是外层 while 循环
             每轮重新绑定的同名变量,一旦改成并发调用就会拿到别的时间点。
             """
-            succeeded = 0
+            # 必须先把本轮**所有** chat 的路由登记进 sign_chats,再开始逐个处理。
+            # 原来边处理边登记时,sign_chats 里只会有「正在处理的那个 chat」:
+            # 在 A 群等待键盘的 30s 里,B 群机器人推来的消息会因为 sign_chats
+            # 还没有 B 而被 _on_message 判成「意料之外的聊天」直接丢弃(而且
+            # on_message 只在 filters.chat(chat_ids) 放行后才会走到这里,不会
+            # 有第二次机会)。等真正轮到 B 时那条消息早就没了,B 必然等满
+            # timeout 签到失败,而日志里只留一行「忽略意料之外的聊天」。
+            resolved: List[Tuple[SignChatV3, RouteKey]] = []
             for chat in config.chats:
-                route_key = None
                 try:
-                    route_key = await self.resolve_chat_route_key(chat)
-                    self.context.sign_chats[route_key].append(chat)
-                    await self.sign_a_chat(chat)
+                    resolved.append((chat, await self.resolve_chat_route_key(chat)))
+                except Exception as _e:  # noqa: BLE001
+                    # 解析失败按「这个 chat 本轮签到失败」处理,不拖累其余 chat。
+                    self.log(
+                        f"解析 chat 路由失败: {_e} \nchat: \n{chat}", level="WARNING"
+                    )
+                    logger.warning(_e, exc_info=True)
+            for _chat, route_key in resolved:
+                self.context.sign_chats[route_key].append(_chat)
+
+            succeeded = 0
+            for chat, route_key in resolved:
+                try:
+                    if not await self.sign_a_chat(chat):
+                        # 动作链没走完（机器人未回复 / 点击被拒 / 超时）。
+                        # 以前这里只要不抛异常就算成功，于是「按钮从没被点到」
+                        # 也会写入今日签到记录、run-once 退出 0，当天不再重试。
+                        self.log(f"签到未完成: \nchat: \n{chat}", level="WARNING")
+                        continue
                 except Exception as _e:  # noqa: BLE001
                     # 单个 chat 的失败(含大模型返回异常、动作链抛错)只跳过这个
                     # chat;不能让它逃逸出 normal_run 把整个签到任务打死。
@@ -1302,8 +1439,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     continue
 
                 succeeded += 1
-                if route_key is not None:
-                    self.context.chat_messages[route_key].clear()
+                self.context.chat_messages[route_key].clear()
                 await asyncio.sleep(config.sign_interval)
 
             if succeeded or not config.chats:
@@ -1371,21 +1507,34 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 return False
             return True
 
-        self.log(f"为以下Chat添加消息回调处理函数：{chat_ids}")
-        self.app.add_handler(MessageHandler(self.on_message, filters.chat(chat_ids)))
-        self.app.add_handler(
-            EditedMessageHandler(self.on_edited_message, filters.chat(chat_ids))
-        )
+        # 回调对象只构造一次（filters.chat 的匹配集合要复用），注册则在每轮
+        # 进入 client 之后按需补做 —— 见 _ensure_message_handlers。
+        self._message_handlers = [
+            MessageHandler(self.on_message, filters.chat(chat_ids)),
+            EditedMessageHandler(self.on_edited_message, filters.chat(chat_ids)),
+        ]
 
         while True:
             try:
                 async with self.app:
+                    # Client.__aexit__ 在引用归零时会 stop()，而 pyrogram 的
+                    # stop() 默认 clear_handlers=True → dispatcher.groups.clear()。
+                    # 每轮都重新 async with，所以第一轮结束后回调就被清空且再也
+                    # 不会注册回来：第二轮起机器人回复没有任何 handler 接手，
+                    # 所有点击/回复动作只能干等到 wait_for 超时，签到静默失败。
+                    self._ensure_message_handlers()
                     now = get_now()
                     self.log(f"当前时间: {now}")
                     now_date_str = str(now.date())
                     self.context = self.ensure_ctx()
                     if need_sign(now_date_str):
-                        if not await sign_once(now) and not only_once:
+                        if not await sign_once(now):
+                            if only_once:
+                                # run-once 必须把「全部 chat 均失败」如实返回给调用方:
+                                # 原来这里只 break 出去、既不写记录也不抛异常,CLI
+                                # 于是退出码 0 —— cron/监控会认为今天签到成功,而当天
+                                # 不会再重试、记录里也查不到,失败被彻底吞掉。
+                                return False
                             # 全部失败:退避后重试本轮,而不是等到明天的计划时刻。
                             self.log(
                                 f"{_ALL_FAILED_RETRY_SECONDS}s 后重试本轮签到",
@@ -1407,6 +1556,8 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             )
             self.log(f"下次运行时间: {next_run}")
             await asyncio.sleep((next_run - now).total_seconds())
+
+        return True
 
     async def run_once(self, num_of_dialogs, folder: Optional[str] = None):
         return await self.run(
@@ -1495,13 +1646,12 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     option_to_btn[btn.text] = btn
                     if action.text in btn.text:
                         self.log(f"点击按钮: {btn.text}")
-                        await self.request_callback_answer(
+                        return await self.request_callback_answer(
                             self.app,
                             message.chat.id,
                             message.id,
                             btn.callback_data,
                         )
-                        return True
         return False
 
     async def _reply_by_calculation_problem(
@@ -1537,13 +1687,12 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     self.log("匹配的按钮没有 callback_data，无法点击", level="WARNING")
                     return False
                 self.log(f"点击按钮: {target_btn.text}")
-                await self.request_callback_answer(
+                return await self.request_callback_answer(
                     self.app,
                     message.chat.id,
                     message.id,
                     target_btn.callback_data,
                 )
-                return True
             await self.send_message(
                 message.chat.id,
                 answer,
@@ -1598,30 +1747,39 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             if not target_btn.callback_data:
                 self.log("匹配的按钮没有 callback_data，无法点击", level="WARNING")
                 return False
-            await self.request_callback_answer(
+            return await self.request_callback_answer(
                 self.app,
                 message.chat.id,
                 message.id,
                 target_btn.callback_data,
             )
-            return True
         return False
 
-    async def wait_for(self, chat: SignChatV3, action: ActionT, timeout=30):
+    async def wait_for(self, chat: SignChatV3, action: ActionT, timeout=30) -> bool:
+        """执行一个动作，返回它是否**确实完成**。
+
+        返回布尔值而不是 ``None`` 是关键：原来超时路径和成功路径都
+        ``return None``，``sign_a_chat`` 又无条件记「处理完成」，于是「机器人
+        压根没回复、按钮从没被点到」也被计入成功 —— 当天直接写入签到记录、
+        run-once 退出码 0。而 ``sign_once`` 只靠异常判定失败，这条最常见的
+        失败路径完全不被察觉，当天也不会再重试。
+        """
         if isinstance(action, SendTextAction):
-            return await self.send_message(
+            await self.send_message(
                 chat.chat_id,
                 action.text,
                 chat.delete_after,
                 message_thread_id=chat.message_thread_id,
             )
+            return True
         elif isinstance(action, SendDiceAction):
-            return await self.send_dice(
+            await self.send_dice(
                 chat.chat_id,
                 action.dice,
                 chat.delete_after,
                 message_thread_id=chat.message_thread_id,
             )
+            return True
         route_key = self.get_runtime_route_key(chat)
         self.context.waiter.add(route_key)
         start = time.perf_counter()
@@ -1659,10 +1817,10 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     self.context.waiter.sub(route_key)
                     # 将消息ID对应value置为None，保证收到消息的编辑时消息所处的顺序
                     self.context.chat_messages[route_key][message.id] = None
-                    return None
+                    return True
                 self.log(f"忽略消息: {readable_message(message)}")
         self.log(f"等待超时: \nchat: \n{chat} \naction: {action}", level="WARNING")
-        return None
+        return False
 
     async def request_callback_answer(
         self,
@@ -1671,7 +1829,15 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         message_id: int,
         callback_data: Union[str, bytes],
         **kwargs,
-    ):
+    ) -> bool:
+        """点击按钮，返回是否真的点成功。
+
+        原来把 ``BadRequest`` / ``TimeoutError`` 吞掉只记一条 ERROR 日志并隐式
+        返回 ``None``，与成功路径完全无法区分，而三个调用方又都无条件
+        ``return True`` —— 于是 ``MESSAGE_ID_INVALID`` / ``BUTTON_DATA_INVALID``
+        / ``QUERY_ID_INVALID`` / ``MESSAGE_TOO_OLD`` 这类「按钮其实没点中」的
+        情况一律被当成点击成功，``wait_for`` 随即认为动作已完成并写入签到记录。
+        """
         try:
             await self._call_telegram_api(
                 "messages.GetBotCallbackAnswer",
@@ -1683,8 +1849,10 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 ),
             )
             self.log("点击完成")
+            return True
         except (errors.BadRequest, TimeoutError) as e:
-            self.log(e, level="ERROR")
+            self.log(f"点击失败: {e}", level="ERROR")
+            return False
 
     async def schedule_messages(
         self,

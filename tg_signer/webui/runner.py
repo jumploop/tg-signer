@@ -176,9 +176,23 @@ def _forget(key: str, expected: Any = _ANY_PROCESS) -> None:
 # ---------------------------------------------------------------------------
 
 
-def process_key(kind: str, account: str) -> str:
-    """单进程 per (kind, account) — 同账号同 kind 的多任务合并到一个子进程。"""
+def display_key(kind: str, account: str) -> str:
+    """进程在 UI 上的稳定标识（不含 workdir）。"""
     return f"{kind}:{account}"
+
+
+def process_key(kind: str, account: str, workdir: Path | str | None = None) -> str:
+    """注册表的键: ``<workdir>|<kind>:<account>``。
+
+    workdir 必须在键里。不同 workdir 是彼此独立的账号命名空间(各自的
+    ``<account>.session``、``webui_accounts.json``、``<account>.lock``),而原实现
+    只用 ``kind:account`` 做键:WebUI 切换工作目录只重绑 ``state.workdir``,不碰
+    这些注册表,于是新目录里同名账号会被旧目录的进程挡住并报「已在运行
+    (PID ...)」,``/api/run`` 还会把旧目录的任务显示成新目录的。
+    """
+    if workdir is None:
+        return display_key(kind, account)
+    return f"{Path(workdir).resolve()}|{display_key(kind, account)}"
 
 
 def child_log_dir(workdir: Path | str, kind: str, account: str) -> Path:
@@ -265,35 +279,53 @@ def build_env(proxy: Optional[str] = None) -> Dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def running_tasks() -> Dict[str, bool]:
-    """返回 {process_key: is_running},并清理已退出条目。"""
+def running_tasks(workdir: Path | str | None = None) -> Dict[str, bool]:
+    """返回 {display_key: is_running},并清理已退出条目。
+
+    对外仍用不含 workdir 的展示键;注册表内部则是 workdir 作用域的。
+    ``workdir`` 非 None 时只返回该目录下的进程 —— 否则切换工作目录后,
+    旧目录里仍在跑的任务会继续出现在「运行中」列表里,而 ``run_stop`` 用当前
+    目录去解析 key 必然匹配不上,用户看到的每一行「停止」按钮都是点不动的。
+    """
     result: Dict[str, bool] = {}
+    prefix = None if workdir is None else f"{Path(workdir).resolve()}|"
     with _STATE_LOCK:
         snapshot = list(_PROCESSES.items())
     for key, proc in snapshot:
+        if prefix is not None and not key.startswith(prefix):
+            continue
+        shown = key.split("|", 1)[-1]
         if proc.poll() is None:
-            result[key] = True
+            result[shown] = True
         else:
             _forget(key, expected=proc)
-            result[key] = False
+            result[shown] = False
     return result
 
 
-def running_task_names() -> Dict[str, List[str]]:
-    """返回 {process_key: 任务名列表},仅包含仍在运行的进程。"""
+def running_task_names(
+    workdir: Path | str | None = None,
+) -> Dict[str, List[str]]:
+    """返回 {display_key: 任务名列表},仅包含仍在运行的进程。
+
+    与 :func:`running_tasks` 一样默认按 workdir 过滤。
+    """
     result: Dict[str, List[str]] = {}
+    prefix = None if workdir is None else f"{Path(workdir).resolve()}|"
     with _STATE_LOCK:
         snapshot = list(_PROCESSES.items())
         names = {key: list(_TASK_NAMES.get(key, [])) for key, _ in snapshot}
     for key, proc in snapshot:
+        if prefix is not None and not key.startswith(prefix):
+            continue
         if proc.poll() is None:
-            result[key] = names[key]
+            result[key.split("|", 1)[-1]] = names[key]
     return result
 
 
-def status(kind: str, account: str) -> bool:
+def status(kind: str, account: str, workdir: Path | str | None = None) -> bool:
     """``(kind, account)`` 对应的子进程是否仍在运行。"""
-    key = process_key(kind, account)
+    key = process_key(kind, account, workdir)
     with _STATE_LOCK:
         proc = _PROCESSES.get(key)
     if proc is None:
@@ -321,7 +353,8 @@ def start(
         tasks = [tasks]
     if not tasks:
         return False, "需要至少一个任务名"
-    key = process_key(kind, account)
+    workdir = Path(workdir)
+    key = process_key(kind, account, workdir)
     with _STATE_LOCK:
         proc = _PROCESSES.get(key)
         running = proc is not None and proc.poll() is None
@@ -335,7 +368,6 @@ def start(
         # stop() 顺手清理，于是「子进程自己退了、用户马上点启动」永远起不来。
         # expected=proc：并发 start 可能已经登记了新子进程，不能连它一起清掉。
         _forget(key, expected=proc)
-    workdir = Path(workdir)
 
     # 抢账号级文件锁(防止跨 WebUI 实例并发启动同账号)
     try:
@@ -410,8 +442,10 @@ def start(
     return True, f"{kind} 任务 {task_disp} 已启动 (PID {child.pid})"
 
 
-def stop(kind: str, account: str) -> Tuple[bool, str]:
-    key = process_key(kind, account)
+def stop(
+    kind: str, account: str, workdir: Path | str | None = None
+) -> Tuple[bool, str]:
+    key = process_key(kind, account, workdir)
     with _STATE_LOCK:
         proc = _PROCESSES.get(key)
     if proc is None or proc.poll() is not None:
@@ -422,7 +456,18 @@ def stop(kind: str, account: str) -> Tuple[bool, str]:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
         proc.kill()
-        proc.wait(timeout=5)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            # kill() 之后仍然 wait 不到（内核态卡死 / 僵尸态 / Windows 上
+            # TerminateProcess 未生效）。原来这里会裸抛 TimeoutExpired，
+            # 锁和注册表项都不清理：账号被永久占住，后续 start() 一直被拒，
+            # 且用户看到的只是一段 traceback。
+            _forget(key, expected=proc)
+            return True, (
+                f"账号 {account} 的 {kind} 任务已发出 kill，但未能确认退出 "
+                f"(PID {proc.pid})，请手动检查该进程"
+            )
     # 只有确认子进程已退出(或已被 kill)才释放账号锁:锁一释放,新进程就会
     # 去打开同一份 <account>.session,而旧进程若还活着就是两个写者。
     # expected=proc：等待期间可能有并发 start() 抢先登记了新子进程，不能误删。
@@ -454,5 +499,6 @@ def shutdown_all(timeout: float = 5.0) -> List[str]:
             except Exception:  # noqa: BLE001
                 pass
         _forget(key, expected=proc)
-        stopped.append(key)
+        # 对外返回展示键（不含 workdir），与 running_tasks() 保持一致
+        stopped.append(key.split("|", 1)[-1])
     return stopped

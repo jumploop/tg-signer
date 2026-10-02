@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import json
+import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -50,7 +51,14 @@ class AutomationHarness(UserAutomation):
         self._message_cache = OrderedDict()
         self._message_cache_limit = 200
         self._message_cache_chats_limit = 64
+        self._rule_locks = {}
+        self._dispatch_tasks = set()
         self.app = SimpleNamespace(forward_messages=lambda *args, **kwargs: None)
+
+    async def drain(self):
+        """等后台派发的规则链跑完（on_message 不再内联 await）。"""
+        for task in list(self._dispatch_tasks):
+            await asyncio.gather(task, return_exceptions=True)
 
 
 @dataclass
@@ -304,7 +312,7 @@ def test_compute_next_run_interval_and_cron(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_timer_schedule_next_override(tmp_path):
+async def test_timer_schedule_next_override(tmp_path, monkeypatch):
     """验证 timer 触发后 schedule_next 能覆盖默认间隔计算。"""
     worker = make_worker(tmp_path)
     register_builtin_handlers()
@@ -336,8 +344,10 @@ async def test_timer_schedule_next_override(tmp_path):
 
     import tg_signer.automation.engine as engine
 
-    # 固定当前时间，避免定时循环受真实时间影响
-    engine.get_now = lambda: now
+    # 固定当前时间，避免定时循环受真实时间影响。
+    # 必须走 monkeypatch：直接给模块属性赋值不会回退，会把 get_now 泄漏给
+    # 后续所有用例（整个 engine 模块的"现在"被永久钉死在 2024-01-01）。
+    monkeypatch.setattr(engine, "get_now", lambda: now)
 
     # 运行一次 timer_loop 周期后取消，模拟单轮触发
     task = asyncio.create_task(worker.timer_loop())
@@ -405,6 +415,7 @@ async def test_on_edited_message_matches_message_trigger(tmp_path):
     msg = DummyMessage(text="edited", chat=DummyChat(id=1, username="room"))
 
     await worker.on_edited_message(None, msg)
+    await worker.drain()
 
     assert events == [("r1", "edited_message", 1)]
 
@@ -421,15 +432,127 @@ async def test_on_edited_message_updates_cache(tmp_path):
     edited = DummyMessage(id=100, text="after", chat=DummyChat(id=1, username="room"))
 
     await worker.on_message(None, original)
+    await worker.drain()
     await worker.on_edited_message(None, edited)
+    await worker.drain()
 
     cached = worker.get_cached_messages(1)
     assert len(cached) == 1
     assert cached[0].text == "after"
 
 
+# ---------------------------------------------------------------------------
+# 回归：一条规则对同一条消息只跑一次 + 规则链不阻塞 pyrogram 调度协程
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_multiple_matching_triggers_run_chain_once(tmp_path):
+    """同一条消息命中同规则的多个 trigger 时，handler 链只执行一次。
+
+    回归：原来对每个命中的 trigger 各跑一遍，同一群的 chat_id 写成 int 和
+    @username 两种形式就会自动回复两次。
+    """
+    from tg_signer.automation import handlers as handlers_mod
+
+    worker = make_worker(tmp_path)
+    rule = RuleConfig(
+        id="r1",
+        enabled=True,
+        triggers=[
+            MessageTriggerConfig(id="t1", type="message", params={"chat_id": 1}),
+            MessageTriggerConfig(id="t2", type="message", params={"chat_id": "@room"}),
+        ],
+        handlers=[HandlerConfig(handler="_test_once", params={})],
+    )
+    worker.config = AutomationConfig(rules=[rule])
+
+    calls = []
+
+    async def once_handler(_event, _ctx, _params):
+        calls.append(1)
+
+    handlers_mod._REGISTRY["_test_once"] = once_handler
+    msg = DummyMessage(text="hi", chat=DummyChat(id=1, username="room"))
+    try:
+        await worker.on_message(None, msg)
+        await worker.drain()
+    finally:
+        handlers_mod._REGISTRY.pop("_test_once", None)
+
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_slow_handler_does_not_block_pyrogram_dispatcher(tmp_path):
+    """规则链里的 delay 不得占住 pyrogram 唯一的 handler_worker 协程。
+
+    回归：``Dispatcher.handler_worker`` 是在单个协程里 ``await
+    handler.callback(...)`` 的，原来内联 await 会让一条 delay 规则把所有群的
+    所有更新停摆。
+    """
+    from tg_signer.automation import handlers as handlers_mod
+
+    worker = make_worker(tmp_path)
+    rule = RuleConfig(
+        id="r1",
+        enabled=True,
+        triggers=[MessageTriggerConfig(type="message", params={"chat_id": 1})],
+        handlers=[HandlerConfig(handler="_test_slow", params={})],
+    )
+    worker.config = AutomationConfig(rules=[rule])
+
+    started = asyncio.Event()
+
+    async def slow_handler(_event, _ctx, _params):
+        started.set()
+        await asyncio.sleep(0.2)
+
+    handlers_mod._REGISTRY["_test_slow"] = slow_handler
+    msg = DummyMessage(text="hi", chat=DummyChat(id=1, username="room"))
+    try:
+        # on_message 必须在慢 handler 结束前就返回。
+        await asyncio.wait_for(worker.on_message(None, msg), timeout=0.05)
+        # 而它确实被调度起来了。
+        await asyncio.wait_for(started.wait(), timeout=1)
+        await worker.drain()
+    finally:
+        handlers_mod._REGISTRY.pop("_test_slow", None)
+
+
+@pytest.mark.asyncio
+async def test_rule_state_updates_are_not_lost_under_concurrency(tmp_path):
+    """同一规则的并发执行不得丢更新（counter 必须 +2 而不是 +1）。"""
+    from tg_signer.automation import handlers as handlers_mod
+
+    worker = make_worker(tmp_path)
+    rule = RuleConfig(
+        id="r1",
+        enabled=True,
+        triggers=[MessageTriggerConfig(type="message", params={"chat_id": 1})],
+        handlers=[HandlerConfig(handler="_test_bump", params={})],
+    )
+    worker.config = AutomationConfig(rules=[rule])
+
+    async def bump_handler(_event, ctx, _params):
+        ctx.vars["n"] = ctx.vars.get("n", 0) + 1
+        # 放大竞态窗口：若读-改-写没有串行化，两边会同时读到同一个旧值。
+        await asyncio.sleep(0.01)
+
+    handlers_mod._REGISTRY["_test_bump"] = bump_handler
+    msg = DummyMessage(text="hi", chat=DummyChat(id=1, username="room"))
+    try:
+        await asyncio.gather(
+            worker._handle_message_event(msg, "message"),
+            worker._handle_message_event(msg, "message"),
+        )
+    finally:
+        handlers_mod._REGISTRY.pop("_test_bump", None)
+
+    assert worker.state.get_rule_vars("r1")["n"] == 2
+
+
 def test_trigger_rejects_unknown_params_key():
-    """强类型触发器应拒绝未定义字段，避免静默吞掉拼写错误。"""
     with pytest.raises(ValidationError):
         RuleConfig.model_validate(
             {
@@ -652,6 +775,143 @@ def test_list_task_names_is_read_only(tmp_path):
 # ---------------------------------------------------------------------------
 # B4: export → import 往返不得按错误格式落盘
 # ---------------------------------------------------------------------------
+
+
+def _timer_rule(rule_id):
+    return SimpleNamespace(
+        id=rule_id,
+        enabled=True,
+        triggers=[
+            SimpleNamespace(
+                id=f"{rule_id}-t",
+                type=TIMER_TRIGGER_TYPE,
+                params=SimpleNamespace(
+                    cron=None,
+                    interval_seconds=3600,
+                    random_seconds=0,
+                    chat_id=None,
+                ),
+            )
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_timer_schedule_advances_even_when_rule_raises(tmp_path, monkeypatch):
+    """规则链抛异常时 next_run_at 仍必须推进，否则每个 tick 重复触发。
+
+    回归：推进 next_run_at 的语句原先排在 ``await self._run_rule(...)`` 之后，
+    异常一来就永远走不到。实测 ``interval_seconds=3600`` 的规则 0.2 秒发了 12 条。
+    """
+    engine = UserAutomation(
+        task_name="timer_storm", workdir=tmp_path, session_dir=tmp_path
+    )
+    now = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    async def boom(_rule, _event):
+        raise RuntimeError("handler chain exploded")
+
+    monkeypatch.setattr(engine, "_run_rule", boom)
+    # 用 load_config 替换（与本文件其它用例一致）：直接 setattr(config) 会先读
+    # 属性、进而触发 load_config() -> reconfig() 的交互式输入。
+    monkeypatch.setattr(
+        engine,
+        "load_config",
+        lambda cfg_cls=None: SimpleNamespace(rules=[_timer_rule("r1")]),
+    )
+    engine.state = RuleStateStore(tmp_path / "state.json", logging.getLogger("test"))
+    engine.state.set_trigger_next_run("r1", "r1-t", now - timedelta(seconds=1))
+
+    for _ in range(3):
+        await engine._tick_timers()
+
+    after = engine.state.get_trigger_next_run("r1", "r1-t")
+    assert after is not None and after > now, f"next_run_at 仍停在过去: {after}"
+
+
+@pytest.mark.asyncio
+async def test_one_bad_rule_does_not_block_other_rules(tmp_path, monkeypatch):
+    """单条规则异常不得冒泡打断 _tick_timers 里后面的规则。"""
+    engine = UserAutomation(
+        task_name="timer_isolation", workdir=tmp_path, session_dir=tmp_path
+    )
+    now = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    ran = []
+
+    async def boom(rule, _event):
+        ran.append(rule.id)
+        raise RuntimeError("bad rule")
+
+    monkeypatch.setattr(engine, "_run_rule", boom)
+    monkeypatch.setattr(
+        engine,
+        "load_config",
+        lambda cfg_cls=None: SimpleNamespace(
+            rules=[_timer_rule("bad"), _timer_rule("good")]
+        ),
+    )
+    engine.state = RuleStateStore(tmp_path / "state.json", logging.getLogger("test"))
+    engine.state.set_trigger_next_run("bad", "bad-t", now - timedelta(seconds=1))
+    engine.state.set_trigger_next_run("good", "good-t", now - timedelta(seconds=1))
+
+    await engine._tick_timers()
+    assert ran == ["bad", "good"], f"坏规则打断了后续规则: {ran}"
+
+
+@pytest.mark.asyncio
+async def test_unhashable_handler_result_does_not_skip_persistence(
+    tmp_path, monkeypatch
+):
+    """插件返回 dict/list 时不能因 ``in {...}`` 抛 TypeError 而丢掉状态落盘。
+
+    回归：``if result in {"stop", "defer"}`` 写在 try 之外，TypeError 会逃出
+    ``_run_rule``，剩下的 handler 不执行、状态变量也完全不落盘。
+    """
+    from tg_signer.automation import handlers as handlers_mod
+
+    engine = UserAutomation(
+        task_name="unhashable", workdir=tmp_path, session_dir=tmp_path
+    )
+    engine.state = RuleStateStore(tmp_path / "state.json", logging.getLogger("test"))
+
+    calls = []
+
+    async def dict_handler(_event, ctx, _params):
+        calls.append("dict")
+        ctx.vars["from_plugin"] = 1
+        return {"status": "ok"}  # 不可哈希
+
+    async def next_handler(_event, _ctx, _params):
+        calls.append("next")
+        return "continue"
+
+    handlers_mod._REGISTRY["_test_dict_result"] = dict_handler
+    handlers_mod._REGISTRY["_test_next"] = next_handler
+    rule = SimpleNamespace(
+        id="r1",
+        vars={},
+        handlers=[
+            SimpleNamespace(handler="_test_dict_result", params={}),
+            SimpleNamespace(handler="_test_next", params={}),
+        ],
+    )
+    event = Event(
+        type="timer",
+        chat_id=None,
+        message=None,
+        now=datetime(2024, 6, 1, tzinfo=timezone.utc),
+        trigger_id="t",
+        rule_id="r1",
+    )
+    try:
+        await engine._run_rule(rule, event)
+    finally:
+        handlers_mod._REGISTRY.pop("_test_dict_result", None)
+        handlers_mod._REGISTRY.pop("_test_next", None)
+
+    # 插件写入的变量必须落盘，且不可哈希的返回值不再中断 handler 链
+    assert engine.state.get_rule_vars("r1").get("from_plugin") == 1
+    assert calls == ["dict", "next"]
 
 
 def _automation_payload() -> dict:

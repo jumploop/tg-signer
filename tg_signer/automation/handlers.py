@@ -19,6 +19,8 @@ from tg_signer.utils import safe_regex_search
 
 from .models import AutomationContext, Event
 
+logger = logging.getLogger("tg-signer")
+
 # 统一 handler 返回值语义：
 # - continue: 继续执行后续 handler
 # - stop/defer: 中断当前规则链
@@ -43,7 +45,10 @@ class _UDPProtocol(asyncio.DatagramProtocol):
         pass  # 不需要处理接收的数据
 
     def error_received(self, exc):
-        print(f"UDP error received: {exc}")
+        # 用 logger 而不是 print：UDP 套接字错误走 print 只到 stdout，
+        # 在打包后的 CLI / multi-run 下通常根本没有可见的控制台，
+        # 于是「转发地址不可达」这类问题在 tg-signer 日志文件里完全看不到。
+        logger.warning("UDP error received: %s", exc)
 
 
 async def udp_forward(f: UDPForward, message: Message):
@@ -75,6 +80,10 @@ async def http_api_callback(f: HttpCallback, message: Message):
 # ``{message.chat.title}`` 也保留,再深就没有正当理由了。
 _MAX_TEMPLATE_ATTR_DEPTH = 2
 
+# `delay` handler 允许的最长等待。超过这个值几乎必然是配置写错（如多打了几
+# 个零），而它的后果是那条规则被永久占住，所以按上限截断并告警。
+_MAX_DELAY_SECONDS = 24 * 60 * 60
+
 
 class _SafeTemplateFormatter(string.Formatter):
     """只允许 ``{name}`` 与 ``{name.attr[.attr]}`` 的基础模板语法。
@@ -102,12 +111,50 @@ class _SafeTemplateFormatter(string.Formatter):
 
 _TEMPLATE_FORMATTER = _SafeTemplateFormatter()
 
+# 判断一段文本「是不是模板」：``{`` 后面紧跟标识符字符（字母/下划线）才算。
+# 用来把「模板没渲染出来」和「正文里本来就有花括号」区分开：HTTP 回调 /
+# server_chan 的 body 常常直接写 JSON（``{"key": "value"}``），``{`` 后面是
+# 引号，不是模板，必须原样发送。
+# 这里故意收得比合法字段更宽：``{message.__class__[x]}`` 这类被沙箱拒绝的
+# 形状也要判为「模板」，否则它会被当成普通文本原样发进群里。
+_TEMPLATE_REFERENCE_RE = re.compile(r"\{[A-Za-z_][^{}]*\}")
+
+
+class TemplateRenderError(ValueError):
+    """模板渲染失败（引用了不存在的变量或属性）。"""
+
+
+class _TrackingFormatDict(SafeFormatDict):
+    """在 ``SafeFormatDict`` 基础上记录所有未命中的变量名。
+
+    ``SafeFormatDict.__missing__`` 把未知变量原样返回成 ``"{name}"``，于是渲染
+    「成功」了、输出却和输入一模一样 —— 调用方完全无法察觉变量名写错了。
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.missing: list[str] = []
+
+    def __missing__(self, key):
+        self.missing.append(key)
+        return super().__missing__(key)
+
 
 def render_template(text: Any, event: Event, ctx: AutomationContext) -> Any:
+    """渲染 ``text`` 中的模板变量。
+
+    渲染失败必须**抛异常**：原来 ``except Exception: return text`` 会在无任何
+    日志的情况下把未渲染的模板原样交给调用方，而调用方直接把它发给 Telegram。
+    最典型的是文档化的 ``{message.chat.title}`` 用在 ``startup``/``timer`` 触发器
+    上（这两类事件 ``message is None``，``chat`` 也就是 ``None``），于是群里
+    收到一条字面量 ``{message.chat.title}``，日志里一条告警都没有。
+
+    正文里本来就带花括号（JSON 请求体）不算模板，仍按原样返回。
+    """
     if not isinstance(text, str):
         return text
     message = event.message or SimpleNamespace(text="", id=None, chat=None)
-    mapping = SafeFormatDict()
+    mapping = _TrackingFormatDict()
     mapping.update(ctx.vars)
     mapping.update(
         {
@@ -118,9 +165,17 @@ def render_template(text: Any, event: Event, ctx: AutomationContext) -> Any:
         }
     )
     try:
-        return _TEMPLATE_FORMATTER.vformat(text, (), mapping)
-    except Exception:  # noqa: BLE001
-        return text
+        rendered = _TEMPLATE_FORMATTER.vformat(text, (), mapping)
+    except Exception as exc:  # noqa: BLE001
+        if not _TEMPLATE_REFERENCE_RE.search(text):
+            # 没有模板引用，只是普通的花括号文本（如 JSON body），原样使用。
+            return text
+        raise TemplateRenderError(f"模板渲染失败: {text!r} ({exc})") from exc
+    if mapping.missing:
+        raise TemplateRenderError(
+            f"模板引用了不存在的变量 {sorted(set(mapping.missing))}: {text!r}"
+        )
+    return rendered
 
 
 def message_text(message: Any) -> str:
@@ -243,11 +298,28 @@ def resolve_blacklist_text(
 
     source_var = params.get("source_var")
     if source_var:
-        return str(ctx.vars.get(source_var, "") or "")
+        if source_var not in ctx.vars:
+            # 变量不存在时必须**失败关闭**（抛异常 → 引擎记 ERROR 并中断该
+            # 规则），而不是拿空串去过滤。空串什么都匹配不到，于是过滤器
+            # 静默失效、后面的 send_text 照样把大模型输出发进群里。
+            # 这在文档化的 ai_reply(store_var) → blacklist_filter(source_var)
+            # → send_text 链里是最常见的失败：store_var 写错一个字母，
+            # 「广告/引流/返利」过滤就完全不起作用，且没有任何提示。
+            raise ValueError(
+                f"blacklist_filter: 变量 {source_var!r} 不存在，无法判断内容，"
+                f"已中止该规则（可用变量: {sorted(ctx.vars)}）"
+            )
+        return str(ctx.vars.get(source_var) or "")
 
     source_vars = params.get("source_vars")
     if isinstance(source_vars, list):
-        values = [str(ctx.vars.get(name)) for name in source_vars if ctx.vars.get(name)]
+        present = [name for name in source_vars if ctx.vars.get(name)]
+        if source_vars and not present:
+            raise ValueError(
+                f"blacklist_filter: source_vars={source_vars} 全都不存在，"
+                f"无法判断内容，已中止该规则（可用变量: {sorted(ctx.vars)}）"
+            )
+        values = [str(ctx.vars.get(name)) for name in present]
         return "\n".join(values)
 
     return message_text(event.message)
@@ -284,6 +356,14 @@ def load_plugins(handlers_dir: Path, logger: logging.Logger) -> None:
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"插件加载失败: {path} ({exc})")
             continue
+        except (SystemExit, KeyboardInterrupt) as exc:
+            # `except Exception` 抓不到 SystemExit / KeyboardInterrupt：插件在
+            # 模块顶层调用 sys.exit()（或 import 到会调 sys.exit 的库）时，
+            # 异常会直接穿过 load_plugins —— 而它由 UserAutomation.run 调用且
+            # 没有任何保护，结果是一个坏插件文件把**整个进程**里所有自动化
+            # 任务一起带走。这里按「加载失败」处理，只跳过这个文件。
+            logger.warning(f"插件在导入时退出，已跳过: {path} ({exc!r})")
+            continue
         handlers = getattr(module, "HANDLERS", None)
         if not isinstance(handlers, dict):
             logger.warning(f"插件未提供HANDLERS: {path}")
@@ -294,6 +374,13 @@ def load_plugins(handlers_dir: Path, logger: logging.Logger) -> None:
                 continue
             if not callable(fn):
                 logger.warning(f"插件handler不可调用，跳过: {name}")
+                continue
+            # 只接受 async handler：引擎一律 `await handler(...)`，同步函数
+            # 会在此处直接 TypeError「object str can't be used in 'await'
+            # expression」，而且是在规则执行到这一步时才炸 —— 错误信息里完全
+            # 看不到是哪个 handler、哪个文件。
+            if not asyncio.iscoroutinefunction(fn):
+                logger.warning(f"插件handler不是async，跳过: {name} ({path.name})")
                 continue
             _REGISTRY[name] = fn
             registered_handlers += 1
@@ -456,6 +543,14 @@ async def blacklist_filter(
         )
         keywords = []
     for kw in keywords:
+        if not isinstance(kw, str):
+            # YAML 不带引号的 - 123 会解析成 int，kw.lower() 直接 AttributeError，
+            # 而它发生在规则执行途中（前面几条 handler 已经跑过了）。
+            ctx.log(
+                f"blacklist_filter: 跳过非字符串关键词 {kw!r} ({type(kw).__name__})",
+                level="WARNING",
+            )
+            continue
         if not kw:
             continue
         needle = kw.lower() if ignore_case else kw
@@ -485,6 +580,23 @@ async def delay(
         seconds = float(seconds)
     except (TypeError, ValueError):
         seconds = 0
+    # nan / inf / 超大值与「等一会儿」都不是一回事：
+    # sleep(inf) 永不返回，sleep(nan) 立刻返回；而 handler 是被 engine 的
+    # 独立 task 执行的，任务会一直持有该规则的 asyncio.Lock（engine 里
+    # async with self._rule_lock(rule.id)），于是**这条规则之后的所有触发都
+    # 排在这个永不结束的任务后面**，规则等于永久死亡，日志里还没有任何错误。
+    if seconds != seconds or seconds in (float("inf"), float("-inf")):
+        ctx.log(
+            f"delay: seconds 不是有限数值，已跳过等待: {params.get('seconds')!r}",
+            level="WARNING",
+        )
+        return "continue"
+    if seconds > _MAX_DELAY_SECONDS:
+        ctx.log(
+            f"delay: seconds={seconds} 超过上限 {_MAX_DELAY_SECONDS}s，已按上限截断",
+            level="WARNING",
+        )
+        seconds = _MAX_DELAY_SECONDS
     if seconds > 0:
         ctx.log(f"delay: sleep {seconds}s", level="DEBUG")
         await asyncio.sleep(seconds)
@@ -658,7 +770,16 @@ async def store_state(
     if isinstance(keys, str):
         keys = [keys]
     if keys:
-        stored = {k: ctx.vars.get(k) for k in keys}
+        # 只写入**已经存在**的键。原来用 ctx.vars.get(k)（没有默认值），于是
+        # 尚未产生的键会被存成 None：state.json 里多出一堆 null，下次
+        # load_state 把 None 灌回 ctx.vars 后，该键就「存在」了，
+        # SafeFormatDict.__missing__ 不再兜底，模板直接渲染出字符串 "None"
+        # 并发到群里。这在「extract_regex 先失败 / ai_reply 还没跑」的首轮
+        # 是很常见的路径。
+        stored = {k: ctx.vars[k] for k in keys if k in ctx.vars}
+        absent = [k for k in keys if k not in ctx.vars]
+        if absent:
+            ctx.log(f"store_state: 变量尚未产生，跳过不写入: {absent}", level="DEBUG")
     else:
         stored = dict(ctx.vars)
     ctx.persist_vars = stored
@@ -690,10 +811,33 @@ async def random_pick(
     event: Event, ctx: AutomationContext, params: Dict[str, Any]
 ) -> HandlerResult:
     choices = params.get("choices") or []
+    if isinstance(choices, str):
+        # YAML `choices: "hello world"` 本该是列表。list("hello world") 会把它
+        # 拆成单个字符，于是随机「发一条消息」变成了随机发一个字母，而日志
+        # 看起来完全正常。这里退化成「把整串当成唯一选项」，并把问题说清楚。
+        ctx.log(
+            f"random_pick: choices 是字符串而非列表，已按单个选项处理: {choices!r}",
+            level="WARNING",
+        )
+        choices = [choices]
+    elif isinstance(choices, dict):
+        ctx.log(
+            "random_pick: choices 是映射而非列表，已取其值作为选项", level="WARNING"
+        )
+        choices = list(choices.values())
+    else:
+        try:
+            choices = list(choices)
+        except TypeError:
+            ctx.log(
+                f"random_pick: choices 类型不支持: {type(choices).__name__}",
+                level="WARNING",
+            )
+            return "stop"
     if not choices:
         ctx.log("random_pick: 缺少choices", level="WARNING")
         return "stop"
-    chosen = random.choice(list(choices))
+    chosen = random.choice(choices)
     var = params.get("var")
     if var:
         ctx.vars[var] = chosen

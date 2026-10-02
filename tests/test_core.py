@@ -1200,7 +1200,7 @@ async def test_reply_by_calculation_problem_clicks_caption_inline_answer(
     signer = signer_factory()
     ai_tools = SimpleNamespace(calculate_problem=AsyncMock(return_value="8"))
     signer.get_ai_tools = lambda: ai_tools
-    signer.request_callback_answer = AsyncMock(return_value=None)
+    signer.request_callback_answer = AsyncMock(return_value=True)
     signer.send_message = AsyncMock(return_value=None)
     message = SimpleNamespace(
         id=99,
@@ -1246,7 +1246,7 @@ async def test_reply_by_calculation_problem_clicks_non_numeric_inline_answer(
     signer = signer_factory()
     ai_tools = SimpleNamespace(calculate_problem=AsyncMock(return_value="选项B"))
     signer.get_ai_tools = lambda: ai_tools
-    signer.request_callback_answer = AsyncMock(return_value=None)
+    signer.request_callback_answer = AsyncMock(return_value=True)
     signer.send_message = AsyncMock(return_value=None)
     message = SimpleNamespace(
         id=99,
@@ -1289,7 +1289,7 @@ async def test_reply_by_calculation_problem_sends_caption_answer_without_keyboar
     signer = signer_factory()
     ai_tools = SimpleNamespace(calculate_problem=AsyncMock(return_value="8"))
     signer.get_ai_tools = lambda: ai_tools
-    signer.request_callback_answer = AsyncMock(return_value=None)
+    signer.request_callback_answer = AsyncMock(return_value=True)
     signer.send_message = AsyncMock(return_value=None)
     message = SimpleNamespace(
         id=99,
@@ -1317,7 +1317,7 @@ async def test_choose_option_by_image_uses_caption_and_option_index(signer_facto
     ai_tools = SimpleNamespace(choose_option_by_image=AsyncMock(return_value=1))
     signer.get_ai_tools = lambda: ai_tools
     signer.app.download_media = AsyncMock(return_value=BytesIO(b"image-bytes"))
-    signer.request_callback_answer = AsyncMock(return_value=None)
+    signer.request_callback_answer = AsyncMock(return_value=True)
     message = SimpleNamespace(
         id=99,
         text=None,
@@ -1359,7 +1359,7 @@ async def test_choose_option_by_image_uses_previous_photo_for_split_keyboard(
     ai_tools = SimpleNamespace(choose_option_by_image=AsyncMock(return_value=1))
     signer.get_ai_tools = lambda: ai_tools
     signer.app.download_media = AsyncMock(return_value=BytesIO(b"image-bytes"))
-    signer.request_callback_answer = AsyncMock(return_value=None)
+    signer.request_callback_answer = AsyncMock(return_value=True)
     photo_message = SimpleNamespace(
         id=98,
         text=None,
@@ -1411,7 +1411,7 @@ async def test_choose_option_by_image_rejects_invalid_option_index(signer_factor
     ai_tools = SimpleNamespace(choose_option_by_image=AsyncMock(return_value=9))
     signer.get_ai_tools = lambda: ai_tools
     signer.app.download_media = AsyncMock(return_value=BytesIO(b"image-bytes"))
-    signer.request_callback_answer = AsyncMock(return_value=None)
+    signer.request_callback_answer = AsyncMock(return_value=True)
     message = SimpleNamespace(
         id=99,
         text=None,
@@ -1598,6 +1598,7 @@ def test_normal_run_skips_username_resolution_errors_per_chat(signer_factory):
 
     async def fake_sign_a_chat(chat):
         signed_chats.append(chat.chat_id)
+        return True
 
     signer.sign_a_chat = fake_sign_a_chat
 
@@ -1947,6 +1948,7 @@ async def test_normal_run_waits_until_today_scheduled_time(signer_factory, monke
 
     async def fake_sign_a_chat(chat):
         signed_at.append(clock["now"].isoformat())
+        return True
 
     signer.sign_a_chat = fake_sign_a_chat
 
@@ -1974,6 +1976,7 @@ async def test_normal_run_catches_up_when_started_after_todays_time(
 
     async def fake_sign_a_chat(chat):
         signed.append(clock["now"].isoformat())
+        return True
 
     signer.sign_a_chat = fake_sign_a_chat
 
@@ -2003,6 +2006,7 @@ async def test_normal_run_signs_daily_midnight_cron(signer_factory, monkeypatch)
 
     async def fake_sign_a_chat(chat):
         signed.append(clock["now"].isoformat())
+        return True
 
     signer.sign_a_chat = fake_sign_a_chat
 
@@ -2095,6 +2099,7 @@ async def test_normal_run_non_daily_cron_only_signs_on_matching_weekday(
 
     async def fake_sign_a_chat(chat):
         signed.append(clock["now"].isoformat())
+        return True
 
     signer.sign_a_chat = fake_sign_a_chat
 
@@ -2150,6 +2155,7 @@ async def test_normal_run_records_when_at_least_one_chat_succeeds(
     async def flaky_sign_a_chat(chat):
         if chat.chat_id == 1:
             raise RuntimeError("第一个 chat 失败")
+        return True
 
     signer.sign_a_chat = flaky_sign_a_chat
 
@@ -2185,6 +2191,7 @@ async def test_normal_run_tolerates_broken_sign_record_values(
 
     async def fake_sign_a_chat(chat):
         signed.append(chat)
+        return True
 
     signer.sign_a_chat = fake_sign_a_chat
 
@@ -2256,3 +2263,734 @@ async def test_on_message_tolerates_messages_without_from_user(signer_factory):
     await signer.on_message(None, message)
 
     assert signer.context.chat_messages[route_key][1] is message
+
+
+# ---------------------------------------------------------------------------
+# 回归：多群签到不能丢弃「还没轮到」的群的消息
+# ---------------------------------------------------------------------------
+
+
+def _noop_login():
+    async def _f(*_args, **_kwargs):
+        return None
+
+    return _f
+
+
+@pytest.mark.asyncio
+async def test_later_chat_message_is_not_dropped(signer_factory, monkeypatch):
+    """A 群等待期间到达的 B 群消息，必须留到轮到 B 时可用。
+
+    回归：原来 sign_chats 是边处理边登记的，A 群等待键盘的 30s 里
+    B 群的消息会因为 sign_chats 里还没有 B 而被判成「意料之外的聊天」
+    直接丢弃，B 随后必然等满 timeout。
+    """
+    signer = signer_factory(task_name="multi_chat_buffer")
+    signer.user = SimpleNamespace(id=42)
+    chat_a = SignChatV3(chat_id=1, actions=[ClickKeyboardByTextAction(text="a")])
+    chat_b = SignChatV3(chat_id=2, actions=[ClickKeyboardByTextAction(text="b")])
+    signer.load_config = lambda _cls: SignConfigV3(
+        chats=[chat_a, chat_b], sign_at="* * * * *", sign_interval=0
+    )
+    signer.load_sign_record = lambda: {}
+    signer.persist_sign_record = lambda *a, **k: None
+
+    b_message = SimpleNamespace(
+        chat=SimpleNamespace(id=2), message_thread_id=None, id=555
+    )
+    buffered_when_b_started = {}
+
+    async def fake_wait_for(chat, action, timeout=30):
+        if chat.chat_id == 1:
+            # A 还在等待时，B 的机器人推送了键盘回复
+            await signer._on_message(signer.app, b_message)
+        else:
+            buffered_when_b_started["buffered"] = dict(
+                signer.context.chat_messages[signer.get_route_key(2, None)]
+            )
+        return None
+
+    signer.wait_for = fake_wait_for
+    monkeypatch.setattr(signer, "login", _noop_login())
+
+    await signer.normal_run(only_once=True)
+
+    assert buffered_when_b_started["buffered"].get(555) is b_message, (
+        "B 群的消息在轮到 B 之前就被丢弃了"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 回归：run-once 必须把「全部 chat 均失败」如实返回
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# 回归：损坏的 .openai_config.json 不能把签到任务打崩在裸 traceback 上
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_ai_cfg_reports_corrupt_config_clearly(signer_factory, monkeypatch):
+    """损坏的 LLM 配置要报出可执行的指引，而不是抛 JSONDecodeError。"""
+    signer = signer_factory(task_name="corrupt_llm")
+    cfg_file = signer.workdir / ".openai_config.json"
+    cfg_file.write_text('{"api_key": "sk-truncated', encoding="utf-8")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    with pytest.raises(ValueError, match="llm-config"):
+        signer.ensure_ai_cfg()
+
+
+def test_ensure_ai_cfg_reports_shape_invalid_config(signer_factory, monkeypatch):
+    """内容是 {} 时 pydantic ValidationError，同样要转成清晰报错。"""
+    signer = signer_factory(task_name="shape_llm")
+    (signer.workdir / ".openai_config.json").write_text("{}", encoding="utf-8")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    with pytest.raises(ValueError, match="llm-config"):
+        signer.ensure_ai_cfg()
+
+
+# ---------------------------------------------------------------------------
+# 回归：run-once 必须把「全部 chat 均失败」如实返回
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_once_returns_false_when_every_chat_fails(
+    signer_factory, monkeypatch
+):
+    signer = signer_factory(task_name="run_once_fail")
+    signer.user = SimpleNamespace(id=42)
+    chat = SignChatV3(chat_id=1, actions=[ClickKeyboardByTextAction(text="a")])
+    signer.load_config = lambda _cls: SignConfigV3(
+        chats=[chat], sign_at="* * * * *", sign_interval=0
+    )
+    signer.load_sign_record = lambda: {}
+    signer.persist_sign_record = lambda *a, **k: None
+
+    async def boom(chat, action, timeout=30):
+        raise RuntimeError("telegram unreachable")
+
+    signer.wait_for = boom
+    monkeypatch.setattr(signer, "login", _noop_login())
+
+    assert await signer.run_once(0) is False, (
+        "全部 chat 失败时 run_once 必须返回 False，CLI 才会给非 0 退出码"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_once_returns_true_on_success(signer_factory, monkeypatch):
+    signer = signer_factory(task_name="run_once_ok")
+    signer.user = SimpleNamespace(id=42)
+    chat = SignChatV3(chat_id=1, actions=[ClickKeyboardByTextAction(text="a")])
+    signer.load_config = lambda _cls: SignConfigV3(
+        chats=[chat], sign_at="* * * * *", sign_interval=0
+    )
+    signer.load_sign_record = lambda: {}
+    signer.persist_sign_record = lambda *a, **k: None
+
+    async def ok(chat, action, timeout=30):
+        # wait_for 现在返回「动作是否真的完成」，成功必须是 True。
+        return True
+
+    signer.wait_for = ok
+    monkeypatch.setattr(signer, "login", _noop_login())
+
+    assert await signer.run_once(0) is True
+
+
+# ---------------------------------------------------------------------------
+# 回归：动作链「没做完」不能被当成签到成功
+#   旧实现里 wait_for 成功与超时两条路径都 return None，sign_a_chat 无条件记
+#   「处理完成」，sign_once 只靠异常判失败 —— 于是「机器人压根没回复、按钮
+#   从没被点到」也会写入今日签到记录，run-once 退出 0，当天不再重试。
+# ---------------------------------------------------------------------------
+
+
+def _install_fake_clock(monkeypatch, core):
+    """把 sleep / perf_counter 换成手动推进的假时钟。
+
+    wait_for 是 ``while perf_counter() - start < timeout`` + ``sleep(0.3)`` 的
+    轮询循环，用真时钟的话「30s 超时」这一条最该被测的路径要跑 30 秒。
+    """
+    clock = {"now": 0.0}
+    real_sleep = core.asyncio.sleep
+
+    async def fake_sleep(seconds):
+        clock["now"] += seconds or 0
+        await real_sleep(0)
+
+    monkeypatch.setattr(core.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(core.time, "perf_counter", lambda: clock["now"])
+    return clock
+
+
+@pytest.mark.asyncio
+async def test_wait_for_returns_false_when_bot_never_replies(
+    monkeypatch, signer_factory
+):
+    """回归：wait_for 的 30s 超时路径以前也 return None，与成功无法区分。
+
+    用户可见后果：机器人没回复（被删消息、被禁言、频道静默）时，这次签到照样
+    记成「今日已签到」，当天不再重试，用户完全看不出其实一次都没点成功。
+    """
+    import tg_signer.core as core
+
+    _install_fake_clock(monkeypatch, core)
+
+    signer = signer_factory()
+    signer.context = signer.ensure_ctx()
+    chat = SignChatV3(chat_id=123, actions=[ClickKeyboardByTextAction(text="签到")])
+
+    # 上下文里没有任何机器人消息：只能一路轮询到超时。
+    ok = await signer.wait_for(chat, chat.actions[0], timeout=30)
+
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_wait_for_returns_true_after_action_completes(
+    monkeypatch, signer_factory
+):
+    """回归：成功路径必须返回 True（旧的 return None 同样无法与失败区分）。"""
+    import tg_signer.core as core
+
+    _install_fake_clock(monkeypatch, core)
+
+    signer = signer_factory()
+    signer.context = signer.ensure_ctx()
+    chat = SignChatV3(chat_id=123, actions=[ClickKeyboardByTextAction(text="签到")])
+    route_key = signer.get_route_key(123, None)
+    message = SimpleNamespace(id=100, text="签到", photo=None, reply_markup=None)
+    signer.context.chat_messages[route_key][100] = message
+    signer._click_keyboard_by_text = AsyncMock(return_value=True)
+
+    ok = await signer.wait_for(chat, chat.actions[0], timeout=30)
+
+    assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_sign_a_chat_returns_false_and_skips_the_rest_of_the_chain(
+    signer_factory,
+):
+    """回归：sign_a_chat 以前没有返回值，链上任何一步没做完都算「处理完成」。
+
+    用户可见后果：多动作配置里第一步（点开菜单）失败后，第二步依然照发，群里
+    收到一半签到内容的垃圾消息，而记录里却写着当天已签到。
+    """
+    signer = signer_factory()
+    chat = SignChatV3(
+        chat_id=123,
+        action_interval=0,
+        actions=[SendTextAction(text="签到"), SendTextAction(text="确认")],
+    )
+    executed = []
+
+    async def failed_wait_for(_chat, action, timeout=30):
+        del timeout
+        executed.append(action.text)
+        return False
+
+    signer.wait_for = failed_wait_for
+
+    ok = await signer.sign_a_chat(chat)
+
+    assert ok is False
+    assert executed == ["签到"], "第一个动作没做完时不该继续执行后续动作"
+
+
+@pytest.mark.asyncio
+async def test_sign_a_chat_returns_true_when_every_action_completes(signer_factory):
+    """回归：动作链全部走完时 sign_a_chat 必须返回 True。"""
+    signer = signer_factory()
+    chat = SignChatV3(
+        chat_id=123,
+        action_interval=0,
+        actions=[SendTextAction(text="签到"), SendTextAction(text="确认")],
+    )
+    executed = []
+
+    async def ok_wait_for(_chat, action, timeout=30):
+        del timeout
+        executed.append(action.text)
+        return True
+
+    signer.wait_for = ok_wait_for
+
+    assert await signer.sign_a_chat(chat) is True
+    assert executed == ["签到", "确认"]
+
+
+@pytest.mark.asyncio
+async def test_run_once_reports_failure_when_action_chain_incomplete(
+    signer_factory, monkeypatch
+):
+    """回归：sign_once 只有 sign_a_chat 返回 True 才算这个 chat 签到成功。
+
+    用户可见后果：动作超时（机器人没回）时 run-once 以前仍退出 0 并写入
+    SQLite，cron/监控认为今天已签到，既不会重试、也查不到失败痕迹。
+    """
+    import tg_signer.core as core
+
+    patch_client_methods(monkeypatch, core)
+
+    signer = signer_factory(task_name="run_once_incomplete")
+    signer.user = SimpleNamespace(id=42)
+    chat = SignChatV3(chat_id=1, actions=[ClickKeyboardByTextAction(text="a")])
+    signer.load_config = lambda _cls: SignConfigV3(
+        chats=[chat], sign_at="* * * * *", sign_interval=0
+    )
+    signer.load_sign_record = lambda: {}
+
+    async def not_completed(_chat):
+        return False
+
+    signer.sign_a_chat = not_completed
+    monkeypatch.setattr(signer, "login", _noop_login())
+
+    assert await signer.run_once(0) is False
+    assert signer.sign_record_store.load_records("run_once_incomplete", "42") == {}
+
+
+# ---------------------------------------------------------------------------
+# 回归：按钮点击被拒必须如实上报，不能无条件 return True
+#   旧实现里 request_callback_answer 吞掉 BadRequest/TimeoutError 后隐式返回
+#   None，而 _click_keyboard_by_text / _reply_by_calculation_problem /
+#   _choose_option_by_image 三个调用方都写死 `return True`。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param("bad-request", id="bad-request"),
+        pytest.param("timeout", id="timeout"),
+    ],
+)
+async def test_request_callback_answer_returns_false_on_rejected_click(
+    monkeypatch, signer_factory, error
+):
+    """回归：MESSAGE_ID_INVALID / BUTTON_DATA_INVALID 这类拒绝以前被吞成 None。
+
+    用户可见后果：按钮其实从没点中，签到却被记成成功，当天不再重试。
+    """
+    import tg_signer.core as core
+
+    signer = signer_factory()
+
+    async def direct_call(_api_name, func, **kwargs):
+        del kwargs
+        return await func()
+
+    monkeypatch.setattr(signer, "_call_telegram_api", direct_call)
+
+    if error == "bad-request":
+        side_effect = core.errors.BadRequest("BUTTON_DATA_INVALID")
+    else:
+        side_effect = TimeoutError()
+    client = SimpleNamespace(request_callback_answer=AsyncMock(side_effect=side_effect))
+
+    ok = await signer.request_callback_answer(client, 123, 99, "answer:8")
+
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_request_callback_answer_returns_true_on_success(
+    monkeypatch, signer_factory
+):
+    """回归：点击成功路径必须返回 True，调用方才能判别成功/失败。"""
+    signer = signer_factory()
+
+    async def direct_call(_api_name, func, **kwargs):
+        del kwargs
+        return await func()
+
+    monkeypatch.setattr(signer, "_call_telegram_api", direct_call)
+    client = SimpleNamespace(request_callback_answer=AsyncMock(return_value=None))
+
+    assert await signer.request_callback_answer(client, 123, 99, "answer:8") is True
+
+
+@pytest.mark.asyncio
+async def test_click_keyboard_by_text_propagates_rejected_click(signer_factory):
+    """回归：点击被拒时 _click_keyboard_by_text 不能写死 return True。"""
+    signer = signer_factory()
+    signer.request_callback_answer = AsyncMock(return_value=False)
+    message = SimpleNamespace(
+        id=99,
+        chat=SimpleNamespace(id=123),
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("签到", callback_data="answer:sign")]]
+        ),
+    )
+
+    ok = await signer._click_keyboard_by_text(
+        ClickKeyboardByTextAction(text="签到"), message
+    )
+
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_reply_by_calculation_problem_propagates_rejected_click(
+    signer_factory,
+):
+    """回归：算术题点按钮被拒时 _reply_by_calculation_problem 必须返回 False。"""
+    signer = signer_factory()
+    signer.get_ai_tools = lambda: SimpleNamespace(
+        calculate_problem=AsyncMock(return_value="8")
+    )
+    signer.request_callback_answer = AsyncMock(return_value=False)
+    message = SimpleNamespace(
+        id=99,
+        text=None,
+        caption="17 - 9 = ?",
+        chat=SimpleNamespace(id=123),
+        message_thread_id=1,
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("8", callback_data="answer:8")]]
+        ),
+    )
+
+    ok = await signer._reply_by_calculation_problem(
+        ReplyByCalculationProblemAction(), message
+    )
+
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_choose_option_by_image_propagates_rejected_click(signer_factory):
+    """回归：图片选择题点按钮被拒时 _choose_option_by_image 必须返回 False。"""
+    signer = signer_factory()
+    signer.get_ai_tools = lambda: SimpleNamespace(
+        choose_option_by_image=AsyncMock(return_value=0)
+    )
+    signer.app.download_media = AsyncMock(return_value=BytesIO(b"image-bytes"))
+    signer.request_callback_answer = AsyncMock(return_value=False)
+    message = SimpleNamespace(
+        id=99,
+        text=None,
+        caption="请点击图中的物品",
+        chat=SimpleNamespace(id=123),
+        photo=SimpleNamespace(file_id="photo-id"),
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("手机", callback_data="answer:phone")]]
+        ),
+    )
+
+    ok = await signer._choose_option_by_image(ChooseOptionByImageAction(), message)
+
+    assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# 回归：delete_after 必须被规整成可用的秒数，删除失败不得影响签到结果
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        pytest.param("5", 5.0, id="numeric-string"),
+        pytest.param(5, 5.0, id="int"),
+        pytest.param(-3, 0.0, id="negative-clamped-to-zero"),
+        pytest.param("abc", None, id="garbage-string"),
+        pytest.param(None, None, id="none"),
+        pytest.param(True, None, id="bool-true"),
+        pytest.param(False, None, id="bool-false"),
+        pytest.param(float("nan"), None, id="nan"),
+        pytest.param(float("inf"), None, id="inf"),
+    ],
+)
+def test_coerce_delete_after_normalizes_or_rejects(value, expected):
+    """回归：YAML/JSON 里写成 ``delete_after: "5"`` 是常见笔误。
+
+    用户可见后果：字符串会直接喂给 ``asyncio.sleep`` 抛 TypeError，而此时
+    消息**已经发出去了** —— 一次成功的签到被改判为失败、run-once 退出 1。
+    """
+    import tg_signer.core as core
+
+    assert core._coerce_delete_after(value) == expected
+
+
+@pytest.mark.asyncio
+async def test_delete_message_later_swallows_delete_failure():
+    """回归：没有删除权限时 Telegram 返回 MESSAGE_DELETE_FORBIDDEN。
+
+    用户可见后果：删除失败以前会一路冒泡出 send_message → sign_a_chat，把
+    **成功**的签到判成失败：`run-once` 退出码 1、守护进程每 60s 重发一次
+    签到消息刷屏。现在只记一条 WARNING。
+    """
+    import tg_signer.core as core
+
+    logs = []
+
+    class _FakeWorker:
+        def log(self, msg, level="INFO", **kwargs):
+            del kwargs
+            logs.append((level, msg))
+
+        async def _call_telegram_api(self, operation, _call, **kwargs):
+            del _call, kwargs
+            assert operation == "messages.DeleteMessages"
+            raise core.errors.MessageDeleteForbidden("MESSAGE_DELETE_FORBIDDEN")
+
+    message = SimpleNamespace(delete=SimpleNamespace(chat_id=1, message_ids=[9]))
+
+    # 关键断言：不抛异常。delete_after=0 → sleep(0)，不会真的等待。
+    await core._delete_message_later(_FakeWorker(), message, 0, "Message「签到」 to 1")
+
+    assert any(
+        level == "WARNING" and "MESSAGE_DELETE_FORBIDDEN" in msg for level, msg in logs
+    ), logs
+
+
+@pytest.mark.asyncio
+async def test_send_message_succeeds_when_delete_is_forbidden(
+    monkeypatch, signer_factory
+):
+    """回归：自动删除失败不能把已送达的消息改判成发送失败。"""
+    import tg_signer.core as core
+
+    signer = signer_factory()
+    sent = SimpleNamespace(delete=SimpleNamespace(chat_id=1, message_ids=[9]))
+    monkeypatch.setattr(signer.app, "send_message", AsyncMock(return_value=sent))
+
+    async def fake_call(operation, call, **kwargs):
+        del kwargs
+        if operation == "messages.DeleteMessages":
+            raise core.errors.MessageDeleteForbidden("MESSAGE_DELETE_FORBIDDEN")
+        return await call()
+
+    monkeypatch.setattr(signer, "_call_telegram_api", fake_call)
+
+    message = await signer.send_message(1, "签到", 0)
+
+    assert message is sent
+
+
+# ---------------------------------------------------------------------------
+# 回归：FloodWait 重试后 get_forum_topics 不能把话题列表翻倍
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_forum_topics_does_not_duplicate_after_floodwait_retry(
+    monkeypatch, signer_factory
+):
+    """回归：累加列表以前建在重试闭包**外面**。
+
+    ``get_forum_topics`` 是异步生成器，迭代到一半抛 FloodWait 时
+    ``_call_telegram_api`` 会重新调用同一个闭包，旧代码于是把已收集的
+    topic 再追加一遍（1,2,3,1,2,3）。用户可见后果：``list-topics`` 与登录
+    时的 topic 预览每多一次重试就多打印一份。
+    """
+    import tg_signer.core as core
+
+    monkeypatch.setattr(core, "_API_MIN_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(core, "_API_FLOODWAIT_PADDING_SECONDS", 0.0)
+    monkeypatch.setattr(core, "_API_MAX_FLOODWAIT_RETRIES", 2)
+
+    real_sleep = core.asyncio.sleep
+
+    async def fake_sleep(seconds):
+        del seconds
+        await real_sleep(0)
+
+    monkeypatch.setattr(core.asyncio, "sleep", fake_sleep)
+
+    signer = signer_factory()
+    attempts = {"count": 0}
+
+    async def fake_get_forum_topics(_client, chat_id, limit=20):
+        del _client, chat_id, limit
+        attempts["count"] += 1
+        for topic_id in (1, 2, 3):
+            yield SimpleNamespace(
+                id=topic_id,
+                title=f"topic-{topic_id}",
+                is_closed=False,
+                is_pinned=False,
+            )
+        if attempts["count"] == 1:
+            raise core.errors.FloodWait(1)
+
+    monkeypatch.setattr(core.Client, "get_forum_topics", fake_get_forum_topics)
+
+    topics = await signer.get_forum_topics(-100123, limit=20)
+
+    assert attempts["count"] == 2, "第一次应当被 FloodWait 打断并重试"
+    assert [topic.id for topic in topics] == [1, 2, 3]
+
+
+# ---------------------------------------------------------------------------
+# 回归：每轮都要重新注册消息回调
+#   pyrogram 的 Client.__aexit__ 在引用计数归零时调用 stop()，而 stop() 默认
+#   clear_handlers=True → dispatcher.groups.clear()。normal_run 的 add_handler
+#   写在 while True 之外，第二轮起机器人回复没有任何 handler 接手。
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_message_handlers_is_idempotent_and_restores_after_clear(
+    signer_factory,
+):
+    """回归：_ensure_message_handlers 幂等，且能在 handlers 被清空后补回来。
+
+    用户可见后果：守护进程从第二轮开始收不到任何机器人消息，点击按钮 / 算术
+    题 / 图片选择只能干等到 wait_for 超时，签到静默失败。
+    """
+    import tg_signer.core as core
+
+    signer = signer_factory()
+    handlers = [
+        core.MessageHandler(signer.on_message, core.filters.chat([1])),
+        core.EditedMessageHandler(signer.on_edited_message, core.filters.chat([1])),
+    ]
+    signer._message_handlers = handlers
+
+    groups: dict = {}
+    registered: list = []
+
+    def add_handler(handler, group=0):
+        registered.append(handler)
+        groups.setdefault(group, []).append(handler)
+
+    signer.app = SimpleNamespace(
+        dispatcher=SimpleNamespace(groups=groups),
+        add_handler=add_handler,
+    )
+
+    signer._ensure_message_handlers()
+    assert groups.get(0) == handlers
+
+    # 幂等：重复调用会 append 出重复回调（一条消息被处理多次）
+    signer._ensure_message_handlers()
+    assert groups.get(0) == handlers
+    assert registered == handlers
+
+    # 模拟 pyrogram stop() 的 dispatcher.groups.clear()
+    groups.clear()
+    signer._ensure_message_handlers()
+    assert groups.get(0) == handlers
+    assert registered == handlers * 2
+
+
+@pytest.mark.asyncio
+async def test_normal_run_reregisters_handlers_every_round(signer_factory, monkeypatch):
+    """回归端到端：normal_run 的每一轮都要补注册回调。
+
+    用户可见后果：守护进程跑过第一轮之后就再也收不到机器人消息，此后每一次
+    点击类签到都必然等满 30s 超时，且看起来「没有任何报错」。
+    """
+    import tg_signer.core as core
+
+    class _DispatcherApp:
+        """模拟 pyrogram：__aexit__ 时 stop() 会清空 dispatcher.groups。"""
+
+        key = "dummy-app"
+
+        def __init__(self):
+            self.dispatcher = SimpleNamespace(groups={})
+            self.groups_at_enter: list[int] = []
+            self.registered_counts: list[int] = []
+            self.added: list = []
+
+        def add_handler(self, handler, group=0):
+            self.added.append(handler)
+            self.dispatcher.groups.setdefault(group, []).append(handler)
+            self.registered_counts.append(len(self.dispatcher.groups[group]))
+
+        async def __aenter__(self):
+            self.groups_at_enter.append(len(self.dispatcher.groups.get(0, [])))
+            return self
+
+        async def __aexit__(self, *_args):
+            self.dispatcher.groups.clear()
+            return None
+
+    frozen = datetime(2026, 9, 30, 6, 0, tzinfo=timezone(timedelta(hours=8)))
+    signer = _signer_for_run(
+        signer_factory,
+        monkeypatch,
+        task_name="reregister_handlers",
+        sign_at="* * * * *",
+        now=frozen,
+    )
+    app = _DispatcherApp()
+    signer.app = app
+
+    class _StopLoop(Exception):
+        pass
+
+    real_sleep = core.asyncio.sleep
+    waits = {"count": 0}
+
+    async def fake_sleep(seconds):
+        # 只在「睡到下一轮」时计数，轮询/间隔用的 0 秒照常放行；
+        # 第一次跨轮 sleep 放行（进入第二轮），第二次收工。
+        if seconds:
+            waits["count"] += 1
+            if waits["count"] >= 2:
+                raise _StopLoop
+        await real_sleep(0)
+
+    monkeypatch.setattr(core.asyncio, "sleep", fake_sleep)
+
+    async def ok_sign_a_chat(_chat):
+        return True
+
+    signer.sign_a_chat = ok_sign_a_chat
+
+    with pytest.raises(_StopLoop):
+        await signer.normal_run()
+
+    assert app.groups_at_enter == [0, 0], "第二轮进入 client 时回调已被清空"
+    # 第一轮注册 2 个、第二轮再补 2 个，且任何时刻都只有 2 个（没有重复注册）
+    assert app.registered_counts == [1, 2, 1, 2]
+    assert waits["count"] == 2, "本用例必须真的跑满两轮"
+
+
+# ---------------------------------------------------------------------------
+# 回归：stop() 抛非 ConnectionError 时 __aexit__ 的清理必须照常走完
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_client_exit_cleans_up_when_stop_raises_non_connection_error(
+    monkeypatch, tmp_path
+):
+    """回归：__aexit__ 以前只 ``except ConnectionError: pass``。
+
+    stop() → terminate() → storage.save() → sqlite commit，库被占用时抛的是
+    sqlite3.OperationalError，既不是 ConnectionError 也不是 OSError：原来它
+    会直接逃出 __aexit__，跳过下面两行 pop（client 与限流时间戳永久残留），
+    异常再冒到 normal_run 的 ``except (OSError, errors.Unauthorized)`` 之外，
+    把整个签到守护进程打死。用户可见后果：`tg-signer run` 第一次空闲就会退出。
+    """
+    import tg_signer.core as core
+
+    async def fake_start(self):
+        del self
+
+    async def fake_stop(self):
+        del self
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(core.Client, "start", fake_start)
+    monkeypatch.setattr(core.Client, "stop", fake_stop)
+
+    client = get_client(name="acct", workdir=tmp_path)
+    key = client.key
+
+    async with client:
+        core._API_LAST_CALL_AT[key] = 1.0
+
+    assert core._CLIENT_REFS[key] == 0
+    assert key not in core._CLIENT_INSTANCES
+    assert key not in core._API_LAST_CALL_AT

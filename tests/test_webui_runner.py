@@ -22,7 +22,12 @@ def _cleanup_processes():
                 proc.wait(timeout=5)
             except Exception:  # noqa: BLE001
                 proc.kill()
-                proc.wait(timeout=5)
+                # kill() 之后仍 wait 不到也不能让 teardown 抛出去：
+                # 那会以「另一个测试失败」的形式掩盖真正的错误。
+                try:
+                    proc.wait(timeout=5)
+                except Exception:  # noqa: BLE001
+                    pass
         runner._PROCESSES.pop(key, None)
         runner._TASK_NAMES.pop(key, None)
         lock = runner._LOCKS.pop(key, None)
@@ -35,9 +40,64 @@ def test_default_log_file_name_is_unified():
     assert runner.DEFAULT_LOG_FILE_NAME == "tg-signer.log"
 
 
+def test_stop_releases_the_account_lock_when_kill_does_not_reap(tmp_path):
+    """kill() 之后仍 wait 不到时不得抛裸 TimeoutExpired，必须释放锁。
+
+    回归：旧实现直接 ``proc.wait(timeout=5)``，异常一路冒到 HTTP 层 →
+    500 + traceback，而账号锁和注册表项都留在原地，该账号被永久占住。
+    """
+    import subprocess
+
+    key = runner.process_key("signer", "acc", tmp_path)
+    handle = runner._acquire_account_lock(tmp_path, "acc")
+    runner._LOCKS[key] = handle
+
+    class Stubborn:
+        """terminate/kill 都无效，wait 永远超时。"""
+
+        pid = 4242
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("stubborn", timeout or 0)
+
+    runner._PROCESSES[key] = Stubborn()
+    runner._TASK_NAMES[key] = ["t"]
+
+    ok, message = runner.stop("signer", "acc", tmp_path)
+
+    assert ok is True
+    assert "未能确认退出" in message
+    # 关键：注册表项与账号锁都已清理，账号可以重新启动。
+    assert key not in runner._PROCESSES
+    assert key not in runner._TASK_NAMES
+    assert key not in runner._LOCKS
+
+
 def test_process_key_is_per_account():
-    # 0.9.12 起 key 是 (kind, account),同账号多任务共享一个进程
+    # 展示键不含 workdir（UI 上展示用）
     assert runner.process_key("signer", "mingtian") == "signer:mingtian"
+
+
+def test_process_key_is_scoped_by_workdir(tmp_path):
+    # 不同 workdir 是彼此独立的账号命名空间，注册表键必须带上 workdir，
+    # 否则 WebUI 切目录后新目录里的同名账号会被旧目录的进程挡住。
+    a = runner.process_key("signer", "acc", tmp_path / "a")
+    b = runner.process_key("signer", "acc", tmp_path / "b")
+    assert a != b
+    assert a.endswith("signer:acc") and b.endswith("signer:acc")
+    # 同一 workdir 下同名账号仍然共享一个进程
+    assert runner.process_key("signer", "acc", tmp_path / "a") == a
+    # 展示层仍然是不带 workdir 的稳定标识
+    assert runner.display_key("signer", "acc") == "signer:acc"
 
 
 def test_build_command_signer_single_task(monkeypatch, tmp_path):
@@ -111,18 +171,18 @@ def test_start_then_stop(monkeypatch, tmp_path):
     )
     ok, msg = runner.start("signer", "t1", tmp_path, "acc")
     assert ok, msg
-    key = runner.process_key("signer", "acc")
-    assert runner.running_tasks().get(key) is True
+    # 展示键仍然是不带 workdir 的 "kind:account"
+    assert runner.running_tasks().get("signer:acc") is True
     # account 在 kind 下唯一: 重复 start 同 account 同 kind → 拒绝
     ok_dup, msg_dup = runner.start("signer", "t1", tmp_path, "acc")
     assert not ok_dup
     assert "已在运行" in msg_dup
     assert "acc" in msg_dup
 
-    ok_stop, _msg = runner.stop("signer", "acc")
+    ok_stop, _msg = runner.stop("signer", "acc", tmp_path)
     assert ok_stop
-    assert runner.running_tasks().get(key) is not True
-    ok_stop_again, _msg = runner.stop("signer", "acc")
+    assert runner.running_tasks().get("signer:acc") is not True
+    ok_stop_again, _msg = runner.stop("signer", "acc", tmp_path)
     assert not ok_stop_again
 
 
@@ -141,7 +201,7 @@ def test_start_accepts_list_of_tasks(monkeypatch, tmp_path):
     ok, msg = runner.start("signer", ["a", "b", "c"], tmp_path, "acc")
     assert ok, msg
     assert captured_cmds == [("signer", ["a", "b", "c"])]
-    runner.stop("signer", "acc")
+    runner.stop("signer", "acc", tmp_path)
 
 
 def test_running_task_names_records_started_tasks(monkeypatch, tmp_path):
@@ -154,7 +214,7 @@ def test_running_task_names_records_started_tasks(monkeypatch, tmp_path):
     ok, msg = runner.start("signer", ["daily", "nightly"], tmp_path, "acc")
     assert ok, msg
     assert runner.running_task_names() == {"signer:acc": ["daily", "nightly"]}
-    runner.stop("signer", "acc")
+    runner.stop("signer", "acc", tmp_path)
 
 
 def test_running_task_names_cleared_after_stop(monkeypatch, tmp_path):
@@ -166,7 +226,7 @@ def test_running_task_names_cleared_after_stop(monkeypatch, tmp_path):
     )
     ok, _msg = runner.start("signer", ["old_task"], tmp_path, "acc")
     assert ok
-    runner.stop("signer", "acc")
+    runner.stop("signer", "acc", tmp_path)
     assert "signer:acc" not in runner.running_task_names()
 
 
@@ -183,20 +243,35 @@ def test_running_tasks_cleans_finished(monkeypatch, tmp_path):
     assert "signer:acc" not in runner.running_tasks()
 
 
+def _wait_for_status(kind, account, workdir, want, timeout=15.0):
+    """轮询 status 直到达到期望值，避免用「睡 X 秒后应该成立」的方式断言。
+
+    这类断言在本机满负载跑全量套件时会偶发失败（子进程何时真正进入 sleep、
+    terminate 何时被回收都受调度影响），而与被测逻辑无关。
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if runner.status(kind, account, workdir) is want:
+            return True
+        time.sleep(0.05)
+    return False
+
+
 def test_status_tracks_process_lifecycle(monkeypatch, tmp_path):
-    assert runner.status("signer", "t3") is False
+    assert runner.status("signer", "t3", tmp_path) is False
 
     monkeypatch.setattr(
         runner,
         "build_command",
         lambda *a, **k: [sys.executable, "-c", "import time; time.sleep(60)"],
     )
-    runner.start("signer", "t3", tmp_path, "acc")
-    assert runner.status("signer", "acc") is True
+    ok, _ = runner.start("signer", "t3", tmp_path, "acc")
+    assert ok, "常驻进程应启动成功"
+    assert _wait_for_status("signer", "acc", tmp_path, True)
 
-    ok, _msg = runner.stop("signer", "acc")
+    ok, _msg = runner.stop("signer", "acc", tmp_path)
     assert ok
-    assert runner.status("signer", "acc") is False
+    assert _wait_for_status("signer", "acc", tmp_path, False)
 
     monkeypatch.setattr(
         runner,
@@ -204,10 +279,30 @@ def test_status_tracks_process_lifecycle(monkeypatch, tmp_path):
         lambda *a, **k: [sys.executable, "-c", "pass"],
     )
     runner.start("signer", "t4", tmp_path, "acc")
-    deadline = time.time() + 10
-    while runner.status("signer", "acc") and time.time() < deadline:
-        time.sleep(0.05)
-    assert runner.status("signer", "acc") is False
+    assert _wait_for_status("signer", "acc", tmp_path, False)
+
+
+def test_same_account_in_two_workdirs_does_not_collide(monkeypatch, tmp_path):
+    """切 workdir 后同名账号必须能独立启动（回归：键里缺 workdir 的老 bug）。"""
+    workdir_a = tmp_path / "a"
+    workdir_b = tmp_path / "b"
+    monkeypatch.setattr(
+        runner,
+        "build_command",
+        lambda *a, **k: [sys.executable, "-c", "import time; time.sleep(60)"],
+    )
+    try:
+        ok_a, msg_a = runner.start("signer", "daily", workdir_a, "acc")
+        assert ok_a, msg_a
+        # 老实现的键是 "signer:acc"（不含 workdir），B 会直接撞上 A 的进程
+        ok_b, msg_b = runner.start("signer", "daily", workdir_b, "acc")
+        assert ok_b, f"切换 workdir 后同名账号被旧目录的进程挡住: {msg_b}"
+        # 两个 workdir 的账号锁必须落在各自的目录里
+        assert (workdir_a / "acc.lock").exists()
+        assert (workdir_b / "acc.lock").exists()
+    finally:
+        runner.stop("signer", "acc", workdir_a)
+        runner.stop("signer", "acc", workdir_b)
 
 
 def test_start_detects_immediate_exit(monkeypatch, tmp_path):
@@ -230,8 +325,8 @@ def test_start_detects_immediate_exit(monkeypatch, tmp_path):
     assert ok is False
     assert "启动后立即退出" in msg
     # 不应留在 _PROCESSES / _LOCKS 里
-    assert "signer:acc" not in runner._PROCESSES
-    assert "signer:acc" not in runner._LOCKS
+    assert runner.process_key("signer", "acc", tmp_path) not in runner._PROCESSES
+    assert runner.process_key("signer", "acc", tmp_path) not in runner._LOCKS
 
 
 def test_shutdown_all_terminates_tracked_processes(monkeypatch, tmp_path):
@@ -292,7 +387,7 @@ def test_start_redirects_stdout_stderr_to_child_dir_not_main_log(monkeypatch, tm
                 break
             time.sleep(0.05)
     finally:
-        runner.stop("signer", "acc")
+        runner.stop("signer", "acc", tmp_path)
 
     # 子目录文件应存在并包含 marker
     assert stdout_log.is_file(), f"expected stdout log at {stdout_log}"
@@ -348,8 +443,8 @@ def test_start_propagates_file_handle_error(monkeypatch, tmp_path):
     assert ok is False
     assert "启动失败" in msg
     # 启动失败 → 不留任何痕迹(包括 lock)
-    assert "signer:acc" not in runner._PROCESSES
-    assert "signer:acc" not in runner._LOCKS
+    assert runner.process_key("signer", "acc", tmp_path) not in runner._PROCESSES
+    assert runner.process_key("signer", "acc", tmp_path) not in runner._LOCKS
 
 
 def test_start_closes_log_fp_after_popen(monkeypatch, tmp_path):
@@ -379,8 +474,8 @@ def test_start_closes_log_fp_after_popen(monkeypatch, tmp_path):
     assert captured["stdout"] is not None
     assert captured["stdout"] is captured["stderr"]
     assert captured["stdout"].closed, "父进程日志文件对象未在 Popen 后关闭(fd 泄漏)"
-    runner._PROCESSES.pop("signer:acc", None)
-    lock = runner._LOCKS.pop("signer:acc", None)
+    runner._PROCESSES.pop(runner.process_key("signer", "acc", tmp_path), None)
+    lock = runner._LOCKS.pop(runner.process_key("signer", "acc", tmp_path), None)
     if lock is not None:
         lock.release()
 
@@ -408,8 +503,8 @@ def test_start_reaps_child_on_early_exit(monkeypatch, tmp_path):
     assert "启动后立即退出" in msg
     assert waited["called"], "早退子进程未被 wait() 收割"
     # 不应留在 _PROCESSES / _LOCKS 里
-    assert "signer:acc" not in runner._PROCESSES
-    assert "signer:acc" not in runner._LOCKS
+    assert runner.process_key("signer", "acc", tmp_path) not in runner._PROCESSES
+    assert runner.process_key("signer", "acc", tmp_path) not in runner._LOCKS
 
 
 def test_start_passes_proxy_via_env_not_argv(monkeypatch, tmp_path):
@@ -445,7 +540,7 @@ def test_start_passes_proxy_via_env_not_argv(monkeypatch, tmp_path):
     assert "--proxy" not in captured["cmd"]
     assert not any("socks5://" in part for part in captured["cmd"])
     assert captured["env"]["TG_PROXY"] == proxy
-    runner._forget("signer:acc")
+    runner._forget(runner.process_key("signer", "acc", tmp_path))
 
 
 def test_start_isolates_child_log_dir(monkeypatch, tmp_path):
@@ -478,7 +573,7 @@ def test_start_isolates_child_log_dir(monkeypatch, tmp_path):
     # 子进程 stdout 也隔离在同一个子目录;顶层主日志留给主进程自己的 handler。
     assert runner.child_stdout_log(tmp_path, "automation", "acc").is_file()
     assert not (tmp_path / "logs" / runner.DEFAULT_LOG_FILE_NAME).exists()
-    runner._forget("automation:acc")
+    runner._forget(runner.process_key("automation", "acc", tmp_path))
 
 
 # ---------------------------------------------------------------------------
@@ -502,7 +597,7 @@ def test_start_after_child_exited_by_itself_releases_stale_lock(monkeypatch, tmp
     )
     ok, msg = runner.start("signer", "t_stale", tmp_path, "acc")
     assert ok, msg
-    key = runner.process_key("signer", "acc")
+    key = runner.process_key("signer", "acc", tmp_path)
     # 子进程自己退出；没有任何人 poll / stop 过它。
     runner._PROCESSES[key].wait(timeout=15)
     assert runner._PROCESSES[key].poll() is not None
@@ -516,7 +611,7 @@ def test_start_after_child_exited_by_itself_releases_stale_lock(monkeypatch, tmp
     ok2, msg2 = runner.start("signer", "t_stale", tmp_path, "acc")
     assert ok2, msg2
     assert "其他进程" not in msg2
-    runner.stop("signer", "acc")
+    runner.stop("signer", "acc", tmp_path)
 
 
 def test_start_popen_value_error_releases_account_lock(tmp_path):
@@ -529,8 +624,8 @@ def test_start_popen_value_error_releases_account_lock(tmp_path):
     ok, msg = runner.start("signer", "bad\x00task", tmp_path, "acc")
     assert ok is False
     assert "启动失败" in msg
-    assert "signer:acc" not in runner._LOCKS
-    assert "signer:acc" not in runner._PROCESSES
+    assert runner.process_key("signer", "acc", tmp_path) not in runner._LOCKS
+    assert runner.process_key("signer", "acc", tmp_path) not in runner._PROCESSES
 
     # 锁必须真的释放了：同一个进程再抢一次必须成功。
     lock = runner._acquire_account_lock(tmp_path, "acc")
@@ -596,10 +691,10 @@ def test_stop_during_startup_grace_can_still_stop_child(monkeypatch, tmp_path):
 
     results = {}
     thread = _start_in_thread(results, tmp_path)
-    key = runner.process_key("signer", "acc")
+    key = runner.process_key("signer", "acc", tmp_path)
     try:
         assert _wait_registered(key), "子进程未在宽限期内登记，stop() 无从下手"
-        ok, msg = runner.stop("signer", "acc")
+        ok, msg = runner.stop("signer", "acc", tmp_path)
         assert ok, msg
         assert child.terminated, "宽限期内拉起的子进程没有被终止，成为孤儿"
     finally:
@@ -621,10 +716,10 @@ def test_shutdown_all_during_startup_grace_stops_child(monkeypatch, tmp_path):
 
     results = {}
     thread = _start_in_thread(results, tmp_path)
-    key = runner.process_key("signer", "acc")
+    key = runner.process_key("signer", "acc", tmp_path)
     try:
         assert _wait_registered(key), "子进程未在宽限期内登记，shutdown_all() 无从下手"
-        assert runner.shutdown_all(timeout=1.0) == [key]
+        assert runner.shutdown_all(timeout=1.0) == [runner.display_key("signer", "acc")]
         assert child.terminated
     finally:
         thread.join(timeout=10)
@@ -641,7 +736,7 @@ def test_forget_guarded_by_identity_spares_newer_process(tmp_path):
     running_tasks() 也在等待/轮询后才清理；如果清理不校验身份，晚到的一方可
     把对方刚登记的新子进程连同账号锁一起删掉，同账号随即出现两个写者。
     """
-    key = "signer:acc"
+    key = runner.process_key("signer", "acc", tmp_path)
     old = _SlowChild()
     new = _SlowChild()
     lock = runner._acquire_account_lock(tmp_path, "acc")
@@ -659,3 +754,34 @@ def test_forget_guarded_by_identity_spares_newer_process(tmp_path):
     assert key not in runner._PROCESSES
     assert key not in runner._LOCKS
     assert key not in runner._TASK_NAMES
+
+
+def test_running_queries_can_be_scoped_to_one_workdir(monkeypatch, tmp_path):
+    """``running_tasks`` / ``running_task_names`` 必须能按 workdir 过滤。
+
+    回归：这两个函数原先没有 workdir 参数，把注册表里的进程全列了出来，而
+    ``run_stop`` 用的是**当前**目录去解析 key。于是切换工作目录后，旧目录里仍在
+    跑的任务继续显示「运行中」，用户点每一行的「停止」都只回一句「未在运行」
+    —— 列表上的按钮全废。
+    """
+    monkeypatch.setattr(runner, "_STARTUP_GRACE_SECONDS", 0.0)
+    monkeypatch.setattr(
+        runner,
+        "build_command",
+        lambda *a, **k: [sys.executable, "-c", "import time; time.sleep(60)"],
+    )
+    workdir_a = tmp_path / "a"
+    workdir_b = tmp_path / "b"
+    ok, msg = runner.start("signer", "daily", workdir_a, "acc")
+    assert ok, msg
+    try:
+        assert runner.running_tasks(workdir_a) == {"signer:acc": True}
+        assert runner.running_task_names(workdir_a) == {"signer:acc": ["daily"]}
+        # 另一个目录：什么都不该有
+        assert runner.running_tasks(workdir_b) == {}
+        assert runner.running_task_names(workdir_b) == {}
+        # 不传 workdir 仍是全量语义（关机清理等调用方要的就是这个）
+        assert runner.running_tasks() == {"signer:acc": True}
+        assert runner.running_task_names() == {"signer:acc": ["daily"]}
+    finally:
+        runner.stop("signer", "acc", workdir_a)

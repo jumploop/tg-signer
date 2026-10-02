@@ -1,11 +1,71 @@
 import asyncio
 
+import click
 import pytest
 from click.testing import CliRunner
 
 import tg_signer.cli.automation as automation_cli
 import tg_signer.cli.signer as signer_cli
 from tg_signer.core import ChatFolderError
+
+# ---------------------------------------------------------------------------
+# run_coroutines：异常必须转成 ClickException，且兄弟协程要一起收场
+# ---------------------------------------------------------------------------
+
+
+def test_run_coroutines_converts_arbitrary_error_to_click_exception():
+    """非 ChatFolderError 异常不得以裸 traceback 打穿 CLI。"""
+
+    async def boom():
+        raise RuntimeError("disk on fire")
+
+    loop = asyncio.new_event_loop()
+    try:
+        with pytest.raises(click.ClickException) as exc:
+            signer_cli.run_coroutines(loop, [boom()])
+    finally:
+        loop.close()
+    assert "disk on fire" in str(exc.value)
+
+
+def test_run_coroutines_cancels_sibling_tasks_on_failure():
+    """一个协程失败时，兄弟协程必须被取消并回收，不能留在后台继续发消息。"""
+    state = {"sibling_finished": False, "sibling_cancelled": False}
+
+    async def boom():
+        raise RuntimeError("boom")
+
+    async def sibling():
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            state["sibling_cancelled"] = True
+            raise
+        state["sibling_finished"] = True  # pragma: no cover
+
+    loop = asyncio.new_event_loop()
+    try:
+        with pytest.raises(click.ClickException):
+            signer_cli.run_coroutines(loop, [boom(), sibling()])
+    finally:
+        loop.close()
+
+    assert state["sibling_cancelled"] is True
+    assert state["sibling_finished"] is False
+
+
+def test_run_coroutines_propagates_cancellation_as_click_exception():
+    """CancelledError 不属于 ChatFolderError，必须被转成错误而不是裸抛。"""
+
+    async def boom():
+        raise asyncio.CancelledError
+
+    loop = asyncio.new_event_loop()
+    try:
+        with pytest.raises(click.ClickException):
+            signer_cli.run_coroutines(loop, [boom()])
+    finally:
+        loop.close()
 
 
 class DummyWorker:

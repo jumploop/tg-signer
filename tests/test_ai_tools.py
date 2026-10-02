@@ -167,6 +167,9 @@ def test_save_config_restricts_file_permissions(tmp_path, monkeypatch):
     """落盘后要把 .openai_config.json 收紧到仅属主可读写。
 
     文件里是明文 API Key,默认 umask 常见 0644,同机其他用户可直接读到。
+    现在写入改为「同目录临时文件 + os.replace」原子写,所以临时文件也必须在
+    改名**之前**就收紧权限 —— 否则在 umask 0644 下,Key 会有一瞬间对同机
+    其他用户可读,只收紧最终文件挡不住这一点。
     """
     calls = []
 
@@ -176,6 +179,53 @@ def test_save_config_restricts_file_permissions(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ai_tools, "restrict_file_permissions", _spy)
 
+    final = tmp_path / ".openai_config.json"
     OpenAIConfigManager(tmp_path).save_config("sk-test", model="gpt-4o-mini")
 
-    assert calls == [(tmp_path / ".openai_config.json", 0o600)]
+    assert calls, "restrict_file_permissions 未被调用"
+    assert calls[-1] == (final, 0o600), "最终配置文件权限未收紧"
+    assert all(mode == 0o600 for _path, mode in calls), "存在未收紧的中间文件"
+    assert all(path.parent == tmp_path for path, _mode in calls)
+    # 不留临时文件
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_save_config_is_atomic_and_keeps_old_key_on_failure(tmp_path, monkeypatch):
+    """保存 API Key 必须原子：写失败时旧文件不能被截断。
+
+    回归：原来直接 open(path, "w")，它会先截断再写。磁盘满 / 进程被杀 /
+    被杀软打断时，用户已保存的 Key 就变成一个空文件或半截 JSON，没有备份。
+    """
+    import json as _json
+
+    manager = OpenAIConfigManager(tmp_path)
+    manager.save_config("sk-original", model="gpt-4o-mini")
+    before = _json.loads((tmp_path / ".openai_config.json").read_text(encoding="utf-8"))
+    assert before["api_key"] == "sk-original"
+
+    def _boom(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ai_tools.os, "replace", _boom)
+
+    with pytest.raises(OSError):
+        manager.save_config("sk-new", model="gpt-4o-mini")
+
+    after = _json.loads((tmp_path / ".openai_config.json").read_text(encoding="utf-8"))
+    assert after["api_key"] == "sk-original", "写失败把已有 Key 弄丢了"
+    assert list(tmp_path.glob("*.tmp")) == [], "失败后残留临时文件"
+
+
+def test_save_config_creates_missing_workdir(tmp_path):
+    """workdir 不存在时必须先建目录。
+
+    回归：save_config 直接往 <workdir>/.openai_config.json 写，默认 workdir
+    `.signer` 在新克隆的仓库里本来就不存在 —— `tg-signer llm-config` 会在用户
+    输完 Key 之后才抛 FileNotFoundError，刚敲进去的 Key 全丢。
+    """
+    workdir = tmp_path / "fresh" / "nested" / ".signer"
+    assert not workdir.exists()
+
+    OpenAIConfigManager(workdir).save_config("sk-test", model="gpt-4o-mini")
+
+    assert (workdir / ".openai_config.json").is_file()

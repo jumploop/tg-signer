@@ -1,6 +1,8 @@
 import json
 import logging
 import os
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +14,37 @@ if TYPE_CHECKING:
     from tg_signer.core import Client
 
     from .engine import UserAutomation
+
+# 状态文件「读不了」（被占用/权限不足）时的短暂重试次数与间隔。
+# 这类情况几乎都是暂时性的，值得等一下再试，而不是立刻丢数据。
+_STATE_READ_RETRIES = 3
+_STATE_READ_RETRY_SECONDS = 0.2
+
+_REPLACE_RETRIES = 5
+_REPLACE_RETRY_SECONDS = 0.05
+
+
+def _replace_with_retry(src: Path, dst: Path) -> None:
+    """``os.replace`` + 有限次退避重试。
+
+    Windows 上 ``os.replace`` 要求目标文件当前没有任何未共享删除的打开句柄：
+    同一进程里另一个线程正在 ``load()``（``open(path, "r")`` 恰好不共享删除）、
+    杀毒软件或索引器短暂扫过新文件，都会让 ``MoveFileEx`` 直接返回
+    ``PermissionError``（WinError 5/32）。引擎在 asyncio 单线程里也跑不出
+    并发保护 —— 定时器回调与消息 handler 的 ``save()`` 会交错，
+    于是状态保存偶发失败，规则进度这一轮直接丢掉。
+    这里与 ``webui/data.py::_write_json_atomic`` 采用同样的退避策略。
+    """
+    last: OSError | None = None
+    for attempt in range(_REPLACE_RETRIES):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError as exc:  # Windows 独占导致的暂时性失败
+            last = exc
+            if attempt < _REPLACE_RETRIES - 1:
+                time.sleep(_REPLACE_RETRY_SECONDS * (attempt + 1))
+    raise last  # type: ignore[misc]
 
 
 @dataclass
@@ -72,12 +105,36 @@ class RuleStateStore:
             with open(self.path, "r", encoding="utf-8") as fp:
                 data = json.load(fp)
             self._validate_shape(data)
-        except (OSError, ValueError, TypeError) as exc:
-            # 损坏时备份原文件,避免下次 save 静默覆盖导致状态彻底丢失。
-            # JSONDecodeError / UnicodeDecodeError 都是 ValueError 的子类,
-            # 形状错误(根不是 dict、rules 不是 dict 等)则显式抛 ValueError。
+        except OSError as exc:
+            # 「读不了」和「内容坏了」必须分开处理。
+            # PermissionError 是 OSError 子类，而它几乎总是**暂时性**的：
+            # 杀软/勒索防护正在扫描、OneDrive/Dropbox 正在按需下载占位文件、
+            # 同一任务的另一个 automation 进程正持有句柄、workdir 在网络盘上。
+            # 旧实现把它当成损坏：先把真实的 state.json 改名成 .corrupt-<ts>
+            # （备份不会自动恢复），再以空状态继续 —— 而下一次 save() 就把空
+            # buckets 写回去，用户的计数器/余额/去重键全部不可恢复地丢失，
+            # 所有 interval 定时器还会立刻重新触发。
+            # 这里改为短暂重试，仍失败就抛出，让用户看到真实原因而不是丢数据。
+            for _ in range(_STATE_READ_RETRIES):
+                time.sleep(_STATE_READ_RETRY_SECONDS)
+                try:
+                    with open(self.path, "r", encoding="utf-8") as fp:
+                        data = json.load(fp)
+                    self._validate_shape(data)
+                    break
+                except OSError:
+                    continue
+            else:
+                raise RuntimeError(
+                    f"无法读取自动化状态文件（文件被占用或权限不足）: {self.path} ({exc})。"
+                    "已保留原文件、未做任何写入；请关闭占用该文件的程序后重试。"
+                ) from exc
+        except (ValueError, TypeError) as exc:
+            # 这里才是真的坏了：JSONDecodeError / UnicodeDecodeError 都是
+            # ValueError 子类，形状错误（根不是 dict、rules 不是 dict 等）由
+            # _validate_shape 显式抛 ValueError。
             self.logger.warning(
-                f"无法读取状态文件: {self.path} ({exc}),已备份为 .corrupt-<ts> 并以空状态继续"
+                f"状态文件已损坏: {self.path} ({exc}),已备份为 .corrupt-<ts> 并以空状态继续"
             )
             try:
                 backup = self.path.with_name(
@@ -117,6 +174,43 @@ class RuleStateStore:
                 value = bucket.get(key)
                 if value is not None and not isinstance(value, dict):
                     raise ValueError(f"状态文件 rules.{rule_id}.{key} 必须是对象")
+            for trigger_id, state in (bucket.get("triggers") or {}).items():
+                if not isinstance(state, dict):
+                    raise ValueError(
+                        f"状态文件 rules.{rule_id}.triggers.{trigger_id} 必须是对象"
+                    )
+                # 叶子值也必须校验:只查容器的话 {"next_run_at": 1735689600}
+                # (手改或旧版本写出)会被当成合法状态放行,随后
+                # datetime.fromisoformat(int) 抛的是 TypeError 而不是
+                # ValueError,会逃出 get_trigger_next_run 的捕获、每秒打断一次
+                # 整个 _tick_timers —— 该配置里所有 timer 规则随之静默停摆。
+                for leaf in ("next_run_at", "last_run_at"):
+                    value = state.get(leaf)
+                    if value is not None and not isinstance(value, str):
+                        raise ValueError(
+                            f"状态文件 rules.{rule_id}.triggers.{trigger_id}."
+                            f"{leaf} 必须是字符串或 null,实际为 "
+                            f"{type(value).__name__}"
+                        )
+
+    @staticmethod
+    def _json_default(value: Any) -> Any:
+        """把状态里出现的非 JSON 原生类型降级成可序列化的值。
+
+        ``rule.vars`` 是 ``Dict[str, Any]``，而 ``yaml.safe_load`` 会把
+        ``2024-06-01`` 解析成真正的 ``datetime``。这类值直接交给 ``json.dump``
+        会抛 ``TypeError: Object of type datetime is not JSON serializable``,
+        异常从 ``_run_rule`` 逃出去后 timer 的 next_run_at 不会被推进 ——
+        于是一条 ``interval_seconds: 3600`` 的规则会在每个 tick 重新触发,
+        实测 0.2 秒内重复发 12 条消息。这里统一降级而不是让整条规则链崩掉。
+        """
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, (set, frozenset, tuple)):
+            return list(value)
+        if isinstance(value, Path):
+            return str(value)
+        return str(value)
 
     def save(self, force: bool = False) -> None:
         # 无变更时跳过落盘，减少频繁 IO。
@@ -124,14 +218,26 @@ class RuleStateStore:
             self.logger.debug("状态未变化，跳过写入: %s", self.path)
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        # 写临时文件再原子替换,避免崩溃/Ctrl-C 中途损坏状态文件
-        tmp_path = self.path.with_name(self.path.name + ".tmp")
+        # 写临时文件再原子替换,避免崩溃/Ctrl-C 中途损坏状态文件。
+        # 临时文件名必须唯一：两个 automation 进程/线程操作同一任务目录时，
+        # 固定的 state.json.tmp 会让双方共写同一个临时文件 —— 一边以 "w" 截断、
+        # 另一边随后 os.replace，就会把一个被截断的 state.json 装上去，下次
+        # load 直接判定损坏并清空。Windows 上还会周期性地报 PermissionError。
+        tmp_path = self.path.with_name(
+            f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
         try:
             with open(tmp_path, "w", encoding="utf-8") as fp:
-                json.dump(self._data, fp, ensure_ascii=False, indent=2)
+                json.dump(
+                    self._data,
+                    fp,
+                    ensure_ascii=False,
+                    indent=2,
+                    default=self._json_default,
+                )
                 fp.flush()
                 os.fsync(fp.fileno())
-            os.replace(tmp_path, self.path)
+            _replace_with_retry(tmp_path, self.path)
         finally:
             # 任何异常都清理临时文件,避免残留
             if tmp_path.exists():
@@ -167,7 +273,9 @@ class RuleStateStore:
             return None
         try:
             return datetime.fromisoformat(raw)
-        except ValueError:
+        # fromisoformat 只接受 str:传进非字符串抛的是 TypeError。必须一并捕获,
+        # 否则单个坏 trigger 会让 _tick_timers 每秒炸一次,拖垮同配置的其它规则。
+        except (TypeError, ValueError):
             return None
 
     def set_trigger_next_run(

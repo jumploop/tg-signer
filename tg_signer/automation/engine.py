@@ -80,6 +80,19 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         self._message_cache_limit = 200
         # 聊天的数量同样要有上限:只限单聊消息数的话,长期运行会随聊天数无限增长。
         self._message_cache_chats_limit = 64
+        # 每条规则一把锁:保证同一 rule 的「读 vars -> 改 -> 回写」不会并发交错。
+        # 不加锁时,带 timer + message 触发的规则会被 pyrogram 的各条更新 task 与
+        # timer_loop 同时进入,两边各自基于同一份旧值 +1,结果只 +1(丢更新)。
+        self._rule_locks: Dict[str, asyncio.Lock] = {}
+        # 脱离 pyrogram 调度协程、正在后台执行的规则链 task。
+        self._dispatch_tasks: "set[asyncio.Task]" = set()
+
+    def _rule_lock(self, rule_id: str) -> asyncio.Lock:
+        lock = self._rule_locks.get(rule_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._rule_locks[rule_id] = lock
+        return lock
 
     def ensure_ctx(self):
         return {}
@@ -319,6 +332,9 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
                 for task in startup_tasks:
                     task.cancel()
                 timer_task.cancel()
+                # 后台跑的消息规则链也要收掉:它们可能正卡在 delay 里,
+                # 若放任不管,__aexit__ 已经关掉 client 之后 handler 才去发消息。
+                await self._cancel_dispatch_tasks()
 
     def _has_trigger(self, rule: RuleConfig, trigger_type: str) -> bool:
         return any(trigger.type == trigger_type for trigger in rule.triggers)
@@ -423,53 +439,128 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
                         trigger_id=trigger_id,
                         rule_id=rule.id,
                     )
-                    await self._run_rule(rule, event)
-                    next_run = self.state.get_trigger_next_run(rule.id, trigger_id)
-                    if not next_run or next_run <= now:
-                        # 未被 schedule_next 覆盖时，按 trigger 默认策略推导下一次。
-                        next_run = self._compute_next_run(timer_trigger, now)
-                    self.state.set_trigger_next_run(rule.id, trigger_id, next_run)
-                    self.state.set_trigger_last_run(rule.id, trigger_id, now)
-                    self.state.save()
-                    self.log(
-                        f"timer 执行完成: rule={rule.id}, trigger={trigger_id}, next={next_run.isoformat() if next_run else 'None'}",
-                        level="DEBUG",
-                    )
+                    # 两件事必须分开做:
+                    # 1) 规则异常只跳过该条规则,不能让异常冒泡打断 _tick_timers
+                    #    里后面的规则(那会让它们整轮都不触发)。
+                    # 2) 推进 next_run_at 必须放在 finally:原先它排在
+                    #    `await self._run_rule(...)` 之后,一旦规则链抛异常就永远
+                    #    走不到,next_run_at 停在过去 —— 于是每个 tick 都重新触发
+                    #    一次。实测 interval_seconds=3600 的规则 0.2 秒发了 12 条。
+                    try:
+                        await self._run_rule(rule, event)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001
+                        self.log(
+                            f"timer 规则执行异常，已跳过本轮: rule={rule.id}, "
+                            f"trigger={trigger_id}",
+                            level="ERROR",
+                        )
+                        logger.exception("timer 规则执行异常: rule=%s", rule.id)
+                    finally:
+                        advanced = self.state.get_trigger_next_run(rule.id, trigger_id)
+                        if not advanced or advanced <= now:
+                            # 未被 schedule_next 覆盖时，按 trigger 默认策略推导下一次。
+                            advanced = self._compute_next_run(timer_trigger, now)
+                        self.state.set_trigger_next_run(rule.id, trigger_id, advanced)
+                        self.state.set_trigger_last_run(rule.id, trigger_id, now)
+                        self.state.save()
+                        self.log(
+                            f"timer 执行完成: rule={rule.id}, trigger={trigger_id}, "
+                            f"next={advanced.isoformat() if advanced else 'None'}",
+                            level="DEBUG",
+                        )
 
     async def on_message(self, client, message: Message):
         _ = client
-        await self._handle_message_event(message, event_type="message")
+        self._dispatch_message(message, event_type="message")
 
     async def on_edited_message(self, client, message: Message):
         _ = client
-        await self._handle_message_event(message, event_type="edited_message")
+        self._dispatch_message(message, event_type="edited_message")
+
+    def _dispatch_message(self, message: Message, event_type: str) -> None:
+        """把规则链放进独立 task，不要在 pyrogram 的调度协程里内联 await。
+
+        pyrogram 的 ``Dispatcher.handler_worker`` 在**唯一一个** worker 协程里
+        ``await handler.callback(...)``，因此任何 handler 的耗时都会阻塞整个账号
+        的更新流 —— 一条 ``delay: 300`` 的规则会让所有群的所有消息停摆 5 分钟
+        （``forward`` / ``ai_reply`` 等耗时 handler 同理）。
+
+        抽出去之后同一条规则的多次触发由 ``_rule_lock`` 串行，顺序仍然稳定，
+        但不再互相阻塞 pyrogram。
+        """
+        # 先缓存：wait_for / forward 等 handler 会回查最近消息，而这条消息的
+        # 规则链马上要在另一个 task 里读它了。
+        self._cache_message(message)
+        task = asyncio.ensure_future(
+            self._handle_message_event(message, event_type=event_type)
+        )
+        self._dispatch_tasks.add(task)
+        task.add_done_callback(self._dispatch_tasks.discard)
+        task.add_done_callback(self._on_dispatch_done)
+
+    def _on_dispatch_done(self, task: "asyncio.Task") -> None:
+        """脱离调度协程后，异常不再由 pyrogram 打印，必须自己取出并记录。
+
+        不取出的话 task 的异常要到 GC 才以 "Task exception was never retrieved"
+        冒出，而且不会进日志文件 —— 等于又变成静默失败。
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            self.log(f"规则链执行异常: {exc}", level="ERROR")
+            logger.exception("规则链执行异常", exc_info=exc)
+
+    async def _cancel_dispatch_tasks(self) -> None:
+        """退出时收掉仍在跑的规则链，避免 client 关闭后 handler 才发消息。"""
+        tasks = [t for t in self._dispatch_tasks if not t.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _handle_message_event(self, message: Message, event_type: str) -> None:
         # 消息/编辑消息统一走“触发器匹配 -> 过滤器匹配 -> handler链”三段式流程。
-        self._cache_message(message)
+        # 缓存由 _dispatch_message 在派生前完成，这里不再重复。
         cfg = self.config
         for rule in cfg.rules:
             if not rule.enabled:
                 continue
+            # 一条规则对同一条消息最多执行一次 handler 链：同一群的多个
+            # message trigger（例如 chat_id 写 int 和 @username 两种形式）
+            # 会同时命中一条消息，原来在这里被逐个执行 —— 自动回复类规则
+            # 会对同一条消息连发两次，而第二次往往是用户自己刚收到的回声。
+            matched: List[str] = []
             for index, trigger in self._iter_triggers(rule, MESSAGE_TRIGGER_TYPE):
                 if not self._match_message_trigger(trigger, message):
                     continue
                 if rule.filters and not self._match_filter(rule.filters, message):
                     continue
-                trigger_id = self._trigger_id(rule, trigger, index)
+                matched.append(self._trigger_id(rule, trigger, index))
+            if not matched:
+                continue
+            if len(matched) > 1:
                 self.log(
-                    f"{event_type}命中规则: rule={rule.id}, trigger={trigger_id}, chat={message.chat.id}",
+                    f"{event_type}规则 {rule.id} 有多个 trigger 同时命中，"
+                    f"按第一条执行: {matched}",
                     level="DEBUG",
                 )
-                event = Event(
-                    type=event_type,
-                    chat_id=message.chat.id,
-                    message=message,
-                    now=get_now(),
-                    trigger_id=trigger_id,
-                    rule_id=rule.id,
-                )
-                await self._run_rule(rule, event)
+            trigger_id = matched[0]
+            self.log(
+                f"{event_type}命中规则: rule={rule.id}, trigger={trigger_id}, chat={message.chat.id}",
+                level="DEBUG",
+            )
+            event = Event(
+                type=event_type,
+                chat_id=message.chat.id,
+                message=message,
+                now=get_now(),
+                trigger_id=trigger_id,
+                rule_id=rule.id,
+            )
+            await self._run_rule(rule, event)
 
     def _cache_message(self, message: Message) -> None:
         message_id = message.id
@@ -655,6 +746,13 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         return False
 
     async def _run_rule(self, rule: RuleConfig, event: Event) -> None:
+        # 同一 rule 的读-改-写必须串行：pyrogram 把每条消息更新放在各自 task 里，
+        # timer_loop 又是独立 task，带 timer + message 触发的规则会并发进入。
+        # 两边都读到同一份旧 vars、各自 +1 再回写，counter 只 +1（丢更新）。
+        async with self._rule_lock(rule.id):
+            await self._run_rule_locked(rule, event)
+
+    async def _run_rule_locked(self, rule: RuleConfig, event: Event) -> None:
         # 规则级变量 = 配置初始变量 + 持久化状态变量（后者覆盖前者）。
         ctx_vars = {**rule.vars, **self.state.get_rule_vars(rule.id)}
         self.log(
@@ -669,35 +767,48 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             worker=self,
             workdir=self.workdir,
         )
-        for handler_cfg in rule.handlers:
-            handler = get_handler(handler_cfg.handler)
-            if not handler:
-                self.log(f"未找到handler: {handler_cfg.handler}", level="WARNING")
-                break
+        try:
+            for handler_cfg in rule.handlers:
+                handler = get_handler(handler_cfg.handler)
+                if not handler:
+                    self.log(f"未找到handler: {handler_cfg.handler}", level="WARNING")
+                    break
+                try:
+                    self.log(
+                        f"执行 handler: rule={rule.id}, handler={handler_cfg.handler}",
+                        level="DEBUG",
+                    )
+                    result = await handler(event, ctx, handler_cfg.params or {})
+                    self.log(
+                        f"handler 结果: rule={rule.id}, handler={handler_cfg.handler}, result={result}",
+                        level="DEBUG",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self.log(
+                        f"handler执行失败: {handler_cfg.handler} ({exc})", level="ERROR"
+                    )
+                    break
+                # 只能对字符串判停:插件返回 dict/list 时 `result in {...}` 会抛
+                # TypeError: unhashable,而它写在上面的 except 之外 —— 于是异常
+                # 逃出 _run_rule,后面的 handler 不再执行,下面 finally 里的状态
+                # 落盘也一起被跳过(插件写进 ctx.vars 的东西全丢)。
+                if isinstance(result, str) and result in {"stop", "defer"}:
+                    # stop/defer 都会中断后续 handler。
+                    break
+        finally:
+            # store_state(keys=[...]) 可用 ctx.persist_vars 限定只回写部分变量;
+            # 未声明时维持原契约:回写全部 ctx.vars。
+            # 放在 finally 里:规则链中途异常也必须把已产生的变量落盘。
+            persisted_vars = (
+                ctx.persist_vars if ctx.persist_vars is not None else ctx.vars
+            )
             try:
-                self.log(
-                    f"执行 handler: rule={rule.id}, handler={handler_cfg.handler}",
-                    level="DEBUG",
-                )
-                result = await handler(event, ctx, handler_cfg.params or {})
-                self.log(
-                    f"handler 结果: rule={rule.id}, handler={handler_cfg.handler}, result={result}",
-                    level="DEBUG",
-                )
-            except Exception as exc:  # noqa: BLE001
-                self.log(
-                    f"handler执行失败: {handler_cfg.handler} ({exc})", level="ERROR"
-                )
-                break
-            if result in {"stop", "defer"}:
-                # stop/defer 都会中断后续 handler。
-                break
-        # store_state(keys=[...]) 可用 ctx.persist_vars 限定只回写部分变量;
-        # 未声明时维持原契约:回写全部 ctx.vars。
-        persisted_vars = ctx.persist_vars if ctx.persist_vars is not None else ctx.vars
-        self.state.set_rule_vars(rule.id, persisted_vars)
-        self.state.save()
-        self.log(
-            f"规则执行结束并持久化变量: rule={rule.id}, keys={list(persisted_vars.keys())}",
-            level="DEBUG",
-        )
+                self.state.set_rule_vars(rule.id, persisted_vars)
+                self.state.save()
+            except Exception:  # noqa: BLE001
+                self.log("规则变量持久化失败", level="ERROR")
+                logger.exception("规则变量持久化失败: rule=%s", rule.id)
+            self.log(
+                f"规则执行结束并持久化变量: rule={rule.id}, keys={list(persisted_vars.keys())}",
+                level="DEBUG",
+            )

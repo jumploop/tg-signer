@@ -29,6 +29,9 @@ class MigrationSummary:
     migrated_records: int = 0
     removed_files: int = 0
     skipped_files: list[Path] = field(default_factory=list)
+    # 已成功迁移、但源文件删不掉的文件（Windows 上被别的进程短暂占用）。
+    # 这不是「迁移失败」——记录已经落库了，只是 JSON 副本还在，需要如实告知。
+    undeleted_files: list[tuple[Path, str]] = field(default_factory=list)
 
 
 class SignRecordStore:
@@ -156,6 +159,13 @@ class SignRecordStore:
         ]
         if not rows:
             return 0
+        before = conn.total_changes
+        # ON CONFLICT 上加 WHERE 是有意为之：**只有更新的记录才覆盖旧值**。
+        # 原来是无条件 DO UPDATE，于是 legacy JSON 永远压过运行期写入：把
+        # `migrate-sign-records`（升级后的清理步骤，且默认保留 JSON 文件，
+        # 用户会反复跑）跑一遍，就会把重叠的那些天改写成 JSON 里的旧时间戳、
+        # 把 account 抹成 NULL、source 从 runtime 翻成 json_migrated ——
+        # WebUI 记录页与 list-sign-records 于是丢掉多账号归属和精确签到时刻。
         conn.executemany(
             """
             INSERT INTO sign_records (
@@ -170,10 +180,15 @@ class SignRecordStore:
                 signed_at = excluded.signed_at,
                 account = excluded.account,
                 source = excluded.source
+            WHERE excluded.signed_at > sign_records.signed_at
             """,
             rows,
         )
-        return len(rows)
+        # 返回**实际写入/更新**的行数，而不是交给 executemany 的行数。
+        # 旧实现返回 len(rows)：对一份已经迁移过的数据再跑一次
+        # `migrate-sign-records`，仍会报「迁移记录数 1」，而数据库里那条记录
+        # 早就是最新值了 —— 用户没法据此判断「是不是都迁完了」。
+        return conn.total_changes - before
 
     def upsert_record(
         self,
@@ -330,6 +345,13 @@ class SignRecordStore:
         if not signs_dir.is_dir():
             return summary
 
+        # 先把所有行写进库并 commit，最后才删源文件。
+        # 原来 unlink() 排在循环里、commit() 排在循环之后：`with conn` 在异常时
+        # 会回滚，于是「第一个文件已 unlink → 后面某个文件处理时抛异常」的结果是
+        # **源文件已被删除、写入的行又被回滚** —— 记录两边都不存在，且没有备份。
+        # 实测（Windows 上文件被 WebUI/编辑器/杀软短暂占用是家常便饭）：
+        # 3 个文件迁移到第 3 个时抛 PermissionError，a/b 的文件没了、行也没了。
+        migrated_paths: list[Path] = []
         with self._connection() as conn:
             for path in sorted(signs_dir.rglob("sign_record.json")):
                 resolved = self.resolve_record_target(
@@ -339,11 +361,21 @@ class SignRecordStore:
                     summary.skipped_files.append(path)
                     continue
                 task_name, user_id = resolved
+                records = self.load_json_records(path)
+                if not records:
+                    # 读不出来（截断 / 半写 / 手工改坏 / 根本不是对象）时
+                    # load_json_records 返回 {}。原来这里直接 continue，既不计入
+                    # skipped_files 也删除（若 --delete-json），CLI 于是打印
+                    # 「迁移 0 条」而没有任何告警 —— 用户以为迁移干净了，
+                    # 这些记录其实永远不会被迁移，也永远不会被告知。
+                    if path.is_file():
+                        summary.skipped_files.append(path)
+                    continue
                 count = self._upsert_records(
                     conn,
                     task_name,
                     user_id,
-                    self.load_json_records(path).items(),
+                    records.items(),
                     account=account,
                     source="json_migrated",
                 )
@@ -351,10 +383,21 @@ class SignRecordStore:
                     continue
                 summary.migrated_files += 1
                 summary.migrated_records += count
-                if remove_files:
-                    path.unlink()
-                    summary.removed_files += 1
+                migrated_paths.append(path)
+            # 落库先于删除：只有 commit 成功，删除才是安全的。
             conn.commit()
+
+        # 删源文件失败不能让整个迁移「看起来失败」——记录已经安全落库了。
+        # 这里如实报告，而不是抛异常让用户以为数据丢了。
+        for path in migrated_paths:
+            if not remove_files:
+                continue
+            try:
+                path.unlink()
+            except OSError as exc:
+                summary.undeleted_files.append((path, str(exc)))
+                continue
+            summary.removed_files += 1
         return summary
 
     def resolve_record_target(

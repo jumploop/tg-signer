@@ -364,6 +364,10 @@ def restrict_file_permissions(path: str | os.PathLike[str], mode: int = 0o600) -
 MAX_REGEX_PATTERN_LENGTH = 512
 MAX_REGEX_SUBJECT_LENGTH = 8 * 1024
 
+# 这些转义匹配的是「一类字符」，不能像字面字符那样钉死匹配位置。
+# 其余转义（`\.` `\$` `\\` `\n` …）匹配确定字符，出现即说明位置已确定。
+_AMBIGUOUS_ESCAPES = frozenset("dDwWsSbBAZG")
+
 
 def _unbounded_quantifier_end(pattern: str, start: int) -> int | None:
     """若 ``pattern[start:]`` 以「无上限量词」开头则返回其结束下标,否则 None。
@@ -386,39 +390,102 @@ def _unbounded_quantifier_end(pattern: str, start: int) -> int | None:
     return None
 
 
-def has_superlinear_quantifier(pattern: str) -> bool:
-    """粗判 ``pattern`` 是否存在「无上限量词套无上限量词」(star height >= 2)。
+def _char_class_end(pattern: str, start: int) -> int:
+    """返回 ``pattern[start] == '['`` 对应字符组的 ``]`` 下标。
 
-    ``(a+)+$``、``(\\d*)*``、``(a+b)+`` 这类形状在长文本上是指数级回溯,足以把
-    整个事件循环卡死。这是启发式(不是完整解析),但只对「组内已有无上限量词、
-    组外又叠加一个无上限量词」这一形状报警,所以不会误伤 ``(a+)?``、
-    ``(\\d{2,4})+``、``(?:\\d{1,3}\\.){3}\\d{1,3}`` 这类常见写法。
+    处理 ``[]]``（首字符是字面 ``]``）与 ``[\\]]``（转义）两种情况；
+    找不到闭合 ``]`` 时返回末尾下标。
     """
-    # groups[i] 表示第 i 层「当前所在分组」内是否已经出现过无上限量词。
-    groups: list[bool] = [False]
-    in_class = False
-    index = 0
+    index = start + 1
+    if pattern[index : index + 1] == "^":
+        index += 1
+    if pattern[index : index + 1] == "]":
+        index += 1
     while index < len(pattern):
         ch = pattern[index]
         if ch == "\\":
             index += 2
             continue
-        if in_class:
-            if ch == "]":
-                in_class = False
-            index += 1
+        if ch == "]":
+            return index
+        index += 1
+    return len(pattern) - 1
+
+
+def _atom_classes_overlap(left, right) -> bool:
+    """两个被无上限量词作用的原子是否会竞争同一段文本。
+
+    只认「明显重叠」的几种：同类、任一方是 ``.``、任一方是反向字符组（``[^…]``，
+    几乎匹配所有字符）。``\\w+\\s*`` 这类类别互斥的写法必须放行，否则
+    ``\\w+\\s*=\\s*\\w+`` 这种正常正则会被人为拒绝。
+    """
+    if left is None or right is None:
+        return False
+    if left == right:
+        return True
+    for atom in (left, right):
+        if atom[0] in ("dot", "neg"):
+            return True
+    return False
+
+
+def has_superlinear_quantifier(pattern: str) -> bool:
+    """粗判 ``pattern`` 是否存在超线性回溯的危险形状。
+
+    两类：
+
+    1. **嵌套无上限量词**（star height >= 2）—— ``(a+)+$``、``(\\d*)*``、
+       ``(a+b)+`` 是指数级回溯，27 个字符就能卡死约 24 秒。
+    2. **同一层里紧挨着的无上限量词** —— ``\\d+\\d+$``、``\\w+\\w+``、``.*.*``
+       是二次回溯，2000 字符 12.8s，而 Telegram 允许 4096 字符的单条消息。
+
+    这是启发式（不是完整解析）。判断「紧挨着」时只看中间有没有能钉死位置的
+    字符：``a+b+``、``\\d+\\.\\d+`` 中间的字面字符能钉死位置，所以放行；
+    ``\\d+`` 后面的 ``\\d``/``.``/字符组仍可能重复匹配同一段文本，所以拦下。
+    因此 ``(a+)?``、``(\\d{2,4})+``、``(?:\\d{1,3}\\.){3}\\d{1,3}`` 这类常见
+    写法不会被误伤。
+    """
+    # groups[i] 表示第 i 层「当前所在分组」内是否已经出现过无上限量词。
+    groups: list[bool] = [False]
+    # quant_atom[i]：当前层里最后一个**贪婪无上限量词**所作用的原子类别。
+    # 若下一个无上限量词作用在可能重复匹配同一段文本的类别上（同类、`.`、
+    # 反向字符组），就是二次回溯；None 表示位置已被字面字符钉死。
+    quant_atom: list[object] = [None]
+    # last_atom[i]：当前层里最近一个原子的类别，供上面的比较使用。
+    last_atom: list[object] = [None]
+    index = 0
+    while index < len(pattern):
+        ch = pattern[index]
+        if ch == "\\":
+            nxt = pattern[index + 1 : index + 2]
+            if nxt in _AMBIGUOUS_ESCAPES:
+                last_atom[-1] = ("esc", nxt.lower())
+            else:
+                # `\.` `\$` `\\` 等匹配确定字符，钉死了匹配位置。
+                last_atom[-1] = ("lit", nxt)
+                quant_atom[-1] = None
+            index += 2
             continue
         if ch == "[":
-            in_class = True
-            index += 1
+            close = _char_class_end(pattern, index)
+            body = pattern[index + 1 : close]
+            if body.startswith("^"):
+                last_atom[-1] = ("neg",)
+            else:
+                last_atom[-1] = ("cls", frozenset(body))
+            index = close + 1
             continue
         if ch == "(":
             groups.append(False)
+            quant_atom.append(None)
+            last_atom.append(None)
             index += 1
             continue
         if ch == ")":
             if len(groups) > 1:
                 inner = groups.pop()
+                quant_atom.pop()
+                last_atom.pop()
                 end = _unbounded_quantifier_end(pattern, index + 1)
                 if end is not None:
                     if inner:
@@ -427,13 +494,40 @@ def has_superlinear_quantifier(pattern: str) -> bool:
                     groups[-1] = True
                     index = end
                     continue
+                # `)` 后面没有量词时,这一组的内容仍然属于父层,必须把
+                # 「组内已出现无上限量词」的事实继承给父组。
+                # 原先这条分支把 inner 直接丢弃,于是多包一层括号就能绕过:
+                # `((a+))+$` 与 `(a+)+$` 语义完全相同,却不再被拦下 ——
+                # 而 CPython 的 re 在回溯期间不释放 GIL 也无法中断,
+                # 27 个字符的文本就能把事件循环卡住约 24 秒。
+                groups[-1] = groups[-1] or inner
+                # 分组的内容类别无法在此简单归约，保守起见不参与相邻判定。
+                last_atom[-1] = None
+                quant_atom[-1] = None
             index += 1
             continue
         end = _unbounded_quantifier_end(pattern, index)
         if end is not None and index > 0:
+            # 同一层里两个「挨着的」无上限量词若可能匹配同一段文本，就是二次
+            # 回溯，同样足以卡死事件循环：`\d+\d+$` 在 2000 字符上要 12.8s，
+            # 而 Telegram 允许 4096 字符的单条消息 —— 约 53s。由于 re 在回溯
+            # 期间不放 GIL 也无法中断，整个 automation 引擎（所有账号、所有
+            # 定时器、pyrogram 的 update 分发）都会停摆。
+            atom = last_atom[-1]
+            if _atom_classes_overlap(quant_atom[-1], atom):
+                return True
+            # 惰性量词（`+?`）优先匹配最少数量的文本，不产生这种回溯。
+            quant_atom[-1] = None if pattern[end : end + 1] == "?" else atom
             groups[-1] = True
             index = end
             continue
+        if ch == ".":
+            # `.` 能匹配任意字符（默认不匹配换行，但仍与绝大多数类别重叠）。
+            last_atom[-1] = ("dot",)
+        else:
+            # 确定的字面字符钉死了位置，后续量词不会重复匹配同一段文本。
+            last_atom[-1] = ("lit", ch)
+            quant_atom[-1] = None
         index += 1
     return False
 
@@ -491,7 +585,11 @@ def _load_timezone(name: str | None):
             return tz
     try:
         return ZoneInfo(candidate)
-    except ZoneInfoNotFoundError:
+    # 除 ZoneInfoNotFoundError 外，某些 key（如 ".."、"C:\\..."）会抛
+    # ValueError("ZoneInfo keys must refer to subdirectories of TZPATH")。
+    # get_timezone() 在每个自动化 tick 上都会调用，一个写错的 TZ 不该让整个
+    # 任务崩掉，走文档里的兜底链即可。
+    except (ZoneInfoNotFoundError, ValueError):
         return None
 
 

@@ -92,6 +92,18 @@ def test_get_timezone_falls_back_to_local_timezone_when_tz_is_invalid(monkeypatc
     assert tz is timezone.utc
 
 
+def test_load_timezone_returns_none_for_value_error_keys():
+    """``..`` / 绝对路径这类 key 抛的是 ValueError 而非 ZoneInfoNotFoundError。
+
+    回归：原先只捕获 ZoneInfoNotFoundError，一个写错的 TZ 会让
+    get_timezone() 抛穿，而它是在每个自动化 tick 上被调用的。
+    """
+    import tg_signer.utils as utils
+
+    assert utils._load_timezone("..") is None
+    assert utils._load_timezone("C:\\Windows") is None
+
+
 def test_get_timezone_falls_back_to_asia_shanghai(monkeypatch):
     import tg_signer.utils as utils
 
@@ -314,12 +326,94 @@ def test_safe_regex_search_rejects_none_subject():
         r"(?:x+)*",
         r"(a+)*",
         r"((a+)+)+",
+        # 多包一层括号不得绕过：这些与上面的形态语义等价
+        r"((a+))+$",
+        r"(?:(a+))+$",
+        r"(((a+)))+$",
+        r"((\d+))+$",
+        r"((a|b*))+",
     ],
 )
 def test_safe_regex_search_rejects_nested_unbounded_quantifiers(pattern):
     """「量词套量词」是指数级回溯的形态,必须被挡掉而不是真的去匹配。"""
     with pytest.raises(ValueError):
         utils.safe_regex_search(pattern, "a" * 2000 + "!")
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        # `)` 后没有量词时,组内的无上限量词必须继承给父组,否则
+        # `((a+))+$` 会绕开 `(a+)+$` 的拦截。
+        r"((a+))+$",
+        r"(?:(a+))+$",
+        r"(((a+)))+$",
+    ],
+)
+def test_has_superlinear_quantifier_cannot_be_bypassed_by_extra_group(pattern):
+    """回归：一层多余的括号就能绕开 ReDoS 护栏。
+
+    CPython 的 re 在回溯期间不释放 GIL 且无法中断，所以一旦绕过，
+    27 个字符的文本就能把事件循环卡住约 24 秒（实测）。
+    """
+    assert utils.has_superlinear_quantifier(pattern) is True
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        r"\d+\d+$",
+        r"\w+\w+",
+        r".*.*",
+        r"[a-z]+[a-z]+",
+        r".+\w+",
+    ],
+)
+def test_has_superlinear_quantifier_detects_sequential_quantifiers(pattern):
+    """回归：同一层里紧挨着的两个无上限量词是二次回溯，同样能卡死事件循环。
+
+    实测 ``\\d+\\d+$``：500 字符 0.20s / 1000 字符 1.75s / 2000 字符 12.82s，
+    而 Telegram 允许 4096 字符的单条消息 —— 约 53 秒。``re`` 在回溯期间不放
+    GIL 也无法中断，所以整个引擎（所有账号、定时器、pyrogram 分发）全部停摆。
+    原实现只查 star height >= 2，这类形状完全不被拦。
+    """
+    assert utils.has_superlinear_quantifier(pattern) is True
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        r"\d+",
+        r"a+b+",
+        r"\d+\.\d+",
+        r"(\d{1,3}\.){3}\d{1,3}",
+        r"^(\d+)-(\d+)$",
+        r"^(.+)@(\S+)$",
+        r"\w+\s*=\s*\w+",
+        r"\d+ 个",
+        r"[0-9]+",
+    ],
+)
+def test_has_superlinear_quantifier_allows_pinned_position_patterns(pattern):
+    """中间有能钉死位置的字面字符时不得误伤（`\\d+\\.\\d+` 这类很常见）。"""
+    assert utils.has_superlinear_quantifier(pattern) is False
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        r"(a+)?",
+        r"(ab)*c",
+        r"(a|b)+",
+        r"[a+]+",
+        r"(\d{1,3}\.){3}\d{1,3}",
+        r"\d{2,4}",
+        r"x(?:y|z)*",
+    ],
+)
+def test_has_superlinear_quantifier_keeps_allowing_safe_shapes(pattern):
+    """合并父组继承后不能误伤常见写法（原本被允许的必须仍然允许）。"""
+    assert utils.has_superlinear_quantifier(pattern) is False
 
 
 @pytest.mark.parametrize(

@@ -16,6 +16,7 @@ import os
 import pathlib
 import secrets
 import threading
+import time
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
@@ -41,6 +42,14 @@ _auth_storage: Dict[str, Any] = {}
 # 失败计数是「读-改-写」,同步依赖由 FastAPI 放进线程池执行;不加锁时并发请求
 # 会各自读到同一份旧值再写回,把「连续 5 次错误锁定 60 秒」直接绕过。
 _auth_storage_lock = threading.Lock()
+
+# 切换工作目录的「快照 → 切换 → 重绑日志」必须整体互斥，见 set_state 注释。
+_STATE_SWITCH_LOCK = threading.Lock()
+
+# 登录端点的最小请求间隔（秒），按提交的码值分别限速，见 auth_login 注释。
+_AUTH_LOGIN_LOCK = threading.Lock()
+_AUTH_LOGIN_LAST: Dict[str, float] = {}
+_AUTH_LOGIN_MIN_INTERVAL = 1.0
 
 # create=False：模块级 state 在 import 时构造，而 UIState 过去会 mkdir 工作目录，
 # 于是「仅仅 import 一下」就会在进程 CWD 下凭空建出 `.signer` —— 传了
@@ -192,7 +201,18 @@ async def _lifespan(_app: FastAPI):
         print(f"WebUI 关闭，已停止任务进程: {stopped}")
 
 
-app = FastAPI(title="tg-signer WebUI", lifespan=_lifespan)
+# docs_url/redoc_url/openapi_url 全部关闭：FastAPI 默认无条件公开
+# /docs、/redoc 和 /openapi.json，这些路由不挂 require_auth，
+# 于是设了访问码 + --host 0.0.0.0 时，同网段任何人都不需要任何凭据就能拿到
+# 完整的 24 个 API 端点地图（开闭目录会暴露所有参数与作用），
+# 而且 /openapi.json 里连 Bearer 认证方案都没声明，图还是错的。
+app = FastAPI(
+    title="tg-signer WebUI",
+    lifespan=_lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 
 
 def _config_entry_payload(entry: data_mod.ConfigEntry) -> Dict[str, Any]:
@@ -249,27 +269,41 @@ def get_state(_: None = Depends(require_auth)) -> Dict[str, Any]:
 
 @app.post("/api/state")
 def set_state(body: StateBody, _: None = Depends(require_auth)) -> Dict[str, str]:
-    previous = state.workdir
-    previous_log = state.log_path
-    try:
-        state.set_workdir(body.workdir)
-        # 日志 handler 是进程启动时按当时的 workdir 绑定的，不重绑的话
-        # /api/state 显示的 log_path 已经是新目录，实际日志却仍写进旧目录 ——
-        # 基础设置页显示的「主日志路径」就成了假路径，而新目录的 logs/ 根本
-        # 不会被创建（切到一个全新目录时日志页直接空白）。
-        data_mod._setup_webui_logger(state.workdir)
-    except Exception as exc:  # noqa: BLE001
-        # set_workdir() 成功之后本函数已无回滚点：若这里直接抛 400，后端其实
-        # 已经切到新目录在操作，而前端收到失败后保留旧值显示 —— 正是「基础设置
-        # 显示的路径和实际不一致」。必须把状态和日志 handler 一起退回去。
-        state.workdir = previous
-        state.log_path = previous_log
+    # set_state 是同步端点，跑在 Starlette 的线程池里，两个请求可以真的并发。
+    # 整段「快照 → 切换 → 重绑日志」必须互斥，且回滚只能撤销**自己**的写入：
+    # 原来 A 线程快照 previous=W1、切到 W2、日志重绑失败，B 线程此时成功切到
+    # W3 并已把 W3 返回给前端，A 再执行 `state.workdir = previous` 就把整个
+    # 服务打回 W1 —— 前端显示 W3，服务端干的是 W1，之后所有配置保存、任务
+    # 启动、日志读取、账号会话都落在错误目录，且没有任何报错。
+    with _STATE_SWITCH_LOCK:
+        previous = state.workdir
+        previous_log = state.log_path
         try:
+            state.set_workdir(body.workdir)
+            # 日志 handler 是进程启动时按当时的 workdir 绑定的，不重绑的话
+            # /api/state 显示的 log_path 已经是新目录，实际日志却仍写进旧目录 ——
+            # 基础设置页显示的「主日志路径」就成了假路径，而新目录的 logs/ 根本
+            # 不会被创建（切到一个全新目录时日志页直接空白）。
             data_mod._setup_webui_logger(state.workdir)
-        except Exception:  # noqa: BLE001
-            pass
-        raise HTTPException(status_code=400, detail=f"切换工作目录失败: {exc}")
-    return {"workdir": str(state.workdir), "log_path": str(state.log_path)}
+        except Exception as exc:  # noqa: BLE001
+            # set_workdir() 成功之后本函数已无回滚点：若这里直接抛 400，后端其实
+            # 已经切到新目录在操作，而前端收到失败后保留旧值显示 —— 正是「基础设置
+            # 显示的路径和实际不一致」。必须把状态和日志 handler 一起退回去。
+            state.workdir = previous
+            state.log_path = previous_log
+            try:
+                data_mod._setup_webui_logger(state.workdir)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=400, detail=f"切换工作目录失败: {exc}")
+        # 登录会话在构造时就固定了 workdir（_AccountLoginSession.__init__），而
+        # 「发验证码 → 切目录 → 粘贴验证码」这条最常见的路径里会话只有几秒大，
+        # 远未到 TTL。所以这里必须回收**全部**，而不是按 TTL prune —— 否则会话
+        # 活过切换，随后 complete-login 把 .session / users/<id>/ 缓存 /
+        # webui_accounts.json 全部写进刚切走的旧目录，并如实返回「登录成功」，
+        # 而当前目录里这个账号根本不存在，用户也无从找回。
+        account_mod.close_all_login_sessions()
+        return {"workdir": str(state.workdir), "log_path": str(state.log_path)}
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +401,11 @@ def delete_config(
         raise
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except OSError as exc:
+        # 目录里还有文件被占用（Windows 上很常见）时删除会失败。
+        # 以前 data 层用 rmtree(ignore_errors=True) 把失败吞掉，这里于是无条件
+        # 返回 {"ok": true} —— 前端弹「已删除」，刷新后配置又回来了。
+        raise HTTPException(status_code=409, detail=f"删除失败: {exc}")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"ok": True}
@@ -605,9 +644,12 @@ async def fetch_chats(
 
 @app.get("/api/run")
 def run_status(_: None = Depends(require_auth)) -> Dict[str, Any]:
+    # 必须按当前 workdir 过滤：run_stop 用的是 state.workdir 去解析 key,
+    # 若把其它目录的进程也列出来,用户在「运行中」列表里看到的每一行
+    # 「停止」按钮都只会回一句「未在运行」。
     return {
-        "tasks": runner_mod.running_tasks(),
-        "task_names": runner_mod.running_task_names(),
+        "tasks": runner_mod.running_tasks(state.workdir),
+        "task_names": runner_mod.running_task_names(state.workdir),
     }
 
 
@@ -625,7 +667,7 @@ def run_start(body: RunStartBody, _: None = Depends(require_auth)) -> Dict[str, 
 
 @app.post("/api/run/stop")
 def run_stop(body: RunStopBody, _: None = Depends(require_auth)) -> Dict[str, Any]:
-    ok, message = runner_mod.stop(body.kind, body.account)
+    ok, message = runner_mod.stop(body.kind, body.account, state.workdir)
     return {"ok": ok, "message": message}
 
 
@@ -686,6 +728,23 @@ def auth_login(body: AuthBody) -> Dict[str, Any]:
     expected = _expected_auth_code()
     if not expected:
         return {"ok": True, "message": "未启用授权码"}
+    # 登录端点做最小间隔限速。
+    # 计数式锁定（「连错 N 次锁 M 秒」）对**在线猜解几乎没有作用**：每个请求
+    # 都要先比对再判定锁定，所以正确的那个猜测无论锁定期内还是锁定期外都能
+    # 通过 —— 攻击者以行速率持续试探，任何一个正确的都被接受（4 位码约 1 万次）。
+    # 而已经认证的客户端不会再走这个端点，所以在这里限速不会影响正常使用，
+    # 只拖慢暴力猜解。
+    now = time.monotonic()
+    with _AUTH_LOGIN_LOCK:
+        last = _AUTH_LOGIN_LAST.get(body.code, 0.0)
+        wait = _AUTH_LOGIN_MIN_INTERVAL - (now - last)
+        if wait > 0:
+            time.sleep(wait)
+        _AUTH_LOGIN_LAST[body.code] = time.monotonic()
+        # 限制字典的规模，避免用不同码值把内存撑大。
+        if len(_AUTH_LOGIN_LAST) > 256:
+            for key in list(_AUTH_LOGIN_LAST)[:128]:
+                _AUTH_LOGIN_LAST.pop(key, None)
     # 判断与记录必须在同一把锁里,否则「第 5 次失败」会被并发请求拆成多次
     # 「还差几次」,锁定永远触发不了。
     with _auth_storage_lock:

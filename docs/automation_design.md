@@ -103,11 +103,23 @@ CLI 入口：`tg-signer automation run <task_name>`，最终调用 `UserAutomati
 
 `on_message` 对每条入站消息执行：
 
-1. 遍历启用规则。
-2. 仅处理 `trigger.type == "message"` 的触发器。
-3. 触发器匹配：chat/user/reply 条件。
-4. 过滤器匹配：`chat/from_user/text_rule`。
-5. 创建 `Event` 并进入 `_run_rule` 执行 handler 链。
+1. 缓存消息（供 `wait_for` / `forward` 等 handler 回查）。
+2. 把规则链**派发到独立 task** 后立即返回。pyrogram 的
+   `Dispatcher.handler_worker` 在唯一一个 worker 协程里 `await handler.callback(...)`，
+   若在此内联 `await`，一条 `delay: 300` 的规则会让整个账号的所有更新停摆 5 分钟。
+   派发出去的 task 登记在 `_dispatch_tasks`，进程退出时统一取消。
+3. 在该 task 内：遍历启用规则。
+4. 仅处理 `trigger.type == "message"` 的触发器。
+5. 触发器匹配：chat/user/reply 条件。
+6. 过滤器匹配：`chat/from_user/text_rule`。
+7. **同一条规则最多执行一次 handler 链**：多个 trigger 同时命中时取第一条，
+   其余记 DEBUG（否则同群的 `chat_id` 写成 `-100123` 和 `@name` 两种形式
+   就会自动回复两次）。
+8. 创建 `Event` 并进入 `_run_rule` 执行 handler 链。
+
+`_run_rule` 入口处按 `rule.id` 取 `asyncio.Lock` 串行化，保证
+「读 `vars` → 改 → 回写」不会交错（否则带 `timer` + `message` 触发的规则
+会被更新 task 与 `timer_loop` 并发进入，counter 只 +1）。
 
 ### 4.3 定时触发链路
 

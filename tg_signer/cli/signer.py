@@ -83,17 +83,33 @@ def dialogs_option(command=None, *, default: int = 50):
 
 
 def run_worker(worker, coroutine):
+    # 返回协程结果:run_once 靠它判断本轮签到是否成功。
     try:
-        worker.app_run(coroutine)
+        return worker.app_run(coroutine)
     except ChatFolderError as exc:
         raise click.ClickException(str(exc)) from exc
 
 
 def run_coroutines(loop, coroutines):
+    # 兄弟任务必须一起收场：gather 只抛第一个异常时，其余协程仍在后台跑着
+    # （loop 随后被 close()，它们要么被 RuntimeWarning 静默丢弃，要么在
+    # 半应用状态上继续发消息）。所以整体 cancel + 回收，并把异常转成
+    # ClickException，而不是让裸 traceback 打穿 CLI。
+    tasks = [asyncio.ensure_future(coro, loop=loop) for coro in coroutines]
     try:
-        loop.run_until_complete(asyncio.gather(*coroutines))
+        return loop.run_until_complete(asyncio.gather(*tasks))
+    except asyncio.CancelledError as exc:
+        for task in tasks:
+            task.cancel()
+        loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
+        raise click.ClickException("任务已被取消") from exc
     except ChatFolderError as exc:
         raise click.ClickException(str(exc)) from exc
+    except Exception as exc:
+        for task in tasks:
+            task.cancel()
+        loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
+        raise click.ClickException(f"{type(exc).__name__}: {exc}") from exc
 
 
 @click.group(name="tg-signer", help="使用<子命令> --help查看使用说明", cls=AliasedGroup)
@@ -299,7 +315,13 @@ def run(obj, task_names, num_of_dialogs, folder):
     for task_name in task_names:
         signer = get_signer(task_name, obj, loop=loop)
         coros.append(signer.run(num_of_dialogs, folder=folder))
-    run_coroutines(loop, coros)
+    try:
+        run_coroutines(loop, coros)
+    finally:
+        # get_client/_call_telegram_api 依赖 asyncio.get_event_loop() 拿到这个
+        # loop，所以必须留着；但不 close() 的话每次调用都泄漏一个 loop 及其
+        # 内部 selector（Windows 上还占着一个 epoll/select 句柄）。
+        loop.close()
 
 
 @tg_signer.command(help="运行一次签到任务，即使该签到任务今日已执行过")
@@ -309,7 +331,13 @@ def run(obj, task_names, num_of_dialogs, folder):
 @click.pass_obj
 def run_once(obj, task_name, num_of_dialogs, folder):
     signer = get_signer(task_name, obj)
-    run_worker(signer, signer.run_once(num_of_dialogs, folder=folder))
+    succeeded = run_worker(signer, signer.run_once(num_of_dialogs, folder=folder))
+    # 全部 chat 均失败时 normal_run 返回 False(且当天不会重试、也没写记录)。
+    # 必须转成非 0 退出码,否则 cron 只会看到「成功」,漏签完全无声。
+    if succeeded is False:
+        raise click.ClickException(
+            f"任务「{task_name}」本轮所有 chat 均签到失败，未写入今日签到记录"
+        )
 
 
 @tg_signer.command(help='发送一次文本消息, 请确保当前会话已经"见过"该`chat_id`')
@@ -393,8 +421,9 @@ def reconfig(obj, task_name):
 
 
 def parse_chat_id(chat_id: str):
-    if chat_id.startswith("@"):
-        return parse_chat_id_or_username(chat_id)
+    # 只包一次 try：原先 "@" 分支在 try 之外，parse_chat_id("@") 抛的
+    # ValueError("username cannot be empty") 会变成整段 traceback，
+    # 而不是本该给出的用法错误。
     try:
         return parse_chat_id_or_username(chat_id)
     except ValueError as e:
@@ -546,9 +575,10 @@ def schedule_messages(
 @click.argument("chat_id", type=str)
 @click.pass_obj
 def list_schedule_messages(obj, chat_id):
-    logging.root.setLevel(
-        level=logging.WARNING,
-    )
+    # 要压的是 tg-signer 自己的 INFO 日志，不是 root：configure_logger 给该
+    # logger 设了 propagate = False，它的记录根本不会向上冒泡到 root，
+    # 因此 logging.root.setLevel(WARNING) 是一个彻底的空操作（已验证）。
+    logging.getLogger("tg-signer").setLevel(logging.WARNING)
     signer = get_signer(None, obj)
     chat_id = parse_chat_id(chat_id)
     signer.app_run(signer.get_schedule_messages(chat_id))
@@ -577,7 +607,13 @@ def multi_run(obj, accounts, task_name, num_of_dialogs, folder):
         obj["account"] = account
         signer = get_signer(task_name, obj, loop=loop)
         coros.append(signer.run(num_of_dialogs, folder=folder))
-    run_coroutines(loop, coros)
+    try:
+        run_coroutines(loop, coros)
+    finally:
+        # get_client/_call_telegram_api 依赖 asyncio.get_event_loop() 拿到这个
+        # loop，所以必须留着；但不 close() 的话每次调用都泄漏一个 loop 及其
+        # 内部 selector（Windows 上还占着一个 epoll/select 句柄）。
+        loop.close()
 
 
 @tg_signer.command(name="llm-config", help="配置大模型API")
@@ -620,9 +656,15 @@ def migrate_sign_records(obj, legacy_user_id: str | None, delete_json: bool):
     if delete_json:
         click.echo(f"删除 JSON 文件数: {summary.removed_files}")
     if summary.skipped_files:
-        click.echo("以下文件未迁移（缺少 user_id，且无法自动推断）:")
+        # skipped_files 现在也包含「读不出来」的文件，原来的固定文案
+        # 「缺少 user_id」会把这些误报成 user_id 问题。
+        click.echo("以下文件未迁移（内容无法解析，或缺少 user_id 且无法自动推断）:")
         for path in summary.skipped_files:
             click.echo(f"  - {path}")
+    if summary.undeleted_files:
+        click.echo("以下文件已迁移，但 JSON 副本未能删除（文件可能仍被占用）:")
+        for path, reason in summary.undeleted_files:
+            click.echo(f"  - {path}: {reason}")
 
 
 @tg_signer.command(
