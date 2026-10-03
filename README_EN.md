@@ -316,7 +316,8 @@ When the task actually runs:
 
 - On startup, if **today's** scheduled time has already passed, it signs once immediately (catch-up); if it has not arrived yet, it **waits for that time** instead of signing early (otherwise the same day would be signed twice).
 - A non-daily crontab (e.g. `0 6 * * 1`, Mondays only) only signs on matching days; on other days nothing is signed.
-- If **every** chat fails in a round, the day is not recorded as done: the round is retried after 60 seconds. As soon as one chat succeeds the day counts as done (so chats that already succeeded are not messaged twice). Use `tg-signer run-once <task>` to force an immediate run.
+- The day is recorded as done only when **every** chat has signed successfully. On a partial success nothing is recorded: the round is retried after 60 seconds, and only the **failed** chats are retried (chats that already succeeded are not messaged twice). After 10 consecutive retries the record is written anyway and an ERROR names exactly which chats did not sign, so the task does not spin until tomorrow. When every chat fails, the day is likewise not recorded and retries continue indefinitely.
+- Use `tg-signer run-once <task>` to force an immediate run; on a partial failure it honestly reports failure (non-zero exit code) without retrying.
 
 ### Monitoring Has Been Removed
 

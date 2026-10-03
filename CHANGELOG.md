@@ -2,6 +2,8 @@
 
 ## 版本变动日志
 ### 未发布
+
+### 0.10.15
 - **fix: `migrate-sign-records` 中途失败会同时丢掉 JSON 和数据库里的记录（最严重的一处）**：`unlink()` 排在遍历循环里、`commit()` 排在循环之后，而 `with conn` 异常时回滚。于是「第一个文件已删 → 处理后面某个文件时抛 `PermissionError`」的结果是源文件已被删除、刚写入的行又被回滚 —— 记录两边都不存在，且没有备份。Windows 上文件被 WebUI/编辑器/杀软短暂占用是家常便饭，实测 3 个文件的迁移能一次丢 2 个。现改为两阶段：先把全部行写入并 `commit()`，**再**删源文件；删不掉的文件如实报告（`undeleted_files`），不影响已经落库的记录
 - **fix: `tg-signer run` 只有第一天能正常签到**：`normal_run` 把 `add_handler` 写在 `while True` **之前**，而 pyrogram 的 `Client.__aexit__` 在引用计数归零时会 `stop()`，`stop()` 默认 `clear_handlers=True` → `dispatcher.groups.clear()`。每轮都重新 `async with self.app`，于是第一轮结束后消息回调被清空且再也不会注册回来：第二轮起机器人回复没有任何 handler 接手，所有点击/回复动作只能干等 30s 超时。而 WebUI 起的正是 `run`（`webui/runner.py` 不带 `--in-memory`），两条入口一起中招。现新增幂等的 `_ensure_message_handlers()`，每轮进入 client 后按需补注册（`add_handler` 是无条件 append，重复调用会产出重复回调）
 - **fix: 机器人没回复（等满 30s 超时）被当成签到成功并写入记录**：`wait_for` 的超时路径和成功路径都 `return None`，`sign_a_chat` 无条件记「处理完成」，而 `sign_once` 只靠异常判定失败 —— 于是最常见的失败模式（按钮没出现 / 点了没反应）会被记成今日已签到，`run-once` 退出 0、当天不再重试，也让「全部 chat 均失败」的守卫形同虚设。现 `wait_for` / `sign_a_chat` 返回 bool，动作链没走完就中止该 chat 的后续动作并不计入成功
