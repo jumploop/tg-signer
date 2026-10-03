@@ -7,7 +7,14 @@ from click import Group
 
 from tg_signer.automation import UserAutomation
 
-from .signer import dialogs_option, from_folder_option, run_coroutines, tg_signer
+from .signer import (
+    dialogs_option,
+    export_config,
+    from_folder_option,
+    import_config,
+    run_coroutines,
+    tg_signer,
+)
 
 
 def get_automation(
@@ -117,12 +124,7 @@ def validate(obj, task_name):
 @click.pass_obj
 def export(obj, task_name: str, file: str = None):
     automation = get_automation(task_name, obj)
-    data = automation.export()
-    if not file:
-        click.echo(data)
-    else:
-        with click.open_file(file, "w", encoding="utf-8") as fp:
-            fp.write(data)
+    export_config(automation, file)
 
 
 @tg_automation.command(
@@ -136,10 +138,4 @@ def export(obj, task_name: str, file: str = None):
 @click.pass_obj
 def import_(obj, task_name: str, file: str = None):
     automation = get_automation(task_name, obj)
-    if not file:
-        stdin_text = click.get_text_stream("stdin")
-        data = stdin_text.read()
-    else:
-        with click.open_file(file, "r", encoding="utf-8") as fp:
-            data = fp.read()
-    automation.import_(data)
+    import_config(automation, file)

@@ -34,6 +34,13 @@ export function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
 }
 
+export function errMsg(error) {
+  return (
+    (error.response && error.response.data && error.response.data.detail) ||
+    error.message
+  )
+}
+
 export async function checkAuth() {
   try {
     const { data } = await api.get('/api/auth/status')

@@ -6,7 +6,7 @@ import pathlib
 import random
 import sqlite3
 import time
-from collections import Counter, defaultdict
+from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import (
     Annotated,
@@ -61,8 +61,12 @@ from tg_signer.config import (
 from ._kurigram import SafeGetForumTopics
 from .ai_tools import AITools, OpenAIConfigManager
 from .sign_record_store import SignRecordStore
-from .utils import UserInput, get_now, print_to_user, restrict_file_permissions
-from .utils import get_timezone as _get_timezone
+from .utils import (
+    UserInput,
+    get_now,
+    message_text,
+    restrict_file_permissions,
+)
 
 logger = logging.getLogger("tg-signer")
 
@@ -101,10 +105,6 @@ def readable_message(message: Message):
     return s
 
 
-def _get_message_text(message: Message) -> str:
-    return getattr(message, "text", None) or getattr(message, "caption", None) or ""
-
-
 def _message_sender_label(message: Message) -> str:
     """消息发送者标签,用于日志。
 
@@ -139,10 +139,7 @@ def _get_inline_keyboard_buttons(message: Message) -> list[InlineKeyboardButton]
 
 def readable_chat(chat: Chat):
     type_ = CHAT_TYPE_LABELS.get(chat.type, "个人")
-
-    none_or_dash = lambda x: x or "-"  # noqa: E731
-
-    return f"id: {chat.id}, username: {none_or_dash(chat.username)}, title: {none_or_dash(chat.title)}, type: {type_}, name: {none_or_dash(chat.first_name)}"
+    return f"id: {chat.id}, username: {chat.username or '-'}, title: {chat.title or '-'}, type: {type_}, name: {chat.first_name or '-'}"
 
 
 def chat_to_dict(chat: Chat) -> dict:
@@ -155,6 +152,18 @@ def chat_to_dict(chat: Chat) -> dict:
         "first_name": chat.first_name,
         "last_name": chat.last_name,
     }
+
+
+def write_latest_chats(path: pathlib.Path, chats: list[dict]) -> None:
+    """把 ``chat_to_dict`` 的结果落到 ``latest_chats.json``。
+
+    登录缓存此前在 core（CLI 登录）和 webui.account（WebUI 登录）各写一份，
+    两边的 ``json.dump(default=...)`` 还不一样 —— 同一个文件被两条路径写成两种
+    字节。``default=Object.default`` 是 pyrogram 自带的枚举序列化，留这一份即可
+    （``chat_to_dict`` 的其余字段都已是 JSON 原生类型）。
+    """
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump(chats, fp, indent=4, default=Object.default, ensure_ascii=False)
 
 
 def _folder_dynamic_rules(folder: Folder) -> list[str]:
@@ -224,9 +233,8 @@ def chat_has_forum_topics(chat: Chat) -> bool:
 
 
 def readable_topic(topic) -> str:
-    none_or_dash = lambda x: x or "-"  # noqa: E731
     return (
-        f"message_thread_id: {topic.id}, title: {none_or_dash(topic.title)}, "
+        f"message_thread_id: {topic.id}, title: {topic.title or '-'}, "
         f"closed: {bool(getattr(topic, 'is_closed', False))}, "
         f"pinned: {bool(getattr(topic, 'is_pinned', False))}"
     )
@@ -254,16 +262,16 @@ _API_MAX_FLOODWAIT_RETRIES = 2
 # 一轮签到里所有 chat 都失败时的重试间隔(秒)。不能直接等到下一个 sign_at,
 # 否则一次网络抖动就等同于当天漏签。
 _ALL_FAILED_RETRY_SECONDS = 60
+_MAX_ALL_FAILED_RETRIES = 3
 
 # 「部分 chat 失败」时的最大重试轮数。超过就写入今日签到记录并报 ERROR,
 # 点名是哪几个 chat 没签上。
 # 必须设上限:否则某个 chat 永久失败(机器人已退群 / 账号被移除)会让 run 每
 # 60 秒重试一次、直到明天,期间还朝那个群反复重发签到消息。
 # 不影响「全部 chat 都失败」——那种情况本来就应该一直重试到签上为止。
-_MAX_PARTIAL_RETRIES = 10
+_MAX_PARTIAL_RETRIES = 3
 
 RouteKey = tuple[ChatId, Optional[int]]
-get_timezone = _get_timezone
 
 
 def forget_client(key: str) -> None:
@@ -685,7 +693,7 @@ class BaseUserWorker(Generic[ConfigT]):
 
     def list_(self):
         for d in self.get_task_list():
-            print_to_user(d)
+            print(d)
 
     async def list_folders(self):
         self.log("开始获取对话 Folder...")
@@ -695,7 +703,7 @@ class BaseUserWorker(Generic[ConfigT]):
             )
 
         if not folders:
-            print_to_user("未找到普通 Folder。")
+            print("未找到普通 Folder。")
             return folders
 
         for folder in folders:
@@ -706,7 +714,7 @@ class BaseUserWorker(Generic[ConfigT]):
             else:
                 support = "支持"
                 chat_count = str(len(_explicit_folder_chats(folder)))
-            print_to_user(
+            print(
                 f"id: {folder.id}, name: {folder.name}, "
                 f"chats: {chat_count}, mode: {support}"
             )
@@ -793,12 +801,12 @@ class BaseUserWorker(Generic[ConfigT]):
 
                     if print_chat:
                         if selected_folder is not None:
-                            print_to_user(
+                            print(
                                 f"Folder: id: {selected_folder.id}, "
                                 f"name: {selected_folder.name}"
                             )
                         for chat in chats:
-                            print_to_user(readable_chat(chat))
+                            print(readable_chat(chat))
                             if chat_has_forum_topics(chat):
                                 try:
                                     topics = await asyncio.wait_for(
@@ -806,25 +814,17 @@ class BaseUserWorker(Generic[ConfigT]):
                                         timeout=5,
                                     )
                                     for topic in topics:
-                                        print_to_user(f"  {readable_topic(topic)}")
+                                        print(f"  {readable_topic(topic)}")
                                 except (asyncio.TimeoutError, errors.RPCError):
                                     # Keep login robust: many chats don't support
                                     # forum topics or the current account may not
                                     # have permissions to read them.
                                     pass
 
-                    with open(
+                    write_latest_chats(
                         self.get_user_dir(me).joinpath("latest_chats.json"),
-                        "w",
-                        encoding="utf-8",
-                    ) as fp:
-                        json.dump(
-                            latest_chats,
-                            fp,
-                            indent=4,
-                            default=Object.default,
-                            ensure_ascii=False,
-                        )
+                        latest_chats,
+                    )
                     await self._call_telegram_api(
                         "auth.ExportAuthorization", self.app.save_session_string
                     )
@@ -933,7 +933,7 @@ class BaseUserWorker(Generic[ConfigT]):
     ):
         async with self.app:
             async for member in self.search_members(chat_id, query, admin, limit):
-                print_to_user(
+                print(
                     User(
                         id=member.user.id,
                         username=member.user.username,
@@ -964,13 +964,13 @@ class BaseUserWorker(Generic[ConfigT]):
             try:
                 topics = await self.get_forum_topics(chat_id, limit=limit)
             except errors.RPCError as e:
-                print_to_user(f"获取话题失败: {e}")
+                print(f"获取话题失败: {e}")
                 return []
             if not topics:
-                print_to_user("未获取到话题，可能该聊天未开启话题或无权限。")
+                print("未获取到话题，可能该聊天未开启话题或无权限。")
                 return []
             for topic in topics:
-                print_to_user(readable_topic(topic))
+                print(readable_topic(topic))
             return topics
 
     def export(self):
@@ -1014,39 +1014,9 @@ class BaseUserWorker(Generic[ConfigT]):
         return self._ai_tools
 
 
-class Waiter:
-    def __init__(self):
-        self.waiting_ids = set()
-        self.waiting_counter = Counter()
-
-    def add(self, elm):
-        self.waiting_ids.add(elm)
-        self.waiting_counter[elm] += 1
-
-    def discard(self, elm):
-        self.waiting_ids.discard(elm)
-        self.waiting_counter.pop(elm, None)
-
-    def sub(self, elm):
-        self.waiting_counter[elm] -= 1
-        if self.waiting_counter[elm] <= 0:
-            self.discard(elm)
-
-    def clear(self):
-        self.waiting_ids.clear()
-        self.waiting_counter.clear()
-
-    def __bool__(self):
-        return bool(self.waiting_ids)
-
-    def __repr__(self):
-        return f"<{self.__class__.__name__}: {self.waiting_counter}>"
-
-
 class UserSignerWorkerContext(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    waiter: Waiter
     sign_chats: defaultdict[RouteKey, list[SignChatV3]]  # 签到配置列表
     resolved_route_keys: dict[RouteKey, RouteKey]
     chat_messages: defaultdict[
@@ -1067,7 +1037,6 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
 
     def ensure_ctx(self) -> UserSignerWorkerContext:
         return UserSignerWorkerContext(
-            waiter=Waiter(),
             sign_chats=defaultdict(list),
             resolved_route_keys={},
             chat_messages=defaultdict(dict),
@@ -1119,16 +1088,16 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     def _ask_actions(
         self, input_: UserInput, available_actions: List[SupportAction] = None
     ) -> List[ActionT]:
-        print_to_user(f"{input_.index_str}开始配置<动作>，请按照实际签到顺序配置。")
+        print(f"{input_.index_str}开始配置<动作>，请按照实际签到顺序配置。")
         available_actions = available_actions or list(SupportAction)
         actions = []
         while True:
             try:
                 local_input_ = UserInput()
-                print_to_user(f"第{len(actions) + 1}个动作: ")
+                print(f"第{len(actions) + 1}个动作: ")
                 for action in available_actions:
-                    print_to_user(f"  {action.value}: {action.desc}")
-                print_to_user()
+                    print(f"  {action.value}: {action.desc}")
+                print()
                 action_str = local_input_("输入对应的数字选择动作: ").strip()
                 action = SupportAction(int(action_str))
                 if action not in available_actions:
@@ -1150,20 +1119,18 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     text_of_btn_to_click = local_input_("键盘中需要点击的按钮文本: ")
                     actions.append(ClickKeyboardByTextAction(text=text_of_btn_to_click))
                 elif action == SupportAction.CHOOSE_OPTION_BY_IMAGE:
-                    print_to_user(
-                        "图片识别将使用大模型回答，请确保大模型支持图片识别。"
-                    )
+                    print("图片识别将使用大模型回答，请确保大模型支持图片识别。")
                     actions.append(ChooseOptionByImageAction())
                 elif action == SupportAction.REPLY_BY_CALCULATION_PROBLEM:
-                    print_to_user("计算题将使用大模型回答。")
+                    print("计算题将使用大模型回答。")
                     actions.append(ReplyByCalculationProblemAction())
                 else:
                     raise ValueError(f"不支持的动作: {action}")
                 if local_input_("是否继续添加动作？(y/N)：").strip().lower() != "y":
                     break
             except (ValueError, ValidationError) as e:
-                print_to_user("错误: ")
-                print_to_user(e)
+                print("错误: ")
+                print(e)
         input_.incr()
         return actions
 
@@ -1201,17 +1168,17 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     def ask_for_config(self) -> "SignConfigV3":
         chats = []
         i = 1
-        print_to_user(f"开始配置任务<{self.task_name}>\n")
+        print(f"开始配置任务<{self.task_name}>\n")
         while True:
-            print_to_user(f"第{i}个任务: ")
+            print(f"第{i}个任务: ")
             try:
                 chat = self.ask_one()
-                print_to_user(chat)
-                print_to_user(f"第{i}个任务配置成功\n")
+                print(chat)
+                print(f"第{i}个任务配置成功\n")
                 chats.append(chat)
             except Exception as e:
-                print_to_user(e)
-                print_to_user("配置失败")
+                print(e)
+                print("配置失败")
                 i -= 1
             continue_ = input("继续配置任务？(y/N)：")
             if continue_.strip().lower() != "y":
@@ -1220,7 +1187,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         sign_at_prompt = "签到时间（time或crontab表达式，如'06:00:00'或'0 6 * * *'）: "
         sign_at_str = input(sign_at_prompt) or "06:00:00"
         while not (sign_at := self._validate_sign_at(sign_at_str)):
-            print_to_user("请输入正确的时间格式")
+            print("请输入正确的时间格式")
             sign_at_str = input(sign_at_prompt) or "06:00:00"
 
         random_seconds_str = input("签到时间误差随机秒数（默认为0）: ") or "0"
@@ -1233,7 +1200,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             }
         )
         if config.requires_ai:
-            print_to_user(OPENAI_USE_PROMPT)
+            print(OPENAI_USE_PROMPT)
         return config
 
     def _validate_sign_at(
@@ -1497,12 +1464,17 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             partial_rounds[sign_date] = rounds
             names = ", ".join(str(getattr(c, "chat_id", c)) for c in failed)
             if not succeeded:
-                # 一个都没成功：无限重试是有意义的（旧行为就是这样），
-                # 不受部分成功的重试上限约束。
                 self.log(
                     f"本轮所有 chat 均签到失败，不写入今日签到记录（{len(failed)} 个）",
                     level="WARNING",
                 )
+                if rounds > _MAX_ALL_FAILED_RETRIES:
+                    self.log(
+                        f"所有 chat 连续失败 {rounds} 轮，已重试 "
+                        f"{_MAX_ALL_FAILED_RETRIES} 次，停止今天的自动重试；"
+                        f"失败 chat: {names}",
+                        level="ERROR",
+                    )
                 return False
             if rounds <= _MAX_PARTIAL_RETRIES:
                 self.log(
@@ -1610,13 +1582,17 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                                 # 于是退出码 0 —— cron/监控会认为今天签到成功,而当天
                                 # 不会再重试、记录里也查不到,失败被彻底吞掉。
                                 return False
-                            # 全部失败:退避后重试本轮,而不是等到明天的计划时刻。
-                            self.log(
-                                f"{_ALL_FAILED_RETRY_SECONDS}s 后重试本轮签到",
-                                level="WARNING",
-                            )
-                            await asyncio.sleep(_ALL_FAILED_RETRY_SECONDS)
-                            continue
+                            if (
+                                partial_rounds.get(now_date_str, 0)
+                                <= _MAX_ALL_FAILED_RETRIES
+                            ):
+                                # 全部失败:退避后重试本轮,而不是等到明天的计划时刻。
+                                self.log(
+                                    f"{_ALL_FAILED_RETRY_SECONDS}s 后重试本轮签到",
+                                    level="WARNING",
+                                )
+                                await asyncio.sleep(_ALL_FAILED_RETRY_SECONDS)
+                                continue
 
             except (OSError, errors.Unauthorized) as e:
                 logger.exception(e)
@@ -1729,10 +1705,8 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                         )
         return False
 
-    async def _reply_by_calculation_problem(
-        self, action: ReplyByCalculationProblemAction, message
-    ):
-        text = _get_message_text(message)
+    async def _reply_by_calculation_problem(self, message):
+        text = message_text(message)
         if text:
             self.log("检测到文本回复，尝试调用大模型进行计算题回答")
             self.log(f"问题: \n{text}")
@@ -1790,7 +1764,6 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
 
     async def _choose_option_by_image(
         self,
-        action: ChooseOptionByImageAction,
         message,
         previous_messages: list[Message] = None,
     ):
@@ -1808,7 +1781,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             )
             image_buffer.seek(0)
             image_bytes = image_buffer.read()
-            query = _get_message_text(message) or "选择正确的选项"
+            query = message_text(message) or "选择正确的选项"
             result_index = await self.get_ai_tools().choose_option_by_image(
                 image_bytes,
                 query,
@@ -1856,7 +1829,6 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             )
             return True
         route_key = self.get_runtime_route_key(chat)
-        self.context.waiter.add(route_key)
         start = time.perf_counter()
         # 逐条记录「已经处理过的那次对象」,用对象身份判断有没有新内容。
         # 不能只比对队尾:机器人把较早的一条消息编辑成带键盘的形态时队尾没有
@@ -1878,18 +1850,15 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     if isinstance(action, ClickKeyboardByTextAction):
                         ok = await self._click_keyboard_by_text(action, message)
                     elif isinstance(action, ReplyByCalculationProblemAction):
-                        ok = await self._reply_by_calculation_problem(action, message)
+                        ok = await self._reply_by_calculation_problem(message)
                     elif isinstance(action, ChooseOptionByImageAction):
-                        ok = await self._choose_option_by_image(
-                            action, message, messages
-                        )
+                        ok = await self._choose_option_by_image(message, messages)
                 finally:
                     # 必须无条件复位:动作处理抛异常时若不复位,waiting_message
                     # 会残留成这条消息,使 on_edited_message 的等待循环对同 id 的
                     # 编辑事件永远自旋下去(既不再处理编辑,也不报错)。
                     self.context.waiting_message = None
                 if ok:
-                    self.context.waiter.sub(route_key)
                     # 将消息ID对应value置为None，保证收到消息的编辑时消息所处的顺序
                     self.context.chat_messages[route_key][message.id] = None
                     return True
@@ -1961,7 +1930,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     ),
                 )
                 await asyncio.sleep(0.1)
-                print_to_user(f"已配置次数：{n + 1}")
+                print(f"已配置次数：{n + 1}")
         self.log(f"已配置定时发送消息，次数{next_times}")
         return results
 
@@ -1974,4 +1943,4 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 lambda: self.app.get_scheduled_messages(chat_id),
             )
             for message in messages:
-                print_to_user(f"{message.date}: {message.text}")
+                print(f"{message.date}: {message.text}")

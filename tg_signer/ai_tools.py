@@ -19,15 +19,11 @@ from typing_extensions import Required, TypedDict
 if TYPE_CHECKING:
     from openai import AsyncOpenAI  # 在性能弱的机器上导入openai包实在有些慢
 
-from tg_signer.utils import UserInput, print_to_user, restrict_file_permissions
+from tg_signer.utils import UserInput, restrict_file_permissions
 
 DEFAULT_MODEL = "gpt-4o"
 
 logger = logging.getLogger("tg-signer")
-
-
-def encode_image(image: bytes):
-    return base64.b64encode(image).decode("utf-8")
 
 
 class OpenAIConfig(TypedDict, total=False):
@@ -43,20 +39,8 @@ class OpenAIConfigManager:
     def get_config_file(self) -> pathlib.Path:
         return self.workdir / ".openai_config.json"
 
-    def ensure_workdir(self) -> None:
-        """确保 workdir 存在。
-
-        ``save_config`` 直接往 ``<workdir>/.openai_config.json`` 写,workdir 不存在
-        时会抛 ``FileNotFoundError`` —— 而且是在用户已经输完 API Key 之后才炸,
-        刚敲进去的 Key 全丢。默认 workdir ``.signer`` 在新克隆的仓库里本来就不存在。
-        """
-        self.workdir.mkdir(parents=True, exist_ok=True)
-
     def has_env_config(self):
         return bool(os.environ.get("OPENAI_API_KEY"))
-
-    def has_config(self) -> bool:
-        return self.has_env_config() or bool(self.load_file_config())
 
     def load_file_config(self) -> Optional[dict]:
         config_file = self.get_config_file()
@@ -68,7 +52,7 @@ class OpenAIConfigManager:
 
     def save_config(self, api_key: str, base_url: str = None, model: str = None):
         config_file = self.get_config_file()
-        self.ensure_workdir()
+        self.workdir.mkdir(parents=True, exist_ok=True)
         config = OpenAIConfig(api_key=api_key, base_url=base_url, model=model)
         # 原子写：先写同目录临时文件再 os.replace。
         # 原来直接 open(path, "w") —— 它会**先截断**再写，中途失败（磁盘满、
@@ -106,11 +90,11 @@ class OpenAIConfigManager:
         return self.load_file_config()
 
     def ask_for_config(self):
-        print_to_user("开始配置OpenAI API并保存至本地。")
+        print("开始配置OpenAI API并保存至本地。")
         input_ = UserInput()
         api_key = input_("请输入 OPENAI_API_KEY: ").strip()
         while not api_key:
-            print_to_user("API Key不能为空！")
+            print("API Key不能为空！")
             api_key = input_("请输入 OPENAI_API_KEY: ").strip()
 
         base_url = (
@@ -126,19 +110,18 @@ class OpenAIConfigManager:
             or None
         )
         self.save_config(api_key, base_url=base_url, model=model)
-        print_to_user("OpenAI配置已保存。")
+        print("OpenAI配置已保存。")
         return self.load_config()
 
 
 def get_openai_client(
     api_key: str = None,
     base_url: str = None,
-    **kwargs,
 ) -> Optional["AsyncOpenAI"]:
     from openai import AsyncOpenAI, OpenAIError
 
     try:
-        return AsyncOpenAI(api_key=api_key, base_url=base_url, **kwargs)
+        return AsyncOpenAI(api_key=api_key, base_url=base_url)
     except OpenAIError:
         return None
 
@@ -178,9 +161,6 @@ class AITools:
         image: bytes,
         query: str,
         options: list[tuple[int, str]],
-        client: "AsyncOpenAI" = None,
-        model: str = None,
-        temperature=0.1,
     ) -> int:
         sys_prompt = """你是一个**图片识别助手**，可以根据提供的图片和问题选择出**唯一正确**的选项，如果你觉得每个都不对，也要给出一个你认为最符合的答案，以如下JSON格式输出你的回复：
     {
@@ -189,8 +169,6 @@ class AITools:
     }
     option字段表示你选择的选项。
     """
-        client = client or self.client
-        model = model or self.default_model
         text_query = f"问题为：{query}, 选项为：{json.dumps(options)}。"
         messages = [
             {"role": "system", "content": sys_prompt},
@@ -201,19 +179,22 @@ class AITools:
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": f"data:image/jpeg;base64,{encode_image(image)}"
+                            "url": (
+                                "data:image/jpeg;base64,"
+                                f"{base64.b64encode(image).decode('utf-8')}"
+                            )
                         },
                     },
                 ],
             },
         ]
         # noinspection PyTypeChecker
-        completion = await client.chat.completions.create(
+        completion = await self.client.chat.completions.create(
             messages=messages,
-            model=model,
+            model=self.default_model,
             response_format={"type": "json_object"},
             stream=False,
-            temperature=temperature,
+            temperature=0.1,
         )
         message = completion.choices[0].message
         # 模型偶尔会输出非 JSON / 缺 option 字段 / 空 content。这个方法的返回值
@@ -233,23 +214,18 @@ class AITools:
         self,
         query: str,
         sys_prompt: str = """你是一个**答题助手**，可以根据用户的问题给出正确的回答，只需要回复答案，不要解释，不要输出任何其他内容。""",
-        client: "AsyncOpenAI" = None,
-        model: str = None,
-        temperature=0.1,
     ) -> str:
-        model = model or self.default_model
-        client = client or self.client
         messages = []
         if sys_prompt:
             messages.append({"role": "system", "content": sys_prompt})
         text = f"问题是: {query}\n\n只需要给出答案，不要解释，不要输出任何其他内容。The answer is:"
         messages.append({"role": "user", "content": text})
         # noinspection PyTypeChecker
-        completion = await client.chat.completions.create(
+        completion = await self.client.chat.completions.create(
             messages=messages,
-            model=model,
+            model=self.default_model,
             stream=False,
-            temperature=temperature,
+            temperature=0.1,
         )
         content = completion.choices[0].message.content
         return (content or "").strip()
@@ -258,11 +234,7 @@ class AITools:
         self,
         sys_prompt: str,
         query: str,
-        client: "AsyncOpenAI" = None,
-        model: str = None,
     ) -> str:
-        model = model or self.default_model
-        client = client or self.client
         messages = [
             {
                 "role": "system",
@@ -271,9 +243,9 @@ class AITools:
             {"role": "user", "content": f"{query}"},
         ]
         # noinspection PyTypeChecker
-        completion = await client.chat.completions.create(
+        completion = await self.client.chat.completions.create(
             messages=messages,
-            model=model,
+            model=self.default_model,
             stream=False,
         )
         message = completion.choices[0].message

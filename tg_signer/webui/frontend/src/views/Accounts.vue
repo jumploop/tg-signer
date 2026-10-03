@@ -128,7 +128,7 @@
 import { computed, ref, nextTick, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { InfoFilled } from '@element-plus/icons-vue'
-import api, { asArray } from '../api'
+import api, { asArray, errMsg } from '../api'
 
 const accounts = ref([])
 const loading = ref(false)
@@ -254,13 +254,6 @@ async function doLogout(accountName) {
   } catch (error) {
     ElMessage.error(errMsg(error))
   }
-}
-
-function errMsg(error) {
-  return (
-    (error.response && error.response.data && error.response.data.detail) ||
-    error.message
-  )
 }
 
 onMounted(refresh)

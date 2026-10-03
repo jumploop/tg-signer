@@ -401,7 +401,7 @@ def test_render_template_raises_on_unknown_placeholder(tmp_path):
     """引用不存在的变量必须抛异常，不能静默原样返回。
 
     回归：``render_template`` 原来 ``except Exception: return text``，而
-    ``SafeFormatDict.__missing__`` 会把未知变量原样返回成 ``{nope}`` ——
+    模板字典会把未知变量原样返回成 ``{nope}`` ——
     渲染「成功」了，输出却和输入一模一样。调用方拿到的就是这串字面量并直接
     发给 Telegram：群里看到 ``{nope}``，日志里一条告警都没有。
     """
@@ -683,7 +683,7 @@ async def test_store_state_does_not_persist_none_for_absent_keys(tmp_path):
 
     回归：``ctx.vars.get(k)`` 没有默认值，未产生的键被存成 ``None``。下一轮
     ``load_state`` 把 ``None`` 灌回 ``ctx.vars`` 后该键就「存在」了，
-    ``SafeFormatDict.__missing__`` 不再兜底，模板把字符串 ``"None"`` 渲染出来
+    缺失键占位不再生效，模板把字符串 ``"None"`` 渲染出来
     并发送进群 —— 而字面量 ``{v}`` 永远看起来是正常的。
     这在「``extract_regex`` 先失败 / ``ai_reply`` 还没跑」的首轮是很常见的路径。
     """

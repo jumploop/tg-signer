@@ -38,7 +38,7 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Promotion } from '@element-plus/icons-vue'
-import { login, checkAuth } from '../api'
+import { login, checkAuth, errMsg } from '../api'
 
 const router = useRouter()
 const code = ref('')
@@ -60,8 +60,7 @@ async function submit() {
       ElMessage.error(data.message || '授权码错误')
     }
   } catch (error) {
-    const detail = error.response && error.response.data && error.response.data.detail
-    ElMessage.error(detail || '登录失败')
+    ElMessage.error(errMsg(error) || '登录失败')
   } finally {
     loading.value = false
   }

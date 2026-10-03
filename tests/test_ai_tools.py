@@ -32,24 +32,6 @@ def test_load_config_prefers_env_vars(tmp_path, monkeypatch):
     assert cfg["model"] == "env-model"
 
 
-def test_has_config_env_only(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    assert OpenAIConfigManager(tmp_path).has_config()
-
-
-def test_has_config_file_only(tmp_path, monkeypatch):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    manager = OpenAIConfigManager(tmp_path)
-    manager.save_config("sk-file")
-    assert manager.has_config()
-
-
-def test_has_config_false_when_no_source(tmp_path, monkeypatch):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    assert not OpenAIConfigManager(tmp_path).has_config()
-
-
 def test_load_config_none_when_missing(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     assert OpenAIConfigManager(tmp_path).load_config() is None

@@ -176,7 +176,7 @@
 <script setup>
 import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import api from '../api'
+import api, { errMsg } from '../api'
 
 const props = defineProps({
   visible: Boolean,
@@ -418,10 +418,7 @@ async function saveAll() {
     emit('saved', data.name)
     emit('update:visible', false)
   } catch (error) {
-    const detail =
-      (error.response && error.response.data && error.response.data.detail) ||
-      error.message
-    ElMessage.error('保存失败: ' + detail)
+    ElMessage.error('保存失败: ' + errMsg(error))
   } finally {
     saving.value = false
   }

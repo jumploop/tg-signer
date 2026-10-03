@@ -3,6 +3,26 @@
 ## 版本变动日志
 ### 未发布
 
+### 0.10.16
+三轮 over-engineering 审计（ponytail-audit），累计净删约 560 行。本轮以删除死代码、合并重复实现为主，无用户可见的行为变更。
+
+**删除死代码（零调用方）**
+- `webui/account.py::refresh_dialogs`（42 行）：写 `users/<id>/latest_chats.json` + `me.json` 的整段逻辑。`server.py` 只调用不落盘的 `fetch_dialogs`，前端无对应端点
+- `webui/account.py::cancel_login`（4 行）：`LOGIN_SESSIONS` 只在 `close_all_login_sessions()` 里被整体清理，无任何路径调用它
+- `ai_tools.py::OpenAIConfigManager.has_config`：`load_config()` 已覆盖同一判断，产品代码零引用
+- `config.py::SignChatV2.need_response`：V2 → V3 迁移是逐字段判断，从未使用这个聚合属性
+- `core.py` 的 `get_timezone = _get_timezone` 空转发：导入时改名、200 行后又改回原名，且 `core.get_timezone` 零调用
+- `sign_record_store.py` 的 `created_at` 列：全仓 4 条 SELECT 无一取它，`RecentSignRecord` 也无对应字段
+- `config.py::pad_text_to_width` 的 `align` 参数：7 个调用点全部使用默认值，`right` / `center` 分支从未被执行（顺带内联了仅被它调用的 `get_display_width`）
+
+**合并重复实现**
+- YAML/JSON 配置读取收敛为 `config.read_automation_config_payload()`。此前 CLI 引擎与 WebUI 各写一份，且 **CLI 那份缺少 `yaml.YAMLError → ValueError` 转换** —— 同一份手改坏的 YAML 在 WebUI 得到 400，在 CLI 却漏出裸异常
+- `latest_chats.json` 落盘收敛为 `core.write_latest_chats()`。两条登录路径此前用了**不同**的 `json.dump(default=...)`（`Object.default` vs `lambda o: getattr(o, "value", str(o))`），同一个文件被写成两种字节
+- 前端 `errMsg` 错误信息提取收敛到 `api.js`（本轮补齐 `Login.vue`、`SignerWizard.vue` 两处遗漏）
+
+**修正一处装饰性校验**
+- `SignChatV2.sign_text` 与 `SendDiceAction.dice` 原写作 `Union[Literal[那 6 个骰子 emoji], str]`，但 `str` 会完全吸收 `Literal` 分支 —— pydantic 因此对任意字符串放行，白名单**从未生效**，读代码却像有校验。现改为 `str` 并注明真实约束在 `core.send_dice()`（`DICE_EMOJIS`，仅告警）。未改为加严校验：V2 是迁移用的历史配置模型，且存在 `sign_text=""` 的合法用例，加严会让存量用户配置直接加载失败
+
 ### 0.10.15
 - **fix: `migrate-sign-records` 中途失败会同时丢掉 JSON 和数据库里的记录（最严重的一处）**：`unlink()` 排在遍历循环里、`commit()` 排在循环之后，而 `with conn` 异常时回滚。于是「第一个文件已删 → 处理后面某个文件时抛 `PermissionError`」的结果是源文件已被删除、刚写入的行又被回滚 —— 记录两边都不存在，且没有备份。Windows 上文件被 WebUI/编辑器/杀软短暂占用是家常便饭，实测 3 个文件的迁移能一次丢 2 个。现改为两阶段：先把全部行写入并 `commit()`，**再**删源文件；删不掉的文件如实报告（`undeleted_files`），不影响已经落库的记录
 - **fix: `tg-signer run` 只有第一天能正常签到**：`normal_run` 把 `add_handler` 写在 `while True` **之前**，而 pyrogram 的 `Client.__aexit__` 在引用计数归零时会 `stop()`，`stop()` 默认 `clear_handlers=True` → `dispatcher.groups.clear()`。每轮都重新 `async with self.app`，于是第一轮结束后消息回调被清空且再也不会注册回来：第二轮起机器人回复没有任何 handler 接手，所有点击/回复动作只能干等 30s 超时。而 WebUI 起的正是 `run`（`webui/runner.py` 不带 `--in-memory`），两条入口一起中招。现新增幂等的 `_ensure_message_handlers()`，每轮进入 client 后按需补注册（`add_handler` 是无条件 append，重复调用会产出重复回调）

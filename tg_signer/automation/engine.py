@@ -15,6 +15,8 @@ from pyrogram.methods.utilities.idle import idle
 from pyrogram.types import Message
 
 from tg_signer.config import (
+    AUTOMATION_CONFIG_FILE_NAMES,
+    YAML_CONFIG_SUFFIXES,
     AutomationConfig,
     FilterConfig,
     HandlerConfig,
@@ -23,6 +25,7 @@ from tg_signer.config import (
     TimerTriggerConfig,
     TriggerConfig,
     normalize_chat_ref,
+    read_automation_config_payload,
 )
 from tg_signer.core import BaseUserWorker, get_now
 from tg_signer.utils import safe_regex_search
@@ -47,10 +50,6 @@ MESSAGE_TRIGGER_TYPE = "message"
 SUPPORTED_TRIGGER_TYPES = frozenset(
     {STARTUP_TRIGGER_TYPE, TIMER_TRIGGER_TYPE, MESSAGE_TRIGGER_TYPE}
 )
-
-# 自动化配置文件的候选文件名(JSON 优先,其次 YAML)。集中一处,避免
-# 「建目录的解析」与「不建目录的存在性查询」两份清单各自漂移。
-CONFIG_FILE_NAMES = ("config.json", "config.yaml", "config.yml")
 
 
 class UserAutomation(BaseUserWorker[AutomationConfig]):
@@ -93,9 +92,6 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             lock = asyncio.Lock()
             self._rule_locks[rule_id] = lock
         return lock
-
-    def ensure_ctx(self):
-        return {}
 
     @property
     def state(self) -> RuleStateStore:
@@ -140,36 +136,19 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         当成真实任务列出来。
         """
         task_dir = self.config_dir_path()
-        for name in CONFIG_FILE_NAMES:
+        for name in AUTOMATION_CONFIG_FILE_NAMES:
             candidate = task_dir / name
             if candidate.exists():
                 return candidate
         return None
 
-    def _config_candidates(self) -> List[Path]:
-        # JSON 优先，其次 YAML，符合当前产品决策。
-        return [self.task_dir / name for name in CONFIG_FILE_NAMES]
-
     def _resolve_config_file(self) -> Path:
         # 返回第一个存在的配置文件；若都不存在，则返回默认 JSON 路径。
-        for path in self._config_candidates():
+        candidates = [self.task_dir / name for name in AUTOMATION_CONFIG_FILE_NAMES]
+        for path in candidates:
             if path.exists():
                 return path
-        return self._config_candidates()[0]
-
-    def _read_config_payload(self, path: Path) -> Dict[str, object]:
-        if path.suffix in {".yml", ".yaml"}:
-            try:
-                import yaml  # type: ignore
-            except ModuleNotFoundError as exc:
-                raise ValueError("未安装pyyaml，无法读取YAML配置") from exc
-            with open(path, "r", encoding="utf-8") as fp:
-                payload = yaml.safe_load(fp) or {}
-            if not isinstance(payload, dict):
-                raise ValueError("YAML配置必须是字典结构")
-            return payload
-        with open(path, "r", encoding="utf-8") as fp:
-            return json.load(fp)
+        return candidates[0]
 
     def load_config(
         self, cfg_cls: Optional[type[AutomationConfig]] = None
@@ -181,11 +160,11 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             self.log("配置文件不存在，生成模板配置", level="INFO")
             config = self.reconfig()
         else:
-            payload = self._read_config_payload(config_path)
+            payload = read_automation_config_payload(config_path)
             config, from_old, err = cfg_cls.load_checked(payload)
             if config is None:
                 raise ValueError(f"无法解析配置: {config_path}（{err or '未知原因'}）")
-            if config_path.suffix in {".yml", ".yaml"}:
+            if config_path.suffix in YAML_CONFIG_SUFFIXES:
                 self.config = config
                 self.log(
                     f"配置加载完成: rules={len(config.rules)} (yaml)", level="INFO"
@@ -226,7 +205,7 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
 
     def _write_config_payload(self, path: Path, config: AutomationConfig) -> None:
         payload = config.to_jsonable()
-        if path.suffix in {".yml", ".yaml"}:
+        if path.suffix in YAML_CONFIG_SUFFIXES:
             try:
                 import yaml  # type: ignore
             except ModuleNotFoundError as exc:
@@ -302,7 +281,7 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
 
         register_builtin_handlers()
         load_plugins(self.handlers_dir, logger)
-        self.log(f"已注册 handlers 数量: {len(list(list_handlers()))}", level="INFO")
+        self.log(f"已注册 handlers 数量: {len(list_handlers())}", level="INFO")
 
         self.app.add_handler(MessageHandler(self.on_message, filters.all))
         self.app.add_handler(EditedMessageHandler(self.on_edited_message, filters.all))
@@ -317,7 +296,10 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             startup_tasks = [
                 asyncio.create_task(self.run_startup(rule))
                 for rule in cfg.rules
-                if rule.enabled and self._has_trigger(rule, STARTUP_TRIGGER_TYPE)
+                if rule.enabled
+                and any(
+                    trigger.type == STARTUP_TRIGGER_TYPE for trigger in rule.triggers
+                )
             ]
             self.log(f"startup 任务数: {len(startup_tasks)}", level="DEBUG")
             # timer trigger 统一由轮询调度循环驱动。
@@ -335,9 +317,6 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
                 # 后台跑的消息规则链也要收掉:它们可能正卡在 delay 里,
                 # 若放任不管,__aexit__ 已经关掉 client 之后 handler 才去发消息。
                 await self._cancel_dispatch_tasks()
-
-    def _has_trigger(self, rule: RuleConfig, trigger_type: str) -> bool:
-        return any(trigger.type == trigger_type for trigger in rule.triggers)
 
     @staticmethod
     def _iter_triggers(

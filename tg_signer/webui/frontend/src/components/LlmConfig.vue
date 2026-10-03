@@ -42,7 +42,7 @@
 <script setup>
 import { computed, ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import api, { asObject } from '../api'
+import api, { asObject, errMsg } from '../api'
 
 const apiKey = ref('')
 // 服务端只回掩码（如 ****abcd），绝不明文下发。这里单独存掩码、不回填进输入框：
@@ -123,13 +123,6 @@ async function testConn() {
   } finally {
     testing.value = false
   }
-}
-
-function errMsg(error) {
-  return (
-    (error.response && error.response.data && error.response.data.detail) ||
-    error.message
-  )
 }
 
 onMounted(refresh)

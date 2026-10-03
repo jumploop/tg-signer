@@ -13,15 +13,6 @@ class ExactLevelFilter(logging.Filter):
         return record.levelno == self.level
 
 
-class MinLevelFilter(logging.Filter):
-    def __init__(self, min_level: int):
-        super().__init__()
-        self.min_level = min_level
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        return record.levelno >= self.min_level
-
-
 format_str = (
     "[%(levelname)s] [%(name)s] %(asctime)s %(filename)s %(lineno)s %(message)s"
 )
@@ -78,7 +69,6 @@ def configure_logger(
             encoding="utf-8",
         )
         error_file_handler.setLevel(logging.ERROR)
-        error_file_handler.addFilter(MinLevelFilter(logging.ERROR))
         error_file_handler.setFormatter(formatter)
 
         logger.addHandler(error_file_handler)

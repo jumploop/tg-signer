@@ -30,7 +30,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import api from '../api'
+import api, { errMsg } from '../api'
 
 const workdir = ref('')
 const logPath = ref('')
@@ -71,13 +71,6 @@ async function apply() {
   } finally {
     saving.value = false
   }
-}
-
-function errMsg(error) {
-  return (
-    (error.response && error.response.data && error.response.data.detail) ||
-    error.message
-  )
 }
 
 onMounted(refresh)

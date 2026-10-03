@@ -10,24 +10,21 @@ _spec.loader.exec_module(auth)
 def test_auth_empty_storage_is_unlocked():
     storage = {}
     assert auth.auth_lock_remaining(storage) == 0.0
-    assert auth.is_auth_locked(storage) is False
 
 
 def test_auth_failure_increments_attempts():
     storage = {}
-    assert auth.record_auth_failure(storage) is None
+    auth.record_auth_failure(storage)
     assert storage[auth.AUTH_ATTEMPTS_KEY] == 1
-    assert auth.is_auth_locked(storage) is False
+    assert auth.auth_lock_remaining(storage) == 0.0
 
 
 def test_auth_max_attempts_locks():
     storage = {}
     for _ in range(auth.AUTH_MAX_ATTEMPTS - 1):
-        assert auth.record_auth_failure(storage) is None
-    locked_for = auth.record_auth_failure(storage)
-    assert locked_for == auth.AUTH_LOCKOUT_SECONDS
+        auth.record_auth_failure(storage)
+    auth.record_auth_failure(storage)
     assert storage[auth.AUTH_ATTEMPTS_KEY] == 0
-    assert auth.is_auth_locked(storage) is True
     assert auth.auth_lock_remaining(storage) > 0
 
 

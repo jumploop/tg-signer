@@ -60,7 +60,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import api, { asArray } from '../api'
+import api, { asArray, errMsg } from '../api'
 
 const records = ref([])
 const filterText = ref('')
@@ -82,13 +82,6 @@ async function refresh() {
   } finally {
     loading.value = false
   }
-}
-
-function errMsg(error) {
-  return (
-    (error.response && error.response.data && error.response.data.detail) ||
-    error.message
-  )
 }
 
 onMounted(refresh)

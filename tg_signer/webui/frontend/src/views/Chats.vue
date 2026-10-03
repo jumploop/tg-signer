@@ -62,7 +62,7 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
-import api, { asArray, copyText } from '../api'
+import api, { asArray, copyText, errMsg } from '../api'
 
 const router = useRouter()
 const accounts = ref([])
@@ -153,13 +153,6 @@ function applyToConfig(target, row) {
     },
   })
   ElMessage.info(`正在前往配置管理页，将 ${value} 填入 ${label} 配置`)
-}
-
-function errMsg(error) {
-  return (
-    (error.response && error.response.data && error.response.data.detail) ||
-    error.message
-  )
 }
 
 onMounted(() => {

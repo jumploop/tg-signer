@@ -58,7 +58,7 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import api, { asArray } from '../api'
+import api, { asArray, errMsg } from '../api'
 
 const props = defineProps({
   kind: String,
@@ -202,13 +202,6 @@ async function remove() {
   } catch (error) {
     ElMessage.error(errMsg(error))
   }
-}
-
-function errMsg(error) {
-  return (
-    (error.response && error.response.data && error.response.data.detail) ||
-    error.message
-  )
 }
 
 function fillChatId(payload, chat) {

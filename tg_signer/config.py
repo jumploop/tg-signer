@@ -1,6 +1,8 @@
+import json
 import re
 from datetime import time
 from enum import Enum
+from pathlib import Path
 from typing import (
     Annotated,
     Any,
@@ -30,11 +32,6 @@ from pydantic import (
 ChatId: TypeAlias = Union[int, str]
 
 
-class SafeFormatDict(dict):
-    def __missing__(self, key):
-        return "{" + key + "}"
-
-
 def parse_chat_id_or_username(value: Union[int, str]) -> ChatId:
     if isinstance(value, int):
         return value
@@ -61,12 +58,6 @@ def normalize_chat_ref(value: Union[int, str, None]) -> Union[int, str, None]:
     if re.fullmatch(r"-?\d+", text):
         return int(text)
     return value
-
-
-def normalize_chat_refs(values):
-    if values is None:
-        return None
-    return [normalize_chat_ref(item) for item in values]
 
 
 def normalize_sign_at(value: str) -> str:
@@ -123,44 +114,18 @@ def format_validation_error(exc: Exception, limit: int = 8) -> str:
     return "; ".join(parts)
 
 
-def get_display_width(text: str) -> int:
-    """计算文本在终端中的显示宽度（考虑中文字符占2个字符位）"""
-    width = 0
-    for char in text:
-        if ord(char) > 127:  # 非ASCII字符（包括中文）
-            width += 2
-        else:
-            width += 1
-    return width
-
-
-def pad_text_to_width(text: str, target_width: int, align: str = "left") -> str:
-    """将文本填充到指定宽度"""
-    current_width = get_display_width(text)
+def pad_text_to_width(text: str, target_width: int) -> str:
+    """将文本左对齐填充到指定宽度（CJK 按 2 列计）。"""
+    current_width = sum(2 if ord(char) > 127 else 1 for char in text)
     padding_needed = target_width - current_width
-
     if padding_needed <= 0:
         return text
-
-    if align == "left":
-        return text + " " * padding_needed
-    elif align == "right":
-        return " " * padding_needed + text
-    else:  # center
-        left_padding = padding_needed // 2
-        right_padding = padding_needed - left_padding
-        return " " * left_padding + text + " " * right_padding
+    return text + " " * padding_needed
 
 
 class BaseJSONConfig(BaseModel):
     version: ClassVar[Union[str, int]] = 0
     olds: ClassVar[Optional[List[Type["BaseJSONConfig"]]]] = None
-    is_current: ClassVar[bool] = False
-
-    @classmethod
-    def valid(cls, d):
-        instance, _err = cls._validate(d)
-        return instance
 
     @classmethod
     def _validate(cls, d):
@@ -283,25 +248,18 @@ class SignChatV2(BaseJSONConfig):
     version: ClassVar = 2
     chat_id: int
     delete_after: Optional[int] = None
-    sign_text: Union[str, Literal["🎲", "🎯", "🏀", "⚽", "🎳", "🎰"]]
+    # 原本写作 Union[Literal[骰子 emoji...], str]，但 str 吸收 Literal 分支，
+    # 白名单从未生效（任意字符串都能过）。as_dice 的真实约束在 core.send_dice()。
+    sign_text: str
     as_dice: bool = False  # 作为Dice类型的emoji进行发送
     text_of_btn_to_click: Optional[str] = None  # 需要点击的按钮的文本
     choose_option_by_image: bool = False  # 需要根据图片选择选项
     has_calculation_problem: bool = False  # 是否有计算题
 
-    @property
-    def need_response(self):
-        return (
-            bool(self.text_of_btn_to_click)
-            or self.choose_option_by_image
-            or self.has_calculation_problem
-        )
-
 
 class SignConfigV2(BaseJSONConfig):
     version: ClassVar = 2
     olds: ClassVar = [SignConfigV1]
-    is_current: ClassVar = False
 
     chats: List[SignChatV2]
     sign_at: str  # 签到时间，time或crontab表达式
@@ -372,7 +330,9 @@ class SendTextAction(SignAction):
 
 class SendDiceAction(SignAction):
     action: Literal[SupportAction.SEND_DICE] = SupportAction.SEND_DICE
-    dice: Union[Literal["🎲", "🎯", "🏀", "⚽", "🎳", "🎰"], str]
+    # 同 SignChatV2.sign_text：Union[..., str] 里的 Literal 会被 str 吸收，
+    # 白名单是装饰性的。真实检查在 core.send_dice()。
+    dice: str
 
 
 class ClickKeyboardByTextAction(SignAction):
@@ -510,7 +470,6 @@ class SignChatV3(BaseJSONConfig):
 class SignConfigV3(BaseJSONConfig):
     version: ClassVar = 3
     olds: ClassVar = [SignConfigV2]
-    is_current: ClassVar = True
 
     _version: Literal[3] = 3
     chats: List[SignChatV3]
@@ -576,7 +535,7 @@ class ChatRefsMixin(BaseModel):
     @classmethod
     def _normalize_chat_refs(cls, value):
         if isinstance(value, list):
-            return normalize_chat_refs(value)
+            return [normalize_chat_ref(item) for item in value]
         return normalize_chat_ref(value)
 
 
@@ -657,9 +616,36 @@ class RuleConfig(BaseModel):
     vars: Dict[str, Any] = Field(default_factory=dict)
 
 
+AUTOMATION_CONFIG_FILE_NAMES = ("config.json", "config.yaml", "config.yml")
+YAML_CONFIG_SUFFIXES = frozenset({".yml", ".yaml"})
+
+
+def read_automation_config_payload(path: "Path") -> Dict[str, Any]:
+    """按后缀读取自动化配置为 dict（JSON 或 YAML）。
+
+    CLI 引擎与 WebUI 都需要这一步，此前两边各写一份，WebUI 那份把
+    ``yaml.YAMLError`` 包成了 ``ValueError``、CLI 那份没包 —— 同一份手改坏的
+    YAML 在 WebUI 里得到 400，在 CLI 里却漏出裸异常。共用这一份即可。
+    """
+    if path.suffix in YAML_CONFIG_SUFFIXES:
+        try:
+            import yaml  # type: ignore
+        except ModuleNotFoundError as exc:
+            raise ValueError("未安装pyyaml，无法读取YAML配置") from exc
+        try:
+            with open(path, "r", encoding="utf-8") as fp:
+                payload = yaml.safe_load(fp) or {}
+        except yaml.YAMLError as exc:
+            raise ValueError(f"YAML 解析失败: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("YAML配置必须是字典结构")
+        return payload
+    with open(path, "r", encoding="utf-8") as fp:
+        return json.load(fp)
+
+
 class AutomationConfig(BaseJSONConfig):
     version: ClassVar = 1
-    is_current: ClassVar = True
 
     rules: List[RuleConfig] = Field(default_factory=list)
 
@@ -688,8 +674,8 @@ class AutomationConfig(BaseJSONConfig):
 
     @property
     def requires_ai(self) -> bool:
-        for rule in self.rules:
-            for handler in rule.handlers:
-                if handler.handler == "ai_reply":
-                    return True
-        return False
+        return any(
+            handler.handler == "ai_reply"
+            for rule in self.rules
+            for handler in rule.handlers
+        )

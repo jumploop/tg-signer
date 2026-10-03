@@ -9,6 +9,8 @@ from tg_signer.config import (
     HandlerConfig,
     MessageTriggerConfig,
     RuleConfig,
+    SendDiceAction,
+    SignChatV2,
     SignChatV3,
     SignConfigV3,
     TimerTriggerConfig,
@@ -336,3 +338,15 @@ def test_automation_config_rejects_duplicate_trigger_ids():
 
 def test_automation_config_accepts_distinct_ids():
     AutomationConfig(rules=[_rule("a"), _rule("b")])
+
+
+def test_dice_whitelist_is_not_pretended_to_validate():
+    """骰子字段接受任意字符串，白名单的真实检查在 core.send_dice()。
+
+    这两个字段曾经写作 ``Union[Literal[那 6 个 emoji], str]``，但 ``str`` 会吸收
+    ``Literal`` 分支 —— pydantic 因此对任意字符串都放行，白名单纯属装饰。改成
+    ``str`` 后行为不变，只是不再假装有枚举校验；此用例锁住「不假装」这一点，
+    避免有人日后再加回一个同样无效的 ``Union[Literal[...], str]``。
+    """
+    assert SignChatV2(chat_id=1, sign_text="任意文本").sign_text == "任意文本"
+    assert SendDiceAction(dice="任意文本").dice == "任意文本"

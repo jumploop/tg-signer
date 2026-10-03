@@ -6,15 +6,20 @@ import secrets
 import shutil
 import sqlite3
 import threading
-import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
-from tg_signer.config import AutomationConfig, BaseJSONConfig, SignConfigV3
+from tg_signer.config import (
+    AUTOMATION_CONFIG_FILE_NAMES,
+    AutomationConfig,
+    BaseJSONConfig,
+    SignConfigV3,
+    read_automation_config_payload,
+)
 from tg_signer.sign_record_store import SignRecordStore
-from tg_signer.utils import resolve_log_under, resolve_under
+from tg_signer.utils import replace_with_retry, resolve_log_under, resolve_under
 
 logger = logging.getLogger("tg-signer")
 
@@ -121,23 +126,6 @@ def _config_path(kind: ConfigKind, name: str, workdir: Optional[Path | str]) -> 
 _CONFIG_LOCK = threading.Lock()
 
 
-def _replace_with_retry(src: Path, dst: Path, attempts: int = 6) -> None:
-    """``os.replace`` 在 Windows 上会对「刚写完的文件」偶发 ``Access denied``。
-
-    新建/落盘的临时文件可能被实时扫描或索引器短暂独占,此时
-    ``MoveFileEx`` 直接失败(实测在并发保存下必现)。这是瞬态的,退避重试即可;
-    重试仍失败说明是真的锁住了(例如用户用别的程序占着),照常抛出。
-    """
-    for attempt in range(attempts):
-        try:
-            os.replace(src, dst)
-            return
-        except PermissionError:
-            if attempt == attempts - 1:
-                raise
-            time.sleep(0.02 * (attempt + 1))
-
-
 def _write_json_atomic(path: Path, payload: Any) -> None:
     """写 JSON:临时文件 + ``os.replace``,读者永远看不到半个文件。
 
@@ -158,7 +146,7 @@ def _write_json_atomic(path: Path, payload: Any) -> None:
         with open(tmp, "w", encoding="utf-8") as fp:
             json.dump(payload, fp, ensure_ascii=False, indent=2)
         with _CONFIG_LOCK:
-            _replace_with_retry(tmp, path)
+            replace_with_retry(tmp, path, attempts=6, delay=0.02)
     finally:
         # replace 成功后临时文件已不存在;失败路径上则不能留下垃圾。
         tmp.unlink(missing_ok=True)
@@ -190,10 +178,7 @@ def list_automation_names(workdir: Optional[Path | str] = None) -> List[str]:
         p.name
         for p in root.iterdir()
         if p.is_dir()
-        and any(
-            (p / name).is_file()
-            for name in ("config.json", "config.yaml", "config.yml")
-        )
+        and any((p / name).is_file() for name in AUTOMATION_CONFIG_FILE_NAMES)
     )
 
 
@@ -202,31 +187,15 @@ def resolve_automation_config_file(
 ) -> Optional[Path]:
     """返回 automations/<name>/ 下第一个存在的配置文件。"""
     root = resolve_under(get_workdir(workdir) / "automations", name)
-    for file_name in ("config.json", "config.yaml", "config.yml"):
+    for file_name in AUTOMATION_CONFIG_FILE_NAMES:
         candidate = root / file_name
         if candidate.is_file():
             return candidate
     return None
 
 
-def _read_automation_payload(path: Path) -> Dict[str, Any]:
-    if path.suffix in {".yml", ".yaml"}:
-        try:
-            import yaml  # type: ignore
-        except ModuleNotFoundError as exc:
-            raise ValueError("未安装 pyyaml，无法读取 YAML 配置") from exc
-        try:
-            with open(path, "r", encoding="utf-8") as fp:
-                payload = yaml.safe_load(fp) or {}
-        except yaml.YAMLError as exc:
-            # yaml.YAMLError 不是 ValueError 子类（已核实），原样冒泡会让
-            # server 的 400 兜底失效，把一份手改坏的 YAML 变成 500。
-            raise ValueError(f"YAML 解析失败: {exc}") from exc
-        if not isinstance(payload, dict):
-            raise ValueError("YAML 配置必须是字典结构")
-        return payload
-    with open(path, "r", encoding="utf-8") as fp:
-        return json.load(fp)
+# YAML/JSON 读取与 CLI 引擎共用一份实现（config.read_automation_config_payload）。
+_read_automation_payload = read_automation_config_payload
 
 
 def load_automation_config(
@@ -332,15 +301,6 @@ def resolve_chat_id_for_selector(
     return None
 
 
-_SLUG_RE = re.compile(r"[^\w\u4e00-\u9fff]+")
-
-
-def _slugify(value: str, limit: int = 24) -> str:
-    """把 chat 标题/用户名简化成 ASCII / 汉字 / 数字 / 下划线 形式,截断到 limit。"""
-    slug = _SLUG_RE.sub("_", value or "").strip("_")
-    return slug[:limit]
-
-
 def generate_random_config_name(
     kind: NameGenKind,
     chat: Optional[Dict[str, Any]] = None,
@@ -362,7 +322,7 @@ def generate_random_config_name(
             or chat.get("id")
             or ""
         )
-    slug = _slugify(seed) or "chat"
+    slug = re.sub(r"[^\w\u4e00-\u9fff]+", "_", seed).strip("_")[:24] or "chat"
     if kind == "automation":
         existing = set(list_automation_names(workdir))
     else:
@@ -478,15 +438,6 @@ def load_user_infos(workdir: Optional[Path | str] = None) -> List[UserInfo]:
     return entries
 
 
-def _record_target(path: Path, signs_root: Path) -> Tuple[str, Optional[str]]:
-    relative_parts = path.relative_to(signs_root).parts
-    task = relative_parts[0]
-    user_id = None
-    if len(relative_parts) > 2:
-        user_id = relative_parts[1]
-    return task, user_id
-
-
 def _record_dedup_key(
     path: Path, signs_root: Path, store: SignRecordStore
 ) -> Tuple[str, Optional[str]]:
@@ -504,7 +455,8 @@ def _record_dedup_key(
         resolved = None
     if resolved is not None:
         return resolved
-    return _record_target(path, signs_root)
+    relative_parts = path.relative_to(signs_root).parts
+    return relative_parts[0], relative_parts[1] if len(relative_parts) > 2 else None
 
 
 def load_sign_records(workdir: Optional[Path | str] = None) -> List[SignRecord]:

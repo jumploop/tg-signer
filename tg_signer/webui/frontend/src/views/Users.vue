@@ -60,7 +60,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { InfoFilled } from '@element-plus/icons-vue'
-import api, { asArray } from '../api'
+import api, { asArray, errMsg } from '../api'
 
 const users = ref([])
 const loading = ref(false)
@@ -88,13 +88,6 @@ function showChats(row) {
 function userInitial(row) {
   const name = row.data.first_name || row.data.username || String(row.user_id)
   return name.slice(0, 1).toUpperCase()
-}
-
-function errMsg(error) {
-  return (
-    (error.response && error.response.data && error.response.data.detail) ||
-    error.message
-  )
 }
 
 onMounted(refresh)

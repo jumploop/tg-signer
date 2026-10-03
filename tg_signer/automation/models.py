@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from pyrogram.types import Message
 
+from tg_signer.utils import replace_with_retry
+
 if TYPE_CHECKING:
     from tg_signer.core import Client
 
@@ -19,32 +21,6 @@ if TYPE_CHECKING:
 # 这类情况几乎都是暂时性的，值得等一下再试，而不是立刻丢数据。
 _STATE_READ_RETRIES = 3
 _STATE_READ_RETRY_SECONDS = 0.2
-
-_REPLACE_RETRIES = 5
-_REPLACE_RETRY_SECONDS = 0.05
-
-
-def _replace_with_retry(src: Path, dst: Path) -> None:
-    """``os.replace`` + 有限次退避重试。
-
-    Windows 上 ``os.replace`` 要求目标文件当前没有任何未共享删除的打开句柄：
-    同一进程里另一个线程正在 ``load()``（``open(path, "r")`` 恰好不共享删除）、
-    杀毒软件或索引器短暂扫过新文件，都会让 ``MoveFileEx`` 直接返回
-    ``PermissionError``（WinError 5/32）。引擎在 asyncio 单线程里也跑不出
-    并发保护 —— 定时器回调与消息 handler 的 ``save()`` 会交错，
-    于是状态保存偶发失败，规则进度这一轮直接丢掉。
-    这里与 ``webui/data.py::_write_json_atomic`` 采用同样的退避策略。
-    """
-    last: OSError | None = None
-    for attempt in range(_REPLACE_RETRIES):
-        try:
-            os.replace(src, dst)
-            return
-        except PermissionError as exc:  # Windows 独占导致的暂时性失败
-            last = exc
-            if attempt < _REPLACE_RETRIES - 1:
-                time.sleep(_REPLACE_RETRY_SECONDS * (attempt + 1))
-    raise last  # type: ignore[misc]
 
 
 @dataclass
@@ -237,7 +213,7 @@ class RuleStateStore:
                 )
                 fp.flush()
                 os.fsync(fp.fileno())
-            _replace_with_retry(tmp_path, self.path)
+            replace_with_retry(tmp_path, self.path, attempts=5, delay=0.05)
         finally:
             # 任何异常都清理临时文件,避免残留
             if tmp_path.exists():

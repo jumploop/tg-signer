@@ -92,19 +92,8 @@ class SignRecordStore:
         version = self._get_schema_version(conn)
         if version >= self.SCHEMA_VERSION:
             return
-
-        # Keep schema management lightweight, but make migrations explicit so
-        # future schema changes can be appended as v2/v3 steps instead of
-        # rewriting the bootstrap logic.
-        migrations = {
-            1: self._migrate_to_v1,
-        }
-        for target_version in range(version + 1, self.SCHEMA_VERSION + 1):
-            migration = migrations.get(target_version)
-            if migration is None:
-                raise RuntimeError(f"Missing schema migration for v{target_version}")
-            migration(conn)
-            self._set_schema_version(conn, target_version)
+        self._migrate_to_v1(conn)
+        self._set_schema_version(conn, self.SCHEMA_VERSION)
         conn.commit()
 
     @staticmethod
@@ -127,7 +116,6 @@ class SignRecordStore:
                 signed_at TEXT NOT NULL,
                 account TEXT,
                 source TEXT NOT NULL DEFAULT 'runtime',
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(task_name, user_id, sign_date)
             );
 

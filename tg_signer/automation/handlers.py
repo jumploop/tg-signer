@@ -13,9 +13,9 @@ from typing import Any, Awaitable, Callable, Dict, Iterable, Literal, Optional
 import httpx
 from pyrogram.types import Message
 
-from tg_signer.config import HttpCallback, SafeFormatDict, UDPForward
+from tg_signer.config import HttpCallback, UDPForward
 from tg_signer.notification.server_chan import sc_send
-from tg_signer.utils import safe_regex_search
+from tg_signer.utils import message_text, safe_regex_search
 
 from .models import AutomationContext, Event
 
@@ -35,15 +35,6 @@ _REGISTRY: Dict[str, HandlerFn] = {}
 class _UDPProtocol(asyncio.DatagramProtocol):
     """内部使用的UDP协议处理类"""
 
-    def __init__(self):
-        self.transport = None
-
-    def connection_made(self, transport):
-        self.transport = transport
-
-    def datagram_received(self, data, addr):
-        pass  # 不需要处理接收的数据
-
     def error_received(self, exc):
         # 用 logger 而不是 print：UDP 套接字错误走 print 只到 stdout，
         # 在打包后的 CLI / multi-run 下通常根本没有可见的控制台，
@@ -54,8 +45,8 @@ class _UDPProtocol(asyncio.DatagramProtocol):
 async def udp_forward(f: UDPForward, message: Message):
     data = str(message).encode("utf-8")
     loop = asyncio.get_running_loop()
-    transport, protocol = await loop.create_datagram_endpoint(
-        lambda: _UDPProtocol(), remote_addr=(f.host, f.port)
+    transport, _ = await loop.create_datagram_endpoint(
+        _UDPProtocol, remote_addr=(f.host, f.port)
     )
     try:
         transport.sendto(data)
@@ -124,11 +115,11 @@ class TemplateRenderError(ValueError):
     """模板渲染失败（引用了不存在的变量或属性）。"""
 
 
-class _TrackingFormatDict(SafeFormatDict):
-    """在 ``SafeFormatDict`` 基础上记录所有未命中的变量名。
+class _TrackingFormatDict(dict):
+    """记录所有未命中的变量名，并保留 ``{name}`` 占位文本。
 
-    ``SafeFormatDict.__missing__`` 把未知变量原样返回成 ``"{name}"``，于是渲染
-    「成功」了、输出却和输入一模一样 —— 调用方完全无法察觉变量名写错了。
+    未知变量原样返回成 ``"{name}"``，于是渲染「成功」了、输出却和输入一模一样
+    —— 调用方完全无法察觉变量名写错了。
     """
 
     def __init__(self):
@@ -137,7 +128,7 @@ class _TrackingFormatDict(SafeFormatDict):
 
     def __missing__(self, key):
         self.missing.append(key)
-        return super().__missing__(key)
+        return "{" + key + "}"
 
 
 def render_template(text: Any, event: Event, ctx: AutomationContext) -> Any:
@@ -176,12 +167,6 @@ def render_template(text: Any, event: Event, ctx: AutomationContext) -> Any:
             f"模板引用了不存在的变量 {sorted(set(mapping.missing))}: {text!r}"
         )
     return rendered
-
-
-def message_text(message: Any) -> str:
-    if message is None:
-        return ""
-    return getattr(message, "text", None) or getattr(message, "caption", None) or ""
 
 
 def as_bool(value: Any) -> bool:
@@ -788,7 +773,7 @@ async def store_state(
         # 只写入**已经存在**的键。原来用 ctx.vars.get(k)（没有默认值），于是
         # 尚未产生的键会被存成 None：state.json 里多出一堆 null，下次
         # load_state 把 None 灌回 ctx.vars 后，该键就「存在」了，
-        # SafeFormatDict.__missing__ 不再兜底，模板直接渲染出字符串 "None"
+        # 未产生的键若被存为 None，模板会直接渲染出字符串 "None"
         # 并发到群里。这在「extract_regex 先失败 / ai_reply 还没跑」的首轮
         # 是很常见的路径。
         stored = {k: ctx.vars[k] for k in keys if k in ctx.vars}

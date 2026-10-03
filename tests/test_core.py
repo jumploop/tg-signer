@@ -11,9 +11,7 @@ import pytest
 from pyrogram.types import Folder, InlineKeyboardButton, InlineKeyboardMarkup
 
 from tg_signer.config import (
-    ChooseOptionByImageAction,
     ClickKeyboardByTextAction,
-    ReplyByCalculationProblemAction,
     SendTextAction,
     SignChatV3,
     SignConfigV3,
@@ -37,13 +35,13 @@ class TestBaseUserWorker:
         assert pathlib.Path(worker.app.key).name == "acct"
 
 
-def collect_outputs(monkeypatch, core):
+def collect_outputs(monkeypatch):
     outputs = []
 
-    def fake_print_to_user(message=""):
+    def fake_print(message=""):
         outputs.append(message)
 
-    monkeypatch.setattr(core, "print_to_user", fake_print_to_user)
+    monkeypatch.setattr("builtins.print", fake_print)
     return outputs
 
 
@@ -109,7 +107,7 @@ def setup_login_test(monkeypatch, core, dialogs):
             yield SimpleNamespace(chat=chat)
 
     patch_client_methods(monkeypatch, core, get_dialogs=fake_get_dialogs)
-    return collect_outputs(monkeypatch, core)
+    return collect_outputs(monkeypatch)
 
 
 def test_get_client_caching(tmp_path):
@@ -506,7 +504,7 @@ async def test_login_loads_explicit_folder_chats(
         get_dialogs=fake_get_dialogs,
         get_folders=fake_get_folders,
     )
-    outputs = collect_outputs(monkeypatch, core)
+    outputs = collect_outputs(monkeypatch)
     signer = signer_factory()
 
     await signer.login(folder=folder_selector, print_chat=True)
@@ -816,7 +814,7 @@ async def test_login_loads_forum_topics_after_dialog_fetch(monkeypatch, signer_f
         finally:
             active_operation = None
 
-    outputs = collect_outputs(monkeypatch, core)
+    outputs = collect_outputs(monkeypatch)
 
     patch_client_methods(monkeypatch, core, get_dialogs=fake_get_dialogs)
     monkeypatch.setattr(core.Client, "get_forum_topics", fake_get_forum_topics)
@@ -1218,10 +1216,7 @@ async def test_reply_by_calculation_problem_clicks_caption_inline_answer(
         ),
     )
 
-    ok = await signer._reply_by_calculation_problem(
-        ReplyByCalculationProblemAction(),
-        message,
-    )
+    ok = await signer._reply_by_calculation_problem(message)
 
     assert ok is True
     ai_tools.calculate_problem.assert_awaited_once()
@@ -1264,10 +1259,7 @@ async def test_reply_by_calculation_problem_clicks_non_numeric_inline_answer(
         ),
     )
 
-    ok = await signer._reply_by_calculation_problem(
-        ReplyByCalculationProblemAction(),
-        message,
-    )
+    ok = await signer._reply_by_calculation_problem(message)
 
     assert ok is True
     query = ai_tools.calculate_problem.await_args.args[0]
@@ -1300,10 +1292,7 @@ async def test_reply_by_calculation_problem_sends_caption_answer_without_keyboar
         reply_markup=None,
     )
 
-    ok = await signer._reply_by_calculation_problem(
-        ReplyByCalculationProblemAction(),
-        message,
-    )
+    ok = await signer._reply_by_calculation_problem(message)
 
     assert ok is True
     ai_tools.calculate_problem.assert_awaited_once_with("17 - 9 = ?")
@@ -1334,7 +1323,7 @@ async def test_choose_option_by_image_uses_caption_and_option_index(signer_facto
         ),
     )
 
-    ok = await signer._choose_option_by_image(ChooseOptionByImageAction(), message)
+    ok = await signer._choose_option_by_image(message)
 
     assert ok is True
     signer.app.download_media.assert_awaited_once_with("photo-id", in_memory=True)
@@ -1385,7 +1374,6 @@ async def test_choose_option_by_image_uses_previous_photo_for_split_keyboard(
     )
 
     ok = await signer._choose_option_by_image(
-        ChooseOptionByImageAction(),
         button_message,
         [photo_message, button_message],
     )
@@ -1423,7 +1411,7 @@ async def test_choose_option_by_image_rejects_invalid_option_index(signer_factor
         ),
     )
 
-    ok = await signer._choose_option_by_image(ChooseOptionByImageAction(), message)
+    ok = await signer._choose_option_by_image(message)
 
     assert ok is False
     signer.request_callback_answer.assert_not_awaited()
@@ -2840,9 +2828,7 @@ async def test_reply_by_calculation_problem_propagates_rejected_click(
         ),
     )
 
-    ok = await signer._reply_by_calculation_problem(
-        ReplyByCalculationProblemAction(), message
-    )
+    ok = await signer._reply_by_calculation_problem(message)
 
     assert ok is False
 
@@ -2867,7 +2853,7 @@ async def test_choose_option_by_image_propagates_rejected_click(signer_factory):
         ),
     )
 
-    ok = await signer._choose_option_by_image(ChooseOptionByImageAction(), message)
+    ok = await signer._choose_option_by_image(message)
 
     assert ok is False
 

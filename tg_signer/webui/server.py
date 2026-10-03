@@ -182,8 +182,8 @@ def require_auth(
         if secrets.compare_digest(provided, wanted):
             return
         auth_helpers.record_auth_failure(_auth_storage)
-        if auth_helpers.is_auth_locked(_auth_storage):
-            remaining = auth_helpers.auth_lock_remaining(_auth_storage)
+        remaining = auth_helpers.auth_lock_remaining(_auth_storage)
+        if remaining > 0:
             raise HTTPException(
                 status_code=429,
                 detail=f"尝试次数过多，请 {remaining:.0f} 秒后再试",
@@ -754,8 +754,8 @@ def auth_login(body: AuthBody) -> Dict[str, Any]:
             auth_helpers.clear_auth_failures(_auth_storage)
             return {"ok": True, "message": "登录成功"}
         auth_helpers.record_auth_failure(_auth_storage)
-        if auth_helpers.is_auth_locked(_auth_storage):
-            remaining = auth_helpers.auth_lock_remaining(_auth_storage)
+        remaining = auth_helpers.auth_lock_remaining(_auth_storage)
+        if remaining > 0:
             raise HTTPException(
                 status_code=429, detail=f"尝试次数过多，请 {remaining:.0f} 秒后再试"
             )

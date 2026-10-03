@@ -476,6 +476,24 @@ def list_topics(obj, chat_id: str, limit: int):
     signer.app_run(signer.list_topics(chat_id, limit=limit))
 
 
+def export_config(config, file):
+    data = config.export()
+    if not file:
+        click.echo(data)
+    else:
+        with click.open_file(file, "w", encoding="utf-8") as fp:
+            fp.write(data)
+
+
+def import_config(config, file):
+    if not file:
+        data = click.get_text_stream("stdin").read()
+    else:
+        with click.open_file(file, "r", encoding="utf-8") as fp:
+            data = fp.read()
+    config.import_(data)
+
+
 @tg_signer.command(
     help="""导出配置，默认为输出到终端。\n\n e.g.\n\n  tg-signer export -O config.json mytask\n\n  tg-signer export mytask > config.json"""
 )
@@ -486,12 +504,7 @@ def list_topics(obj, chat_id: str, limit: int):
 @click.pass_obj
 def export(obj, task_name: str, file: str = None):
     signer = get_signer(task_name, obj)
-    data = signer.export()
-    if not file:
-        click.echo(data)
-    else:
-        with click.open_file(file, "w", encoding="utf-8") as fp:
-            fp.write(data)
+    export_config(signer, file)
 
 
 @tg_signer.command(
@@ -505,13 +518,7 @@ def export(obj, task_name: str, file: str = None):
 @click.pass_obj
 def import_(obj, task_name: str, file: str = None):
     signer = get_signer(task_name, obj)
-    if not file:
-        stdin_text = click.get_text_stream("stdin")
-        data = stdin_text.read()
-    else:
-        with click.open_file(file, "r", encoding="utf-8") as fp:
-            data = fp.read()
-    signer.import_(data)
+    import_config(signer, file)
 
 
 @tg_signer.command(help="批量配置Telegram自带的定时发送消息功能")

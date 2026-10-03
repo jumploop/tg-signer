@@ -125,7 +125,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { InfoFilled } from '@element-plus/icons-vue'
-import api from '../api'
+import api, { errMsg } from '../api'
 
 const kind = ref('signer')
 const account = ref('')
@@ -281,13 +281,6 @@ function showMsg(data) {
   } else {
     ElMessage.warning(data.message)
   }
-}
-
-function errMsg(error) {
-  return (
-    (error.response && error.response.data && error.response.data.detail) ||
-    error.message
-  )
 }
 
 onMounted(() => {

@@ -12,7 +12,14 @@ from typing import Any, Dict, List, Optional, Tuple
 from pyrogram import errors
 
 from tg_signer import core as tg_core
-from tg_signer.core import Client, chat_to_dict, get_api_config, get_client, get_proxy
+from tg_signer.core import (
+    Client,
+    chat_to_dict,
+    get_api_config,
+    get_client,
+    get_proxy,
+    write_latest_chats,
+)
 from tg_signer.utils import resolve_under
 
 # 每账号一个登录会话,会话内持有一个 daemon 线程 + 独立 event loop + 一个
@@ -203,14 +210,7 @@ class _AccountLoginSession:
                 latest_chats = []
                 async for dialog in self.client.get_dialogs(limit=20):
                     latest_chats.append(chat_to_dict(dialog.chat))
-                with open(user_dir / "latest_chats.json", "w", encoding="utf-8") as fp:
-                    json.dump(
-                        latest_chats,
-                        fp,
-                        ensure_ascii=False,
-                        indent=4,
-                        default=lambda o: getattr(o, "value", str(o)),
-                    )
+                write_latest_chats(user_dir / "latest_chats.json", latest_chats)
             except Exception as exc:  # noqa: BLE001
                 return "ok", f"登录成功，但获取最近对话失败: {exc}"
         except Exception as exc:  # noqa: BLE001
@@ -429,58 +429,6 @@ async def fetch_dialogs(
             pass
     name = me.first_name or me.username or me.id
     return True, f"已获取最近 {len(chats)} 个对话: {name}", chats
-
-
-async def refresh_dialogs(account: str, workdir, limit: int = 50) -> Tuple[bool, str]:
-    """Reuse an existing session to refresh the latest dialogs cache.
-
-    Writes users/<me.id>/latest_chats.json (and me.json) inside workdir so the
-    group config page can list freshly fetched chats.
-    """
-    workdir = pathlib.Path(workdir)
-    client = _new_client(account, workdir)
-    try:
-        authorized = await client.connect()
-        if not authorized:
-            return False, f"{account} 未登录或 session 无效，请先在“账号管理”登录"
-        me = await client.get_me()
-        user_dir = workdir / "users" / str(me.id)
-        user_dir.mkdir(parents=True, exist_ok=True)
-        (user_dir / "me.json").write_text(str(me), encoding="utf-8")
-        save_account_user(account, me.id, workdir)
-
-        chats: List[Dict[str, Any]] = []
-
-        async def _fetch_dialogs() -> None:
-            async for dialog in client.get_dialogs(limit=limit):
-                chats.append(chat_to_dict(dialog.chat))
-
-        await _fetch_dialogs()
-        (user_dir / "latest_chats.json").write_text(
-            json.dumps(
-                chats,
-                ensure_ascii=False,
-                indent=4,
-                default=lambda o: getattr(o, "value", str(o)),
-            ),
-            encoding="utf-8",
-        )
-    except Exception as exc:  # noqa: BLE001
-        return False, f"刷新最近对话失败: {exc}"
-    finally:
-        try:
-            if client.is_connected:
-                await client.disconnect()
-        except Exception:  # noqa: BLE001
-            pass
-    name = me.first_name or me.username or me.id
-    return True, f"已刷新最近 {len(chats)} 个对话: {name}"
-
-
-def cancel_login(account: str) -> None:
-    session = LOGIN_SESSIONS.pop(account, None)
-    if session is not None:
-        session.close()
 
 
 async def logout_account(account: str, workdir) -> str:
