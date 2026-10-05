@@ -41,6 +41,8 @@ htmlcov/
 .cache
 .pytest_cache/
 .pytest-tmp*/
+# pytest 默认的 tmp_path 根目录，名字带运行者用户名（如 pytest-of-liming）
+pytest-of-*/
 nosetests.xml
 coverage.xml
 *,cover
