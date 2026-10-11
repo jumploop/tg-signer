@@ -381,51 +381,56 @@ def load_plugins(handlers_dir: Path, logger: logging.Logger) -> None:
 async def send_text(
     event: Event, ctx: AutomationContext, params: Dict[str, Any]
 ) -> HandlerResult:
-    text = params.get("text") or ""
-    if not text:
-        ctx.log("send_text: 空文本", level="WARNING")
-        return "stop"
-    chat_id = params.get("chat_id") or event.chat_id
-    if chat_id is None:
-        ctx.log("send_text: 缺少chat_id", level="WARNING")
-        return "stop"
-    text = render_template(text, event, ctx)
-    delete_after = params.get("delete_after")
-    reply_to_message_id = params.get("reply_to_message_id")
-    ctx.log(
-        f"send_text: chat_id={chat_id}, delete_after={delete_after}, reply_to={reply_to_message_id}",
-        level="DEBUG",
+    return await _send_text_message(
+        event,
+        ctx,
+        params,
+        handler_name="send_text",
+        reply_to_message_id=params.get("reply_to_message_id"),
     )
-    await ctx.worker.send_message(
-        chat_id,
-        text,
-        delete_after=delete_after,
-        reply_to_message_id=reply_to_message_id,
-    )
-    return "continue"
 
 
 async def reply_text(
     event: Event, ctx: AutomationContext, params: Dict[str, Any]
 ) -> HandlerResult:
-    text = params.get("text") or ""
-    if not text:
-        ctx.log("reply_text: 空文本", level="WARNING")
-        return "stop"
-    chat_id = params.get("chat_id") or event.chat_id
-    if chat_id is None:
-        ctx.log("reply_text: 缺少chat_id", level="WARNING")
-        return "stop"
     reply_to_message_id = params.get("reply_to_message_id")
     if reply_to_message_id is None and event.message:
         reply_to_message_id = event.message.id
-    if reply_to_message_id is None:
-        ctx.log("reply_text: 缺少reply_to_message_id", level="WARNING")
+    return await _send_text_message(
+        event,
+        ctx,
+        params,
+        handler_name="reply_text",
+        reply_to_message_id=reply_to_message_id,
+        require_reply=True,
+    )
+
+
+async def _send_text_message(
+    event: Event,
+    ctx: AutomationContext,
+    params: Dict[str, Any],
+    *,
+    handler_name: str,
+    reply_to_message_id=None,
+    require_reply: bool = False,
+) -> HandlerResult:
+    text = params.get("text") or ""
+    if not text:
+        ctx.log(f"{handler_name}: 空文本", level="WARNING")
+        return "stop"
+    chat_id = params.get("chat_id") or event.chat_id
+    if chat_id is None:
+        ctx.log(f"{handler_name}: 缺少chat_id", level="WARNING")
+        return "stop"
+    if require_reply and reply_to_message_id is None:
+        ctx.log(f"{handler_name}: 缺少reply_to_message_id", level="WARNING")
         return "stop"
     text = render_template(text, event, ctx)
     delete_after = params.get("delete_after")
     ctx.log(
-        f"reply_text: chat_id={chat_id}, reply_to={reply_to_message_id}, delete_after={delete_after}",
+        f"{handler_name}: chat_id={chat_id}, delete_after={delete_after}, "
+        f"reply_to={reply_to_message_id}",
         level="DEBUG",
     )
     await ctx.worker.send_message(

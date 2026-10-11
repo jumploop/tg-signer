@@ -19,7 +19,7 @@ from tg_signer.config import (
     read_automation_config_payload,
 )
 from tg_signer.sign_record_store import SignRecordStore
-from tg_signer.utils import replace_with_retry, resolve_log_under, resolve_under
+from tg_signer.utils import resolve_log_under, resolve_under, write_json_atomic
 
 logger = logging.getLogger("tg-signer")
 
@@ -139,17 +139,8 @@ def _write_json_atomic(path: Path, payload: Any) -> None:
     所以同一进程里一个正在读配置的线程就能让保存失败(实测即如此)。因此读写
     必须共用 ``_CONFIG_LOCK``,让「读」和「替换」不重叠。
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # 临时名带 pid+线程 id:并发写同一配置时不会互相覆盖临时文件。
-    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}-{threading.get_ident()}")
-    try:
-        with open(tmp, "w", encoding="utf-8") as fp:
-            json.dump(payload, fp, ensure_ascii=False, indent=2)
-        with _CONFIG_LOCK:
-            replace_with_retry(tmp, path, attempts=6, delay=0.02)
-    finally:
-        # replace 成功后临时文件已不存在;失败路径上则不能留下垃圾。
-        tmp.unlink(missing_ok=True)
+    with _CONFIG_LOCK:
+        write_json_atomic(path, payload, attempts=6, delay=0.02)
 
 
 def list_task_names(
@@ -710,14 +701,17 @@ class UIState:
             f"如需切换至其它位置,请设置环境变量 {WORKDIR_ROOTS_ENV}"
         )
 
+    def _apply_workdir(self, path: Path) -> None:
+        self.workdir = get_workdir(path)
+        self.log_path = self.workdir / "logs" / DEFAULT_LOG_FILE.name
+
     def set_workdir(self, path_str: str) -> None:
         candidate = Path(path_str).expanduser()
         absolute = candidate if candidate.is_absolute() else Path.cwd() / candidate
         # 先校验再 mkdir:否则越界路径会先被创建出来,构成目录创建原语。
         # 用 resolve() 后的路径做包含性判断,顺带挡掉指向根之外的软链。
         self._check_workdir(absolute.resolve())
-        self.workdir = get_workdir(candidate)
-        self.log_path = self.workdir / "logs" / DEFAULT_LOG_FILE.name
+        self._apply_workdir(candidate)
 
     def init_workdir(self, path_str: str) -> None:
         """按 CLI ``--workdir`` 设定初始工作目录。
@@ -729,8 +723,7 @@ class UIState:
         """
         candidate = Path(path_str).expanduser()
         absolute = candidate if candidate.is_absolute() else Path.cwd() / candidate
-        self.workdir = get_workdir(absolute)
-        self.log_path = self.workdir / "logs" / DEFAULT_LOG_FILE.name
+        self._apply_workdir(absolute)
         self._initial_workdir = self.workdir.resolve()
 
 

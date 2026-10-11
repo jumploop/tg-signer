@@ -185,7 +185,7 @@ def test_failed_save_leaves_previous_state_and_no_tempfile(tmp_path, monkeypatch
     def _boom(*args, **kwargs):
         raise OSError("disk full")
 
-    monkeypatch.setattr("tg_signer.automation.models.os.replace", _boom)
+    monkeypatch.setattr("tg_signer.utils.os.replace", _boom)
     store.set_rule_vars("r1", {"counter": 2})
     with pytest.raises(OSError):
         store.save(force=True)

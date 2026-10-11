@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import pathlib
-import threading
 from typing import TYPE_CHECKING, Optional, Union
 
 import json_repair
@@ -19,7 +18,7 @@ from typing_extensions import Required, TypedDict
 if TYPE_CHECKING:
     from openai import AsyncOpenAI  # 在性能弱的机器上导入openai包实在有些慢
 
-from tg_signer.utils import UserInput, restrict_file_permissions
+from tg_signer.utils import UserInput, restrict_file_permissions, write_json_atomic
 
 DEFAULT_MODEL = "gpt-4o"
 
@@ -54,28 +53,12 @@ class OpenAIConfigManager:
         config_file = self.get_config_file()
         self.workdir.mkdir(parents=True, exist_ok=True)
         config = OpenAIConfig(api_key=api_key, base_url=base_url, model=model)
-        # 原子写：先写同目录临时文件再 os.replace。
-        # 原来直接 open(path, "w") —— 它会**先截断**再写，中途失败（磁盘满、
-        # 进程被杀、被 AV 打断）就会把用户已保存的 API Key 变成一个空文件或
-        # 半截 JSON，而没有任何备份。webui/data.py 里所有其它写都走
-        # _write_json_atomic，唯独这个存密钥的文件被漏掉了。
-        payload = json.dumps(config, ensure_ascii=False, indent=2)
-        tmp_path = config_file.with_name(
-            f"{config_file.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        write_json_atomic(
+            config_file,
+            config,
+            fsync=True,
+            before_replace=restrict_file_permissions,
         )
-        try:
-            with open(tmp_path, "w", encoding="utf-8") as fp:
-                fp.write(payload)
-                fp.flush()
-                os.fsync(fp.fileno())
-            restrict_file_permissions(tmp_path)
-            os.replace(tmp_path, config_file)
-        finally:
-            if tmp_path.exists():
-                try:
-                    tmp_path.unlink()
-                except OSError:
-                    pass
         # 文件里是明文 API Key,收紧到仅属主可读写(POSIX)。
         restrict_file_permissions(config_file)
 

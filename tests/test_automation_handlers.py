@@ -61,6 +61,28 @@ class DummyClient:
             yield message
 
 
+def _history_message(text: str, username: str, user_id: int):
+    return SimpleNamespace(
+        text=text,
+        caption=None,
+        from_user=SimpleNamespace(
+            username=username, first_name=None, last_name=None, id=user_id
+        ),
+        sender_chat=None,
+    )
+
+
+def _message_event():
+    return Event(
+        type="message",
+        chat_id=123,
+        message=SimpleNamespace(text="当前消息", id=99),
+        now=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        trigger_id="t1",
+        rule_id="r1",
+    )
+
+
 @pytest.mark.asyncio
 async def test_extract_regex_sets_var(tmp_path):
     """extract_regex 应将捕获结果写入 ctx.vars。"""
@@ -239,31 +261,10 @@ async def test_ai_reply_uses_recent_messages(tmp_path):
     state = RuleStateStore(tmp_path / "state.json", logging.getLogger("test"))
     worker = DummyWorker()
     history = [
-        SimpleNamespace(
-            text="最新消息",
-            caption=None,
-            from_user=SimpleNamespace(
-                username="neo", first_name=None, last_name=None, id=1
-            ),
-            sender_chat=None,
-        ),
-        SimpleNamespace(
-            text="更早消息",
-            caption=None,
-            from_user=SimpleNamespace(
-                username="trinity", first_name=None, last_name=None, id=2
-            ),
-            sender_chat=None,
-        ),
+        _history_message("最新消息", "neo", 1),
+        _history_message("更早消息", "trinity", 2),
     ]
-    event = Event(
-        type="message",
-        chat_id=123,
-        message=SimpleNamespace(text="当前消息", id=99),
-        now=datetime(2024, 1, 1, tzinfo=timezone.utc),
-        trigger_id="t1",
-        rule_id="r1",
-    )
+    event = _message_event()
     ctx = AutomationContext(
         vars={},
         state=state,
@@ -563,30 +564,9 @@ async def test_include_current_does_not_duplicate_current_message(tmp_path):
     """当前消息已在历史里时，prompt 只能出现一次。"""
     state = RuleStateStore(tmp_path / "state.json", logging.getLogger("test"))
     worker = DummyWorker()
-    current = SimpleNamespace(
-        text="当前消息",
-        caption=None,
-        from_user=SimpleNamespace(
-            username="neo", first_name=None, last_name=None, id=1
-        ),
-        sender_chat=None,
-    )
-    older = SimpleNamespace(
-        text="更早消息",
-        caption=None,
-        from_user=SimpleNamespace(
-            username="trinity", first_name=None, last_name=None, id=2
-        ),
-        sender_chat=None,
-    )
-    event = Event(
-        type="message",
-        chat_id=123,
-        message=SimpleNamespace(text="当前消息", id=99),
-        now=datetime(2024, 1, 1, tzinfo=timezone.utc),
-        trigger_id="t1",
-        rule_id="r1",
-    )
+    current = _history_message("当前消息", "neo", 1)
+    older = _history_message("更早消息", "trinity", 2)
+    event = _message_event()
     ctx = AutomationContext(
         vars={},
         state=state,
@@ -613,22 +593,8 @@ async def test_include_current_marks_message_missing_from_history(tmp_path):
     """当前消息不在历史里时保留 [current] 标记。"""
     state = RuleStateStore(tmp_path / "state.json", logging.getLogger("test"))
     worker = DummyWorker()
-    older = SimpleNamespace(
-        text="更早消息",
-        caption=None,
-        from_user=SimpleNamespace(
-            username="trinity", first_name=None, last_name=None, id=2
-        ),
-        sender_chat=None,
-    )
-    event = Event(
-        type="message",
-        chat_id=123,
-        message=SimpleNamespace(text="当前消息", id=99),
-        now=datetime(2024, 1, 1, tzinfo=timezone.utc),
-        trigger_id="t1",
-        rule_id="r1",
-    )
+    older = _history_message("更早消息", "trinity", 2)
+    event = _message_event()
     ctx = AutomationContext(
         vars={},
         state=state,

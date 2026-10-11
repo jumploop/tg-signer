@@ -1,7 +1,5 @@
 import json
 import logging
-import os
-import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from pyrogram.types import Message
 
-from tg_signer.utils import replace_with_retry
+from tg_signer.utils import write_json_atomic
 
 if TYPE_CHECKING:
     from tg_signer.core import Client
@@ -194,33 +192,14 @@ class RuleStateStore:
             self.logger.debug("状态未变化，跳过写入: %s", self.path)
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        # 写临时文件再原子替换,避免崩溃/Ctrl-C 中途损坏状态文件。
-        # 临时文件名必须唯一：两个 automation 进程/线程操作同一任务目录时，
-        # 固定的 state.json.tmp 会让双方共写同一个临时文件 —— 一边以 "w" 截断、
-        # 另一边随后 os.replace，就会把一个被截断的 state.json 装上去，下次
-        # load 直接判定损坏并清空。Windows 上还会周期性地报 PermissionError。
-        tmp_path = self.path.with_name(
-            f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        write_json_atomic(
+            self.path,
+            self._data,
+            fsync=True,
+            attempts=5,
+            delay=0.05,
+            default=self._json_default,
         )
-        try:
-            with open(tmp_path, "w", encoding="utf-8") as fp:
-                json.dump(
-                    self._data,
-                    fp,
-                    ensure_ascii=False,
-                    indent=2,
-                    default=self._json_default,
-                )
-                fp.flush()
-                os.fsync(fp.fileno())
-            replace_with_retry(tmp_path, self.path, attempts=5, delay=0.05)
-        finally:
-            # 任何异常都清理临时文件,避免残留
-            if tmp_path.exists():
-                try:
-                    tmp_path.unlink()
-                except OSError:  # noqa: BLE001
-                    pass
         self._dirty = False
         self.logger.debug("状态文件写入完成: %s", self.path)
 

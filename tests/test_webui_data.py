@@ -666,12 +666,12 @@ def test_save_config_never_leaves_a_partial_file(tmp_path, monkeypatch):
     def _boom(*args, **kwargs):
         raise RuntimeError("磁盘满了")
 
-    monkeypatch.setattr(data.json, "dump", _boom)
+    monkeypatch.setattr("tg_signer.utils.json.dump", _boom)
     with pytest.raises(RuntimeError):
         data.save_config("signer", "ok", _v3_payload(), workdir=tmp_path)
 
     assert cfg_file.read_text(encoding="utf-8") == before, "配置文件被写坏了"
-    leftovers = [p.name for p in cfg_file.parent.iterdir() if ".tmp-" in p.name]
+    leftovers = [p.name for p in cfg_file.parent.iterdir() if p.name.endswith(".tmp")]
     assert leftovers == [], f"残留临时文件: {leftovers}"
 
 

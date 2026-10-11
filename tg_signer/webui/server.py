@@ -345,15 +345,35 @@ def config_suggest_name(
     return {"name": data_mod.generate_random_config_name(kind, chat, state.workdir)}
 
 
+def _config_io(kind: str):
+    if kind == "automation":
+        return (
+            lambda name, workdir: data_mod.load_automation_config(
+                name, workdir=workdir
+            ),
+            lambda name, payload, workdir: data_mod.save_automation_config(
+                name, payload, workdir=workdir
+            ),
+            lambda name, workdir: data_mod.delete_automation_config(
+                name, workdir=workdir
+            ),
+        )
+    if not data_mod.uses_dir_layout(kind):
+        raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")
+    return (
+        lambda name, workdir: data_mod.load_config(kind, name, workdir=workdir),
+        lambda name, payload, workdir: data_mod.save_config(
+            kind, name, payload, workdir=workdir
+        ),
+        lambda name, workdir: data_mod.delete_config(kind, name, workdir=workdir),
+    )
+
+
 @app.get("/api/configs/{kind}/{name}")
 def get_config(kind: str, name: str, _: None = Depends(require_auth)) -> Dict[str, Any]:
+    loader, _, _ = _config_io(kind)
     try:
-        if kind == "automation":
-            entry = data_mod.load_automation_config(name, workdir=state.workdir)
-        else:
-            if not data_mod.uses_dir_layout(kind):
-                raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")
-            entry = data_mod.load_config(kind, name, workdir=state.workdir)
+        entry = loader(name, state.workdir)
     except HTTPException:
         raise
     except FileNotFoundError as exc:
@@ -370,15 +390,10 @@ def save_config(
     payload: Dict[str, Any],
     _: None = Depends(require_auth),
 ) -> Dict[str, Any]:
+    loader, saver, _ = _config_io(kind)
     try:
-        if kind == "automation":
-            data_mod.save_automation_config(name, payload, workdir=state.workdir)
-            entry = data_mod.load_automation_config(name, workdir=state.workdir)
-        else:
-            if not data_mod.uses_dir_layout(kind):
-                raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")
-            data_mod.save_config(kind, name, payload, workdir=state.workdir)
-            entry = data_mod.load_config(kind, name, workdir=state.workdir)
+        saver(name, payload, state.workdir)
+        entry = loader(name, state.workdir)
     except HTTPException:
         raise
     except (ValueError, TypeError) as exc:
@@ -390,13 +405,9 @@ def save_config(
 def delete_config(
     kind: str, name: str, _: None = Depends(require_auth)
 ) -> Dict[str, bool]:
+    _, _, deleter = _config_io(kind)
     try:
-        if kind == "automation":
-            data_mod.delete_automation_config(name, workdir=state.workdir)
-        else:
-            if not data_mod.uses_dir_layout(kind):
-                raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")
-            data_mod.delete_config(kind, name, workdir=state.workdir)
+        deleter(name, state.workdir)
     except HTTPException:
         raise
     except FileNotFoundError as exc:

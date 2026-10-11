@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import os
 import pathlib
 import shutil
 import threading
@@ -20,7 +19,7 @@ from tg_signer.core import (
     get_proxy,
     write_latest_chats,
 )
-from tg_signer.utils import resolve_under
+from tg_signer.utils import resolve_under, write_json_atomic
 
 # 每账号一个登录会话,会话内持有一个 daemon 线程 + 独立 event loop + 一个
 # Client。用户 send_code 之后中途放弃(关页面 / 不发验证码)时这些资源没人回收,
@@ -109,10 +108,7 @@ def _update_account_users(workdir: pathlib.Path, mutate) -> None:
     with _ACCOUNT_USERS_LOCK:
         data = load_account_users(workdir)
         result = mutate(data)
-        payload = json.dumps(data, ensure_ascii=False, indent=2)
-        tmp = mapping_file.with_suffix(mapping_file.suffix + ".tmp")
-        tmp.write_text(payload, encoding="utf-8")
-        os.replace(tmp, mapping_file)
+        write_json_atomic(mapping_file, data)
         return result
 
 

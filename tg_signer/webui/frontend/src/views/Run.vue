@@ -204,6 +204,16 @@ watch(kind, () => {
   loadTasks()
 })
 
+async function postRun(path, payload, onSuccess = showMsg) {
+  try {
+    const { data } = await api.post(path, payload)
+    onSuccess(data)
+    refresh()
+  } catch (error) {
+    ElMessage.error(errMsg(error))
+  }
+}
+
 async function start() {
   if (!account.value) {
     ElMessage.warning('请选择账号')
@@ -214,22 +224,19 @@ async function start() {
     return
   }
   starting.value = true
-  try {
-    const { data } = await api.post('/api/run/start', {
+  await postRun(
+    '/api/run/start',
+    {
       kind: kind.value,
       tasks: selectedTasks.value,
       account: account.value,
-    })
-    showMsg(data)
-    if (data.ok) {
-      selectedTasks.value = []
+    },
+    (data) => {
+      showMsg(data)
+      if (data.ok) selectedTasks.value = []
     }
-    refresh()
-  } catch (error) {
-    ElMessage.error(errMsg(error))
-  } finally {
-    starting.value = false
-  }
+  )
+  starting.value = false
 }
 
 async function stop() {
@@ -238,41 +245,24 @@ async function stop() {
     return
   }
   stopping.value = true
-  try {
-    const { data } = await api.post('/api/run/stop', {
-      kind: kind.value,
-      account: account.value,
-    })
-    showMsg(data)
-    refresh()
-  } catch (error) {
-    ElMessage.error(errMsg(error))
-  } finally {
-    stopping.value = false
-  }
+  await postRun('/api/run/stop', {
+    kind: kind.value,
+    account: account.value,
+  })
+  stopping.value = false
 }
 
 async function stopRow(row) {
-  try {
-    const { data } = await api.post('/api/run/stop', {
-      kind: row.kind,
-      account: row.account,
-    })
-    showMsg(data)
-    refresh()
-  } catch (error) {
-    ElMessage.error(errMsg(error))
-  }
+  await postRun('/api/run/stop', {
+    kind: row.kind,
+    account: row.account,
+  })
 }
 
 async function shutdownAll() {
-  try {
-    const { data } = await api.post('/api/run/shutdown')
+  await postRun('/api/run/shutdown', undefined, (data) => {
     ElMessage.success('已停止 ' + data.stopped.length + ' 个进程')
-    refresh()
-  } catch (error) {
-    ElMessage.error(errMsg(error))
-  }
+  })
 }
 
 function showMsg(data) {

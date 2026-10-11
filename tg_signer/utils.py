@@ -1,6 +1,8 @@
+import json
 import os
 import pathlib
 import re
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Literal, TypeAlias
@@ -25,6 +27,36 @@ def replace_with_retry(
             if attempt == attempts - 1:
                 raise
             time.sleep(delay * (attempt + 1))
+
+
+def write_json_atomic(
+    path: str | os.PathLike[str],
+    payload,
+    *,
+    fsync: bool = False,
+    attempts: int = 1,
+    delay: float = 0.0,
+    default=None,
+    before_replace=None,
+) -> None:
+    """Write JSON through a same-directory temporary file and atomic replace."""
+    target = pathlib.Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as fp:
+            json.dump(payload, fp, ensure_ascii=False, indent=2, default=default)
+            fp.flush()
+            if fsync:
+                os.fsync(fp.fileno())
+        if before_replace is not None:
+            before_replace(tmp)
+        if attempts > 1:
+            replace_with_retry(tmp, target, attempts=attempts, delay=delay)
+        else:
+            os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def message_text(message) -> str:
