@@ -1,9 +1,9 @@
 <template>
   <el-card shadow="never" class="chats-card">
-    <div class="chats-intro">
+    <div class="ts-intro">
       <div>
-        <span class="section-label">对话资源</span>
-        <p class="section-caption">从已登录账号读取群组和频道，快速复制 ID 或填入配置。</p>
+        <span class="ts-section-label">对话资源</span>
+        <p class="ts-section-caption">从已登录账号读取群组和频道，快速复制 ID 或填入配置。</p>
       </div>
       <el-tag type="info" effect="light" round>{{ chats.length }} 个对话</el-tag>
     </div>
@@ -17,7 +17,7 @@
       <el-button :loading="cacheLoading" @click="refreshCache">读取缓存</el-button>
     </div>
     <div
-      class="status-line"
+      class="ts-callout status-line"
       :class="{ 'is-empty': !statusText }"
       role="status"
       aria-live="polite"
@@ -25,9 +25,9 @@
       <span class="status-dot" />
       <span>{{ statusText || '尚未读取对话数据' }}</span>
     </div>
-    <div class="table-heading">
+    <div class="ts-table-heading">
       <span>群组 / 频道</span>
-      <span class="table-heading__meta">支持复制到 Signer 或 Automation</span>
+      <span class="ts-table-heading__meta">支持复制到 Signer 或 Automation</span>
     </div>
     <el-table v-loading="loading || cacheLoading" :data="chats" max-height="560" class="chats-table">
       <el-table-column prop="id" label="ID" width="140" />
@@ -162,27 +162,8 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.chats-intro,
-.table-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-}
-.chats-intro {
+.ts-intro {
   margin-bottom: 20px;
-}
-.section-label {
-  display: block;
-  margin-bottom: 5px;
-  color: var(--ts-ink);
-  font-size: 16px;
-  font-weight: 700;
-}
-.section-caption {
-  margin: 0;
-  color: var(--ts-muted);
-  font-size: 13px;
 }
 .chats-controls {
   display: flex;
@@ -195,17 +176,9 @@ onMounted(() => {
   width: 240px;
 }
 .status-line {
-  display: flex;
   align-items: center;
-  gap: 8px;
   min-height: 32px;
   margin-bottom: 22px;
-  padding: 8px 11px;
-  border: 1px solid #D9E7FA;
-  border-radius: 9px;
-  background: #F5F9FF;
-  color: #47617F;
-  font-size: 12px;
 }
 .status-line.is-empty {
   border-color: var(--ts-line);
@@ -223,21 +196,9 @@ onMounted(() => {
   background: var(--ts-faint);
   box-shadow: none;
 }
-.table-heading {
-  margin-bottom: 12px;
-  color: var(--ts-ink);
-  font-size: 14px;
-  font-weight: 700;
-}
-.table-heading__meta {
-  color: var(--ts-muted);
-  font-size: 12px;
-  font-weight: 400;
-}
-
 @media (max-width: 600px) {
-  .chats-intro,
-  .table-heading {
+  .ts-intro,
+  .ts-table-heading {
     align-items: flex-start;
     flex-direction: column;
   }

@@ -2,8 +2,8 @@
   <div class="configs-shell">
     <div class="configs-intro">
       <div>
-        <span class="section-label">配置中心</span>
-        <p class="section-caption">选择配置类型，开始编辑 JSON、运行模板或维护模型连接。</p>
+        <span class="ts-section-label">配置中心</span>
+        <p class="ts-section-caption">选择配置类型，开始编辑 JSON、运行模板或维护模型连接。</p>
       </div>
       <el-tag type="info" effect="light" round>JSON 配置</el-tag>
     </div>
@@ -82,18 +82,6 @@ function clearPrefill() {
   justify-content: space-between;
   gap: 18px;
   margin-bottom: 20px;
-}
-.section-label {
-  display: block;
-  margin-bottom: 5px;
-  color: var(--ts-ink);
-  font-size: 16px;
-  font-weight: 700;
-}
-.section-caption {
-  margin: 0;
-  color: var(--ts-muted);
-  font-size: 13px;
 }
 .config-tabs :deep(.el-tabs__header) {
   margin-bottom: 18px;

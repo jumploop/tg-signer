@@ -456,7 +456,7 @@ def test_logs_expose_task_logs_from_subdirectories(client, tmp_path):
     """runner.py 按 <kind>-<account> 分子目录写日志，列表与读取都必须覆盖它。
 
     历史上 list_log_files() 用 glob 而非 rglob，且读取走只允许直接子项的
-    resolve_within()，导致任务日志既列不出来也读不到，日志页只剩一个 0 字节的
+    resolve_log_under()，导致任务日志既列不出来也读不到，日志页只剩一个 0 字节的
     主日志顶着，表现为「整页空白」。
     """
     log_dir = tmp_path / "logs"

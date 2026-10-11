@@ -446,13 +446,6 @@ def get_client(
     return client
 
 
-def make_dirs(path: pathlib.Path, exist_ok=True):
-    path = pathlib.Path(path)
-    if not path.is_dir():
-        os.makedirs(path, exist_ok=exist_ok)
-    return path
-
-
 ConfigT = TypeVar("ConfigT", bound=BaseJSONConfig)
 ApiCallResultT = TypeVar("ApiCallResultT")
 
@@ -553,35 +546,32 @@ class BaseUserWorker(Generic[ConfigT]):
     def ensure_ctx(self):
         return {}
 
-    def app_run(self, coroutine=None):
+    def app_run(self, coroutine):
         # 返回协程结果:调用方(如 CLI 的 run_once)要靠它判断本轮签到是否成功,
         # 丢掉返回值就只能一律当成成功。
-        if coroutine is not None:
-            run = self.loop.run_until_complete
-            return run(coroutine)
-        self.app.run()
+        return self.loop.run_until_complete(coroutine)
 
     @property
     def workdir(self) -> pathlib.Path:
-        workdir = self._workdir
-        make_dirs(workdir)
-        return pathlib.Path(workdir)
+        workdir = pathlib.Path(self._workdir)
+        workdir.mkdir(parents=True, exist_ok=True)
+        return workdir
 
     @property
     def tasks_dir(self):
         tasks_dir = self.workdir / self._tasks_dir
-        make_dirs(tasks_dir)
-        return pathlib.Path(tasks_dir)
+        tasks_dir.mkdir(parents=True, exist_ok=True)
+        return tasks_dir
 
     @property
     def task_dir(self):
         task_dir = self.tasks_dir / self.task_name
-        make_dirs(task_dir)
+        task_dir.mkdir(parents=True, exist_ok=True)
         return task_dir
 
     def get_user_dir(self, user: User):
         user_dir = self.workdir / "users" / str(user.id)
-        make_dirs(user_dir)
+        user_dir.mkdir(parents=True, exist_ok=True)
         return user_dir
 
     @property
@@ -598,16 +588,7 @@ class BaseUserWorker(Generic[ConfigT]):
 
     def log(self, msg, level: str = "INFO", **kwargs):
         msg = f"账户「{self._account}」- 任务「{self.task_name}」: {msg}"
-        if level.upper() == "INFO":
-            logger.info(msg, **kwargs)
-        elif level.upper() == "WARNING":
-            logger.warning(msg, **kwargs)
-        elif level.upper() == "ERROR":
-            logger.error(msg, **kwargs)
-        elif level.upper() == "CRITICAL":
-            logger.critical(msg, **kwargs)
-        else:
-            logger.debug(msg, **kwargs)
+        logger.log(getattr(logging, level.upper(), logging.DEBUG), msg, **kwargs)
 
     async def _call_telegram_api(
         self,
@@ -858,7 +839,7 @@ class BaseUserWorker(Generic[ConfigT]):
         text: str,
         delete_after: int = None,
         message_thread_id: Optional[int] = None,
-        **kwargs,
+        reply_to_message_id: Optional[int] = None,
     ):
         """
         发送文本消息
@@ -866,12 +847,13 @@ class BaseUserWorker(Generic[ConfigT]):
         :param text:
         :param delete_after: 秒, 发送消息后进行删除，``None`` 表示不删除, ``0`` 表示立即删除.
         :param message_thread_id: 群组内话题ID
-        :param kwargs:
         :return:
         """
-        send_kwargs = dict(kwargs)
+        send_kwargs = {}
         if message_thread_id is not None:
             send_kwargs["message_thread_id"] = message_thread_id
+        if reply_to_message_id is not None:
+            send_kwargs["reply_to_message_id"] = reply_to_message_id
         message = await self._call_telegram_api(
             "messages.SendMessage",
             lambda: self.app.send_message(chat_id, text, **send_kwargs),
@@ -887,14 +869,12 @@ class BaseUserWorker(Generic[ConfigT]):
         emoji: str = "🎲",
         delete_after: int = None,
         message_thread_id: Optional[int] = None,
-        **kwargs,
     ):
         """
         发送DICE类型消息
         :param chat_id:
         :param emoji: Should be one of "🎲", "🎯", "🏀", "⚽", "🎳", or "🎰".
         :param delete_after:
-        :param kwargs:
         :return:
         """
         emoji = emoji.strip()
@@ -903,7 +883,7 @@ class BaseUserWorker(Generic[ConfigT]):
                 f"Warning, emoji should be one of {', '.join(DICE_EMOJIS)}",
                 level="WARNING",
             )
-        send_kwargs = dict(kwargs)
+        send_kwargs = {}
         if message_thread_id is not None:
             send_kwargs["message_thread_id"] = message_thread_id
         message = await self._call_telegram_api(
@@ -1078,18 +1058,16 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     @property
     def sign_record_file(self):
         sign_record_dir = self.task_dir / str(self.user.id)
-        make_dirs(sign_record_dir)
+        sign_record_dir.mkdir(parents=True, exist_ok=True)
         return sign_record_dir / "sign_record.json"
 
     @property
     def legacy_sign_record_file(self):
         return self.task_dir / "sign_record.json"
 
-    def _ask_actions(
-        self, input_: UserInput, available_actions: List[SupportAction] = None
-    ) -> List[ActionT]:
+    def _ask_actions(self, input_: UserInput) -> List[ActionT]:
         print(f"{input_.index_str}开始配置<动作>，请按照实际签到顺序配置。")
-        available_actions = available_actions or list(SupportAction)
+        available_actions = list(SupportAction)
         actions = []
         while True:
             try:
@@ -1624,18 +1602,12 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         text: str,
         delete_after: int = None,
         message_thread_id: Optional[int] = None,
-        **kwargs,
     ):
-        if self.user is None:
-            await self.login(print_chat=False)
-        async with self.app:
-            await self.send_message(
-                chat_id,
-                text,
-                delete_after,
-                message_thread_id=message_thread_id,
-                **kwargs,
+        await self._run_cli_action(
+            lambda: self.send_message(
+                chat_id, text, delete_after, message_thread_id=message_thread_id
             )
+        )
 
     async def send_dice_cli(
         self,
@@ -1643,18 +1615,18 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         emoji: str = "🎲",
         delete_after: int = None,
         message_thread_id: Optional[int] = None,
-        **kwargs,
     ):
+        await self._run_cli_action(
+            lambda: self.send_dice(
+                chat_id, emoji, delete_after, message_thread_id=message_thread_id
+            )
+        )
+
+    async def _run_cli_action(self, action):
         if self.user is None:
             await self.login(print_chat=False)
         async with self.app:
-            await self.send_dice(
-                chat_id,
-                emoji,
-                delete_after,
-                message_thread_id=message_thread_id,
-                **kwargs,
-            )
+            await action()
 
     async def _on_message(self, client: Client, message: Message):
         message_thread_id = getattr(message, "message_thread_id", None)
@@ -1692,9 +1664,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         if reply_markup := message.reply_markup:
             if isinstance(reply_markup, InlineKeyboardMarkup):
                 flat_buttons = (b for row in reply_markup.inline_keyboard for b in row)
-                option_to_btn: dict[str, InlineKeyboardButton] = {}
                 for btn in flat_buttons:
-                    option_to_btn[btn.text] = btn
                     if action.text in btn.text:
                         self.log(f"点击按钮: {btn.text}")
                         return await self.request_callback_answer(
@@ -1872,7 +1842,6 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         chat_id: Union[int, str],
         message_id: int,
         callback_data: Union[str, bytes],
-        **kwargs,
     ) -> bool:
         """点击按钮，返回是否真的点成功。
 
@@ -1889,7 +1858,6 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     chat_id,
                     message_id,
                     callback_data=callback_data,
-                    **kwargs,
                 ),
             )
             self.log("点击完成")

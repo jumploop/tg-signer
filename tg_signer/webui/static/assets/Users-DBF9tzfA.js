@@ -1,10 +1,10 @@
-import { E as ElMessage } from './index-BtUHGqts.js';
-import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, Q as asArray, j as errMsg, r as resolveComponent, g as ref, M as resolveDirective, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, i as unref, T as info_filled_default, I as toDisplayString, N as withDirectives, K as computed } from './index-BpR2pxEj.js';
+import { E as ElMessage } from './index-CSzpTkra.js';
+import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, Q as asArray, j as errMsg, r as resolveComponent, g as ref, M as resolveDirective, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, i as unref, T as info_filled_default, I as toDisplayString, N as withDirectives, K as computed } from './index-VXpsw_ek.js';
 
 const _hoisted_1 = { class: "users-intro" };
-const _hoisted_2 = { class: "users-note" };
-const _hoisted_3 = { class: "table-heading" };
-const _hoisted_4 = { class: "table-heading__meta" };
+const _hoisted_2 = { class: "ts-callout users-note" };
+const _hoisted_3 = { class: "ts-table-heading" };
+const _hoisted_4 = { class: "ts-table-heading__meta" };
 const _hoisted_5 = { class: "user-cell" };
 const _hoisted_6 = { class: "user-avatar" };
 
@@ -61,8 +61,8 @@ return (_ctx, _cache) => {
     default: withCtx(() => [
       createBaseVNode("div", _hoisted_1, [
         _cache[2] || (_cache[2] = createBaseVNode("div", null, [
-          createBaseVNode("span", { class: "section-label" }, "用户信息"),
-          createBaseVNode("p", { class: "section-caption" }, "查看本地缓存的账户资料与最近对话，不触发 Telegram 网络请求。")
+          createBaseVNode("span", { class: "ts-section-label" }, "用户信息"),
+          createBaseVNode("p", { class: "ts-section-caption" }, "查看本地缓存的账户资料与最近对话，不触发 Telegram 网络请求。")
         ], -1)),
         createVNode(_component_el_button, {
           loading: loading.value,
@@ -199,6 +199,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Users = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-167023e3"]]);
+const Users = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-c0cfeb9e"]]);
 
 export { Users as default };

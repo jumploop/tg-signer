@@ -114,15 +114,6 @@ def format_validation_error(exc: Exception, limit: int = 8) -> str:
     return "; ".join(parts)
 
 
-def pad_text_to_width(text: str, target_width: int) -> str:
-    """将文本左对齐填充到指定宽度（CJK 按 2 列计）。"""
-    current_width = sum(2 if ord(char) > 127 else 1 for char in text)
-    padding_needed = target_width - current_width
-    if padding_needed <= 0:
-        return text
-    return text + " " * padding_needed
-
-
 class BaseJSONConfig(BaseModel):
     version: ClassVar[Union[str, int]] = 0
     olds: ClassVar[Optional[List[Type["BaseJSONConfig"]]]] = None
@@ -377,87 +368,6 @@ class SignChatV3(BaseJSONConfig):
     def _parse_chat_id(cls, value):
         return parse_chat_id_or_username(value)
 
-    def __repr__(self) -> str:
-        return (
-            f"SignChatV3(chat_id={self.chat_id}, "
-            f"message_thread_id={self.message_thread_id}, "
-            f"delete_after={self.delete_after}, "
-            f"actions=[{len(self.actions)} actions]),"
-            f"action_interval={self.action_interval}"
-        )
-
-    def __str__(self) -> str:
-        # 设置总宽度（不包括边框字符）
-        content_width = 48
-
-        # 构建边框
-        top_border = "╔" + "═" * content_width + "╗"
-        bottom_border = "╚" + "═" * content_width + "╝"
-        separator = "╟" + "─" * content_width + "╢"
-
-        # 构建标题部分
-        chat_id_text = f"Chat ID: {self.chat_id}"
-        title = f"║ {pad_text_to_width(chat_id_text, content_width - 2)} ║"
-
-        # 构建name部分
-        name_text = f"Name: {self.name or '-'}"
-        name_info = f"║ {pad_text_to_width(name_text, content_width - 2)} ║"
-
-        # 构建message_thread_id部分
-        thread_id_text = f"Message Thread ID: {self.message_thread_id or '-'}"
-        thread_id_info = f"║ {pad_text_to_width(thread_id_text, content_width - 2)} ║"
-
-        # 构建删除时间部分
-        delete_text = f"Delete After: {self.delete_after or '-'}"
-        delete_info = f"║ {pad_text_to_width(delete_text, content_width - 2)} ║"
-
-        # 构建actions部分
-        actions_header_text = "Actions Flow:"
-        actions_header = (
-            f"║ {pad_text_to_width(actions_header_text, content_width - 2)} ║"
-        )
-        actions_lines = []
-
-        for i, action in enumerate(self.actions, 1):
-            action_type = action.action.desc
-            details = ""
-
-            if isinstance(action, SendTextAction):
-                text_preview = (
-                    action.text[:15] + "..." if len(action.text) > 15 else action.text
-                )
-                details = f"Text: {text_preview}"
-            elif isinstance(action, SendDiceAction):
-                details = f"Dice: {action.dice}"
-            elif isinstance(action, ClickKeyboardByTextAction):
-                text_preview = (
-                    action.text[:15] + "..." if len(action.text) > 15 else action.text
-                )
-                details = f"Click: {text_preview}"
-
-            if details:
-                action_text = f"{i}. [{action_type}] {details}"
-            else:
-                action_text = f"{i}. [{action_type}]"
-
-            action_line = f"║ {pad_text_to_width(action_text, content_width - 2)} ║"
-            actions_lines.append(action_line)
-
-        # 组合所有部分
-        result = [
-            top_border,
-            title,
-            name_info,
-            thread_id_info,
-            delete_info,
-            separator,
-            actions_header,
-            *actions_lines,
-            bottom_border,
-        ]
-
-        return "\n".join(result)
-
     @property
     def requires_ai(self) -> bool:
         ai_actions = {
@@ -471,7 +381,6 @@ class SignConfigV3(BaseJSONConfig):
     version: ClassVar = 3
     olds: ClassVar = [SignConfigV2]
 
-    _version: Literal[3] = 3
     chats: List[SignChatV3]
     sign_at: str  # 签到时间，time或crontab表达式
     # 下界必须校验:负数会让 random.randint(0, random_seconds) 抛

@@ -143,6 +143,31 @@ def _write_json_atomic(path: Path, payload: Any) -> None:
         write_json_atomic(path, payload, attempts=6, delay=0.02)
 
 
+def _validate_config(
+    cfg_cls: type[BaseJSONConfig],
+    content: Dict[str, Any] | str | BaseJSONConfig,
+) -> BaseJSONConfig:
+    if isinstance(content, BaseJSONConfig):
+        return content
+    data = json.loads(content) if isinstance(content, str) else content
+    cfg, _from_old, err = cfg_cls.load_checked(data)
+    if cfg is None:
+        raise ValueError(err or "配置校验失败")
+    return cfg
+
+
+def _config_entry(
+    name: str, path: Path, cfg: BaseJSONConfig, from_old: bool
+) -> ConfigEntry:
+    return ConfigEntry(
+        name=name,
+        path=path,
+        updated_from_old=from_old,
+        payload=cfg.to_jsonable(),
+        cfg=cfg,
+    )
+
+
 def list_task_names(
     kind: ConfigKind, workdir: Optional[Path | str] = None
 ) -> List[str]:
@@ -203,13 +228,7 @@ def load_automation_config(
     cfg, from_old, err = AutomationConfig.load_checked(payload)
     if cfg is None:
         raise ValueError(f"无法解析配置: {config_file}（{err or '未知原因'}）")
-    return ConfigEntry(
-        name=name,
-        path=config_file,
-        updated_from_old=from_old,
-        payload=cfg.to_jsonable(),
-        cfg=cfg,
-    )
+    return _config_entry(name, config_file, cfg, from_old)
 
 
 def save_automation_config(
@@ -218,13 +237,7 @@ def save_automation_config(
     workdir: Optional[Path | str] = None,
 ) -> Path:
     """校验并写入 automations/<name>/config.json（JSON 优先于 YAML）。"""
-    if isinstance(content, BaseJSONConfig):
-        cfg = content
-    else:
-        data = json.loads(content) if isinstance(content, str) else content
-        cfg, _from_old, err = AutomationConfig.load_checked(data)
-        if cfg is None:
-            raise ValueError(err or "配置校验失败")
+    cfg = _validate_config(AutomationConfig, content)
     config_dir = resolve_under(get_workdir(workdir) / "automations", name)
     config_file = config_dir / "config.json"
     _write_json_atomic(config_file, cfg.to_jsonable())
@@ -255,41 +268,6 @@ def delete_automation_config(name: str, workdir: Optional[Path | str] = None) ->
         )
     _remove_config_dir(config_file.parent)
     return config_file
-
-
-def resolve_chat_id_for_selector(
-    requested: "int | str | None",
-    chats_by_id: Dict[str, Dict[str, Any]],
-) -> Optional[str]:
-    """把任意形式的 chat_id(int / str / "@username" / "username")解析成
-    chats_by_id 中存在的 key(str 化的 chat.id)。
-
-    匹配规则:
-    1. ``int`` → 直接 str(value) 命中 chat.id;
-    2. ``str`` 去掉前导 ``@``,先按 chat.id 字符串命中,再按 chat.username 匹配(忽略大小写);
-
-    未命中返回 None。
-    """
-    if requested is None or not chats_by_id:
-        return None
-    stripped: Any
-    if isinstance(requested, bool):
-        # bool 是 int 子类,但不应被视为 chat_id
-        return None
-    if isinstance(requested, int):
-        stripped = str(requested)
-        return stripped if stripped in chats_by_id else None
-    if isinstance(requested, str):
-        s = requested.strip().lstrip("@")
-        if not s:
-            return None
-        if s in chats_by_id:
-            return s
-        for cid, chat in chats_by_id.items():
-            username = chat.get("username")
-            if isinstance(username, str) and username.lower() == s.lower():
-                return cid
-    return None
 
 
 def generate_random_config_name(
@@ -344,10 +322,7 @@ def load_config(
     # 都截断重写一次配置文件,把并发读撞上「半个文件」的概率放大。迁移落盘交给
     # 用户显式保存时完成 —— 这既与 load_automation_config 一致,也与前端提示
     # 文案「保存时将写入新格式」一致。
-    payload = cfg.to_jsonable()
-    return ConfigEntry(
-        name=name, path=config_file, updated_from_old=from_old, payload=payload, cfg=cfg
-    )
+    return _config_entry(name, config_file, cfg, from_old)
 
 
 def save_config(
@@ -357,13 +332,7 @@ def save_config(
     workdir: Optional[Path | str] = None,
 ) -> Path:
     cfg_cls = CONFIG_KINDS[kind].cfg_cls
-    if isinstance(content, BaseJSONConfig):
-        cfg = content
-    else:
-        data = json.loads(content) if isinstance(content, str) else content
-        cfg, _from_old, err = cfg_cls.load_checked(data)
-        if cfg is None:
-            raise ValueError(err or "配置校验失败")
+    cfg = _validate_config(cfg_cls, content)
     config_file = _config_path(kind, name, workdir)
     _write_json_atomic(config_file, cfg.to_jsonable())
     return config_file
@@ -606,7 +575,7 @@ def _resolve_log_path(
     但也不能像以前那样原样返回 —— 否则 ``?path=<任意绝对路径>`` 就是一个任意
     文件读取原语(可读到 ``*.session_string`` / ``.openai_config.json``)。
 
-    用 ``resolve_log_under`` 而非 ``resolve_within``:后者只允许直接子项,会把
+    用 ``resolve_log_under``:它只允许直接子项或一层任务子目录,并强制
     ``logs/<kind>-<account>/tg-signer.log`` 判成越界(0.10.4 收紧 P1-1 时的连带
     副作用),导致「文件能列出来但读不到」。``resolve_log_under`` 放宽到一层子目录
     并强制 ``.log`` 后缀,任意文件读取面没有变大。

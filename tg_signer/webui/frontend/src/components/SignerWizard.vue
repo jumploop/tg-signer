@@ -14,7 +14,7 @@
     </el-steps>
     <div class="wizard-progress">
       <div>
-        <span class="section-label">{{ step === 0 ? '基础设置' : '签到任务' }}</span>
+        <span class="ts-section-label">{{ step === 0 ? '基础设置' : '签到任务' }}</span>
         <p class="hint">
           {{ step === 0 ? '先定义任务名称和执行时间。' : '为每个群组或频道配置要执行的动作。' }}
         </p>
@@ -443,12 +443,8 @@ async function saveAll() {
   border-radius: 12px;
   background: #FAFCFF;
 }
-.section-label {
-  display: block;
-  margin-bottom: 5px;
-  color: var(--ts-ink);
+.ts-section-label {
   font-size: 15px;
-  font-weight: 700;
 }
 .wizard-progress .hint {
   margin: 0;

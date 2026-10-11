@@ -1,9 +1,9 @@
 <template>
   <el-card shadow="never" class="run-card">
-    <div class="run-intro">
+    <div class="ts-intro">
       <div>
-        <span class="section-label">启动控制</span>
-        <p class="section-caption">选择账号和任务范围，集中启动或停止后台进程。</p>
+        <span class="ts-section-label">启动控制</span>
+        <p class="ts-section-caption">选择账号和任务范围，集中启动或停止后台进程。</p>
       </div>
       <el-tag :type="runningCount ? 'success' : 'info'" effect="light" round>
         {{ runningCount ? `${runningCount} 个进程运行中` : '当前无运行进程' }}
@@ -67,7 +67,7 @@
         <el-button type="danger" plain @click="shutdownAll">全部停止</el-button>
       </el-form-item>
     </el-form>
-    <div class="run-note">
+    <div class="ts-callout run-note">
       <el-icon><InfoFilled /></el-icon>
       <span>
       同一账号同类型的多个任务会合并到一个子进程运行（共享 Client，避免 SQLite
@@ -75,9 +75,9 @@
       &lt;workdir&gt;/logs/，可在「日志」页查看。
       </span>
     </div>
-    <div class="table-heading">
+    <div class="ts-table-heading">
       <span>运行中的进程</span>
-      <span class="table-heading__meta">每 5 秒自动刷新</span>
+      <span class="ts-table-heading__meta">每 5 秒自动刷新</span>
     </div>
     <el-table :data="rows">
       <el-table-column label="类型" width="180">
@@ -282,27 +282,8 @@ onUnmounted(() => clearInterval(timer))
 </script>
 
 <style scoped>
-.run-intro,
-.table-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-}
-.run-intro {
+.ts-intro {
   margin-bottom: 22px;
-}
-.section-label {
-  display: block;
-  margin-bottom: 5px;
-  color: var(--ts-ink);
-  font-size: 16px;
-  font-weight: 700;
-}
-.section-caption {
-  margin: 0;
-  color: var(--ts-muted);
-  font-size: 13px;
 }
 .run-form {
   display: grid;
@@ -341,33 +322,8 @@ onUnmounted(() => clearInterval(timer))
   white-space: nowrap;
 }
 .run-note {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
   margin: 4px 0 26px;
   padding: 12px 14px;
-  border: 1px solid #D9E7FA;
-  border-radius: 10px;
-  background: #F5F9FF;
-  color: #47617F;
-  font-size: 12px;
-  line-height: 1.6;
-}
-.run-note .el-icon {
-  flex-shrink: 0;
-  margin-top: 2px;
-  color: var(--ts-sky);
-}
-.table-heading {
-  margin-bottom: 12px;
-  color: var(--ts-ink);
-  font-size: 14px;
-  font-weight: 700;
-}
-.table-heading__meta {
-  color: var(--ts-muted);
-  font-size: 12px;
-  font-weight: 400;
 }
 .task-tag {
   margin: 2px 4px 2px 0;
@@ -383,8 +339,8 @@ onUnmounted(() => clearInterval(timer))
 }
 
 @media (max-width: 600px) {
-  .run-intro,
-  .table-heading {
+  .ts-intro,
+  .ts-table-heading {
     align-items: flex-start;
     flex-direction: column;
   }

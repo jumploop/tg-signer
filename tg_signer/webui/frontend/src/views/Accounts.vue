@@ -2,23 +2,23 @@
   <el-card shadow="never" class="accounts-card">
     <div class="accounts-intro">
       <div>
-        <span class="section-label">账号会话</span>
-        <p class="section-caption">管理已登录的 Telegram 会话，检查授权状态或添加新账号。</p>
+        <span class="ts-section-label">账号会话</span>
+        <p class="ts-section-caption">管理已登录的 Telegram 会话，检查授权状态或添加新账号。</p>
       </div>
       <el-button type="primary" @click="openLogin">登录新账号</el-button>
     </div>
     <div class="account-metrics">
       <div class="account-metric">
-        <span class="metric-value">{{ accounts.length }}</span>
-        <span class="metric-label">已发现账号</span>
+        <span class="ts-metric-value">{{ accounts.length }}</span>
+        <span class="ts-metric-label">已发现账号</span>
       </div>
       <div class="account-metric">
-        <span class="metric-value">{{ sessionCount }}</span>
-        <span class="metric-label">可用会话</span>
+        <span class="ts-metric-value">{{ sessionCount }}</span>
+        <span class="ts-metric-label">可用会话</span>
       </div>
       <div class="account-metric">
-        <span class="metric-value metric-value--muted">本地</span>
-        <span class="metric-label">凭据存储</span>
+        <span class="ts-metric-value ts-metric-value--muted">本地</span>
+        <span class="ts-metric-label">凭据存储</span>
       </div>
     </div>
     <el-table v-loading="loading" :data="accounts">
@@ -68,7 +68,7 @@
         <el-step title="发送验证码" />
         <el-step title="完成登录" />
       </el-steps>
-      <div class="dialog-callout">
+      <div class="ts-callout dialog-callout">
         <el-icon><InfoFilled /></el-icon>
         <span>验证码会发送到 Telegram 对话，请保持账号可接收消息。</span>
       </div>
@@ -267,18 +267,6 @@ onMounted(refresh)
   gap: 18px;
   margin-bottom: 20px;
 }
-.section-label {
-  display: block;
-  margin-bottom: 5px;
-  color: var(--ts-ink);
-  font-size: 16px;
-  font-weight: 700;
-}
-.section-caption {
-  margin: 0;
-  color: var(--ts-muted);
-  font-size: 13px;
-}
 .account-metrics {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -294,42 +282,13 @@ onMounted(refresh)
   border-radius: 12px;
   background: #FAFCFF;
 }
-.metric-value {
-  color: var(--ts-ink);
-  font-size: 22px;
-  font-weight: 750;
-  line-height: 1;
-}
-.metric-value--muted {
-  color: var(--ts-muted);
-  font-size: 18px;
-}
-.metric-label {
-  color: var(--ts-muted);
-  font-size: 12px;
-}
 .session-file {
   color: var(--ts-ink-2);
   font-family: var(--el-font-family-mono);
   font-size: 12px;
 }
 .dialog-callout {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
   margin: -2px 0 18px;
-  padding: 11px 13px;
-  border: 1px solid #D9E7FA;
-  border-radius: 10px;
-  background: #F5F9FF;
-  color: #47617F;
-  font-size: 12px;
-  line-height: 1.6;
-}
-.dialog-callout .el-icon {
-  flex-shrink: 0;
-  margin-top: 2px;
-  color: var(--ts-sky);
 }
 .kind-tag {
   margin-right: 4px;

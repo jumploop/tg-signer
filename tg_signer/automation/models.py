@@ -48,17 +48,7 @@ class AutomationContext:
     persist_vars: Optional[Dict[str, Any]] = None
 
     def log(self, msg: str, level: str = "INFO") -> None:
-        normalized_level = level.upper()
-        if normalized_level == "ERROR":
-            self.logger.error(msg)
-        elif normalized_level == "WARNING":
-            self.logger.warning(msg)
-        elif normalized_level == "CRITICAL":
-            self.logger.critical(msg)
-        elif normalized_level == "DEBUG":
-            self.logger.debug(msg)
-        else:
-            self.logger.info(msg)
+        self.logger.log(getattr(logging, level.upper(), logging.INFO), msg)
 
 
 class RuleStateStore:

@@ -2,18 +2,18 @@
   <el-card shadow="never" class="users-card">
     <div class="users-intro">
       <div>
-        <span class="section-label">用户信息</span>
-        <p class="section-caption">查看本地缓存的账户资料与最近对话，不触发 Telegram 网络请求。</p>
+        <span class="ts-section-label">用户信息</span>
+        <p class="ts-section-caption">查看本地缓存的账户资料与最近对话，不触发 Telegram 网络请求。</p>
       </div>
       <el-button :loading="loading" @click="refresh">刷新</el-button>
     </div>
-    <div class="users-note">
+    <div class="ts-callout users-note">
       <el-icon><InfoFilled /></el-icon>
       <span>数据来源：当前工作目录下的 <code>users/*/me.json</code> 与最近对话缓存。</span>
     </div>
-    <div class="table-heading">
+    <div class="ts-table-heading">
       <span>已缓存账户</span>
-      <span class="table-heading__meta">{{ users.length }} 个账户</span>
+      <span class="ts-table-heading__meta">{{ users.length }} 个账户</span>
     </div>
     <el-table v-loading="loading" :data="users" class="users-table">
       <el-table-column prop="user_id" label="User ID" width="140" />
@@ -95,7 +95,7 @@ onMounted(refresh)
 
 <style scoped>
 .users-intro,
-.table-heading {
+.ts-table-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -104,47 +104,13 @@ onMounted(refresh)
 .users-intro {
   margin-bottom: 14px;
 }
-.section-label {
-  display: block;
-  margin-bottom: 5px;
-  color: var(--ts-ink);
-  font-size: 16px;
-  font-weight: 700;
-}
-.section-caption {
-  margin: 0;
-  color: var(--ts-muted);
-  font-size: 13px;
-}
 .users-note {
-  display: flex;
   align-items: center;
-  gap: 8px;
   margin-bottom: 24px;
-  padding: 11px 13px;
-  border: 1px solid #D9E7FA;
-  border-radius: 10px;
-  background: #F5F9FF;
-  color: #47617F;
-  font-size: 12px;
-}
-.users-note .el-icon {
-  color: var(--ts-sky);
 }
 .users-note code {
   font-family: var(--el-font-family-mono);
   font-size: 11px;
-}
-.table-heading {
-  margin-bottom: 12px;
-  color: var(--ts-ink);
-  font-size: 14px;
-  font-weight: 700;
-}
-.table-heading__meta {
-  color: var(--ts-muted);
-  font-size: 12px;
-  font-weight: 400;
 }
 .user-cell {
   display: inline-flex;
@@ -167,7 +133,7 @@ onMounted(refresh)
 
 @media (max-width: 600px) {
   .users-intro,
-  .table-heading {
+  .ts-table-heading {
     align-items: flex-start;
     flex-direction: column;
   }

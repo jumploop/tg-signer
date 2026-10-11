@@ -1,9 +1,9 @@
-import { E as ElMessage } from './index-BtUHGqts.js';
-import { _ as _export_sfc, m as watch, o as onMounted, k as onUnmounted, n as createBlock, w as withCtx, q as api, r as resolveComponent, g as ref, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, I as toDisplayString, a as createElementBlock, O as Fragment, P as renderList, i as unref, T as info_filled_default, K as computed, j as errMsg } from './index-BpR2pxEj.js';
+import { E as ElMessage } from './index-CSzpTkra.js';
+import { _ as _export_sfc, m as watch, o as onMounted, k as onUnmounted, n as createBlock, w as withCtx, q as api, r as resolveComponent, g as ref, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, I as toDisplayString, a as createElementBlock, O as Fragment, P as renderList, i as unref, T as info_filled_default, K as computed, j as errMsg } from './index-VXpsw_ek.js';
 
-const _hoisted_1 = { class: "run-intro" };
+const _hoisted_1 = { class: "ts-intro" };
 const _hoisted_2 = { class: "selection-count" };
-const _hoisted_3 = { class: "run-note" };
+const _hoisted_3 = { class: "ts-callout run-note" };
 const _hoisted_4 = {
   key: 1,
   class: "hint"
@@ -188,8 +188,8 @@ return (_ctx, _cache) => {
     default: withCtx(() => [
       createBaseVNode("div", _hoisted_1, [
         _cache[3] || (_cache[3] = createBaseVNode("div", null, [
-          createBaseVNode("span", { class: "section-label" }, "启动控制"),
-          createBaseVNode("p", { class: "section-caption" }, "选择账号和任务范围，集中启动或停止后台进程。")
+          createBaseVNode("span", { class: "ts-section-label" }, "启动控制"),
+          createBaseVNode("p", { class: "ts-section-caption" }, "选择账号和任务范围，集中启动或停止后台进程。")
         ], -1)),
         createVNode(_component_el_tag, {
           type: runningCount.value ? 'success' : 'info',
@@ -337,9 +337,9 @@ return (_ctx, _cache) => {
         }),
         _cache[8] || (_cache[8] = createBaseVNode("span", null, " 同一账号同类型的多个任务会合并到一个子进程运行（共享 Client，避免 SQLite session 文件锁冲突），请一次性选择全部任务后启动；日志写入 <workdir>/logs/，可在「日志」页查看。 ", -1))
       ]),
-      _cache[10] || (_cache[10] = createBaseVNode("div", { class: "table-heading" }, [
+      _cache[10] || (_cache[10] = createBaseVNode("div", { class: "ts-table-heading" }, [
         createBaseVNode("span", null, "运行中的进程"),
-        createBaseVNode("span", { class: "table-heading__meta" }, "每 5 秒自动刷新")
+        createBaseVNode("span", { class: "ts-table-heading__meta" }, "每 5 秒自动刷新")
       ], -1)),
       createVNode(_component_el_table, { data: rows.value }, {
         empty: withCtx(() => [
@@ -430,6 +430,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Run = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-513a193a"]]);
+const Run = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-84ce799d"]]);
 
 export { Run as default };

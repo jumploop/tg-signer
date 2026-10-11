@@ -37,7 +37,6 @@ class AutomationHarness(UserAutomation):
 
     def __init__(self, tmp_path):
         import logging
-        from collections import OrderedDict
 
         self.task_name = "t"
         self._account = "test_account"
@@ -48,9 +47,6 @@ class AutomationHarness(UserAutomation):
         self._state = None
         self.state = RuleStateStore(self.task_dir / "state.json", self.logger)
         self._tick_seconds = 1.0
-        self._message_cache = OrderedDict()
-        self._message_cache_limit = 200
-        self._message_cache_chats_limit = 64
         self._rule_locks = {}
         self._dispatch_tasks = set()
         self.app = SimpleNamespace(forward_messages=lambda *args, **kwargs: None)
@@ -93,6 +89,17 @@ class DummyMessage:
 def make_worker(tmp_path):
     """构造 UserAutomation 的测试替身。"""
     return AutomationHarness(tmp_path)
+
+
+def _startup_event():
+    return Event(
+        type="startup",
+        chat_id=None,
+        message=None,
+        now=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        trigger_id="t1",
+        rule_id="r1",
+    )
 
 
 def test_load_config_error_mentions_field(tmp_path):
@@ -418,27 +425,6 @@ async def test_on_edited_message_matches_message_trigger(tmp_path):
     await worker.drain()
 
     assert events == [("r1", "edited_message", 1)]
-
-
-@pytest.mark.asyncio
-async def test_on_edited_message_updates_cache(tmp_path):
-    """编辑消息应覆盖缓存中的同 message_id 内容。"""
-    worker = make_worker(tmp_path)
-    worker.config = AutomationConfig(rules=[])
-
-    original = DummyMessage(
-        id=100, text="before", chat=DummyChat(id=1, username="room")
-    )
-    edited = DummyMessage(id=100, text="after", chat=DummyChat(id=1, username="room"))
-
-    await worker.on_message(None, original)
-    await worker.drain()
-    await worker.on_edited_message(None, edited)
-    await worker.drain()
-
-    cached = worker.get_cached_messages(1)
-    assert len(cached) == 1
-    assert cached[0].text == "after"
 
 
 # ---------------------------------------------------------------------------
@@ -1034,14 +1020,7 @@ async def test_store_state_keys_restrict_what_is_persisted(tmp_path):
         ]
     )
 
-    event = Event(
-        type="startup",
-        chat_id=None,
-        message=None,
-        now=datetime(2024, 1, 1, tzinfo=timezone.utc),
-        trigger_id="t1",
-        rule_id="r1",
-    )
+    event = _startup_event()
     await worker._run_rule(worker.config.rules[0], event)
 
     assert worker.state.get_rule_vars("r1") == {"keep": 1, "also": 2}
@@ -1060,31 +1039,7 @@ async def test_run_rule_persists_all_vars_without_store_state(tmp_path):
         vars={"a": 1, "b": 2},
     )
 
-    event = Event(
-        type="startup",
-        chat_id=None,
-        message=None,
-        now=datetime(2024, 1, 1, tzinfo=timezone.utc),
-        trigger_id="t1",
-        rule_id="r1",
-    )
+    event = _startup_event()
     await worker._run_rule(rule, event)
 
     assert worker.state.get_rule_vars("r1") == {"a": 1, "b": 2}
-
-
-# ---------------------------------------------------------------------------
-# B11: 消息缓存要限制 chat 数量
-# ---------------------------------------------------------------------------
-
-
-def test_message_cache_bounds_number_of_chats(tmp_path):
-    worker = make_worker(tmp_path)
-    worker._message_cache_chats_limit = 2
-
-    for chat_id in (1, 2, 3):
-        worker._cache_message(DummyMessage(id=1, text="x", chat=DummyChat(id=chat_id)))
-
-    assert worker.get_cached_messages(1) == []
-    assert len(worker.get_cached_messages(2)) == 1
-    assert len(worker.get_cached_messages(3)) == 1

@@ -10,8 +10,10 @@ from tg_signer.automation import UserAutomation
 from .signer import (
     dialogs_option,
     export_config,
+    export_file_option,
     from_folder_option,
     import_config,
+    import_file_option,
     run_coroutines,
     tg_signer,
 )
@@ -100,7 +102,7 @@ def validate(obj, task_name):
     automation = get_automation(task_name, obj)
     # 配置文件不存在时 load_config() 会走 reconfig() → 写模板,把「校验」变成
     # 「创建」。这里用不创建目录的查询:校验不存在的任务时,磁盘上不留任何痕迹
-    # (用 _resolve_config_file()/task_dir 会经 make_dirs 建出空任务目录)。
+    # (用 _resolve_config_file()/task_dir 会创建空任务目录)。
     config_path = automation.find_existing_config_file()
     if config_path is None:
         default_path = automation.config_dir_path() / "config.json"
@@ -118,9 +120,7 @@ def validate(obj, task_name):
     help="""导出配置，默认为输出到终端。\n\n e.g.\n\n  tg-signer automation export -O config.json mytask\n\n  tg-signer automation export mytask > config.json"""
 )
 @click.argument("task_name")
-@click.option(
-    "--file", "-O", "file", type=click.Path(), default=None, help="导出至该文件"
-)
+@export_file_option
 @click.pass_obj
 def export(obj, task_name: str, file: str = None):
     automation = get_automation(task_name, obj)
@@ -132,9 +132,7 @@ def export(obj, task_name: str, file: str = None):
     help="""导入配置，默认为从终端读取。\n\n e.g.\n\n  tg-signer automation import -I config.json mytask\n\n  cat config.json | tg-signer automation import mytask""",
 )
 @click.argument("task_name")
-@click.option(
-    "--file", "-I", "file", type=click.Path(), default=None, help="导入该文件"
-)
+@import_file_option
 @click.pass_obj
 def import_(obj, task_name: str, file: str = None):
     automation = get_automation(task_name, obj)

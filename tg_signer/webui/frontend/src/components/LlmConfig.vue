@@ -2,8 +2,8 @@
   <el-card v-loading="loading" shadow="never" class="llm-card">
     <div class="llm-intro">
       <div>
-        <span class="section-label">大模型连接</span>
-        <p class="section-caption">配置用于 AI 能力的 OpenAI 兼容接口，密钥仅保存在当前工作目录。</p>
+        <span class="ts-section-label">大模型连接</span>
+        <p class="ts-section-caption">配置用于 AI 能力的 OpenAI 兼容接口，密钥仅保存在当前工作目录。</p>
       </div>
       <el-tag type="info" effect="light" round>OpenAI Compatible</el-tag>
     </div>
@@ -135,18 +135,6 @@ onMounted(refresh)
   justify-content: space-between;
   gap: 18px;
   margin-bottom: 18px;
-}
-.section-label {
-  display: block;
-  margin-bottom: 5px;
-  color: var(--ts-ink);
-  font-size: 16px;
-  font-weight: 700;
-}
-.section-caption {
-  margin: 0;
-  color: var(--ts-muted);
-  font-size: 13px;
 }
 .llm-alert {
   margin-bottom: 24px;

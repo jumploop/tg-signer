@@ -1,5 +1,5 @@
-import { E as ElMessage } from './index-BtUHGqts.js';
-import { _ as _export_sfc, m as watch, o as onMounted, k as onUnmounted, n as createBlock, w as withCtx, q as api, Q as asArray, g as ref, r as resolveComponent, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, I as toDisplayString, a as createElementBlock, O as Fragment, P as renderList, aw as copyText } from './index-BpR2pxEj.js';
+import { E as ElMessage } from './index-CSzpTkra.js';
+import { _ as _export_sfc, m as watch, o as onMounted, k as onUnmounted, n as createBlock, w as withCtx, q as api, Q as asArray, g as ref, r as resolveComponent, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, I as toDisplayString, a as createElementBlock, O as Fragment, P as renderList, aw as copyText } from './index-VXpsw_ek.js';
 
 const _hoisted_1 = { class: "logs-intro" };
 const _hoisted_2 = { class: "logs-controls" };
@@ -89,8 +89,8 @@ return (_ctx, _cache) => {
     default: withCtx(() => [
       createBaseVNode("div", _hoisted_1, [
         _cache[3] || (_cache[3] = createBaseVNode("div", null, [
-          createBaseVNode("span", { class: "section-label" }, "日志查看器"),
-          createBaseVNode("p", { class: "section-caption" }, "按文件查看最近运行输出，支持自动刷新和复制当前内容。")
+          createBaseVNode("span", { class: "ts-section-label" }, "日志查看器"),
+          createBaseVNode("p", { class: "ts-section-caption" }, "按文件查看最近运行输出，支持自动刷新和复制当前内容。")
         ], -1)),
         createVNode(_component_el_tag, {
           type: autoRefresh.value ? 'success' : 'info',
@@ -162,6 +162,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Logs = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-6be2ab0a"]]);
+const Logs = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-e8c68eb5"]]);
 
 export { Logs as default };

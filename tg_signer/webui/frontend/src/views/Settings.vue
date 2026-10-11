@@ -1,8 +1,8 @@
 <template>
   <el-card shadow="never" class="settings-card">
     <div class="settings-intro">
-      <span class="section-label">工作区设置</span>
-      <p class="section-caption">调整 WebUI 使用的本地目录，配置和运行记录会跟随此目录读取。</p>
+      <span class="ts-section-label">工作区设置</span>
+      <p class="ts-section-caption">调整 WebUI 使用的本地目录，配置和运行记录会跟随此目录读取。</p>
     </div>
     <el-alert
       title="切换工作目录不会自动迁移已有数据"
@@ -80,18 +80,8 @@ onMounted(refresh)
 .settings-intro {
   margin-bottom: 18px;
 }
-.section-label {
-  display: block;
-  margin-bottom: 5px;
-  color: var(--ts-ink);
-  font-size: 16px;
-  font-weight: 700;
-}
-.section-caption {
+.ts-section-caption {
   max-width: 620px;
-  margin: 0;
-  color: var(--ts-muted);
-  font-size: 13px;
   line-height: 1.6;
 }
 .settings-alert {

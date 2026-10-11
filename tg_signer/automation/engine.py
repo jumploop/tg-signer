@@ -3,7 +3,6 @@ import json
 import logging
 import random
 import re
-from collections import OrderedDict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple, Union
@@ -71,14 +70,6 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         # 否则 `automation list` 这类只读命令会凭空建出任务目录。
         self._state: Optional[RuleStateStore] = None
         self._tick_seconds = 1.0
-        # 按 chat_id -> message_id 缓存最近消息，供后续 wait_for/复杂 handler 复用。
-        # 外层也用 OrderedDict:chat 数量同样要能按 LRU 淘汰。
-        self._message_cache: "OrderedDict[int, OrderedDict[int, Message]]" = (
-            OrderedDict()
-        )
-        self._message_cache_limit = 200
-        # 聊天的数量同样要有上限:只限单聊消息数的话,长期运行会随聊天数无限增长。
-        self._message_cache_chats_limit = 64
         # 每条规则一把锁:保证同一 rule 的「读 vars -> 改 -> 回写」不会并发交错。
         # 不加锁时,带 timer + message 触发的规则会被 pyrogram 的各条更新 task 与
         # timer_loop 同时进入,两边各自基于同一份旧值 +1,结果只 +1(丢更新)。
@@ -131,7 +122,7 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         """返回已存在的配置文件;都不存在时返回 ``None``,且不创建任何目录。
 
         只读命令必须用它而不是 :meth:`_resolve_config_file`:后者经 ``task_dir``
-        会 ``make_dirs``,于是 ``automation validate <打错的task>`` 会在磁盘上
+        会创建任务目录,于是 ``automation validate <打错的task>`` 会在磁盘上
         留下一个空的 ``<workdir>/automations/<task>/`` 目录,随后被 ``list``
         当成真实任务列出来。
         """
@@ -469,9 +460,6 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         抽出去之后同一条规则的多次触发由 ``_rule_lock`` 串行，顺序仍然稳定，
         但不再互相阻塞 pyrogram。
         """
-        # 先缓存：wait_for / forward 等 handler 会回查最近消息，而这条消息的
-        # 规则链马上要在另一个 task 里读它了。
-        self._cache_message(message)
         task = asyncio.ensure_future(
             self._handle_message_event(message, event_type=event_type)
         )
@@ -502,7 +490,6 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
 
     async def _handle_message_event(self, message: Message, event_type: str) -> None:
         # 消息/编辑消息统一走“触发器匹配 -> 过滤器匹配 -> handler链”三段式流程。
-        # 缓存由 _dispatch_message 在派生前完成，这里不再重复。
         cfg = self.config
         for rule in cfg.rules:
             if not rule.enabled:
@@ -540,36 +527,6 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
                 rule_id=rule.id,
             )
             await self._run_rule(rule, event)
-
-    def _cache_message(self, message: Message) -> None:
-        message_id = message.id
-        chat_id = message.chat and message.chat.id
-        if chat_id is None:
-            return
-        cache = self._message_cache.setdefault(chat_id, OrderedDict())
-        # 同时把 chat 自身标记为最近使用,超出上限时按 LRU 淘汰整个 chat。
-        self._message_cache.move_to_end(chat_id)
-        cache[message_id] = message
-        cache.move_to_end(message_id)
-        while len(cache) > self._message_cache_limit:
-            cache.popitem(last=False)
-        while len(self._message_cache) > self._message_cache_chats_limit:
-            self._message_cache.popitem(last=False)
-        self.log(
-            f"消息已缓存: chat={chat_id}, message_id={message_id}, cached={len(cache)}",
-            level="DEBUG",
-        )
-
-    def get_cached_messages(
-        self, chat_id: int, limit: Optional[int] = None
-    ) -> List[Message]:
-        cache = self._message_cache.get(chat_id)
-        if not cache:
-            return []
-        messages = list(cache.values())
-        if limit is None or limit <= 0:
-            return messages
-        return messages[-limit:]
 
     def _trigger_id(self, rule: RuleConfig, trigger: TriggerConfig, index: int) -> str:
         return trigger.id or f"{rule.id}:{index}"

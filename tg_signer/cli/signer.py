@@ -68,6 +68,18 @@ def from_folder_option(command):
     )(command)
 
 
+def export_file_option(command):
+    return click.option(
+        "--file", "-O", "file", type=click.Path(), default=None, help="导出至该文件"
+    )(command)
+
+
+def import_file_option(command):
+    return click.option(
+        "--file", "-I", "file", type=click.Path(), default=None, help="导入该文件"
+    )(command)
+
+
 def dialogs_option(command=None, *, default: int = 50):
     def wrap(cmd):
         return click.option(
@@ -498,9 +510,7 @@ def import_config(config, file):
     help="""导出配置，默认为输出到终端。\n\n e.g.\n\n  tg-signer export -O config.json mytask\n\n  tg-signer export mytask > config.json"""
 )
 @click.argument("task_name")
-@click.option(
-    "--file", "-O", "file", type=click.Path(), default=None, help="导出至该文件"
-)
+@export_file_option
 @click.pass_obj
 def export(obj, task_name: str, file: str = None):
     signer = get_signer(task_name, obj)
@@ -512,9 +522,7 @@ def export(obj, task_name: str, file: str = None):
     help="""导入配置，默认为从终端读取。\n\n e.g.\n\n  tg-signer import -I config.json mytask\n\n  cat config.json | tg-signer import mytask""",
 )
 @click.argument("task_name")
-@click.option(
-    "--file", "-I", "file", type=click.Path(), default=None, help="导入该文件"
-)
+@import_file_option
 @click.pass_obj
 def import_(obj, task_name: str, file: str = None):
     signer = get_signer(task_name, obj)

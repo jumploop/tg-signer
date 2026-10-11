@@ -35,7 +35,7 @@ This file guides agents/developers collaborating in the `tg-signer` repository. 
 - `tg_signer/automation/handlers.py`: Built-in handlers, template rendering, and plugin loading.
 - `tg_signer/automation/models.py`: `Event`, `AutomationContext`, and `RuleStateStore`.
 - `tg_signer/ai_tools.py`: OpenAI configuration and image/text capability wrappers.
-- `tg_signer/webui/`: NiceGUI WebUI; data read/write logic is mainly in `webui/data.py`.
+- `tg_signer/webui/`: FastAPI + Vue WebUI; data read/write logic is mainly in `webui/data.py`.
 - `docs/automation_usage.md`: Automation usage documentation.
 - `docs/automation_design.md`: Internal automation design documentation.
 - `tests/`: pytest test suite; there is already coverage for CLI, automation, check-in record migration, and message thread id behavior.

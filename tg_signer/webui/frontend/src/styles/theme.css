@@ -99,6 +99,80 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+.ts-section-label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--ts-ink);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.ts-section-caption {
+  margin: 0;
+  color: var(--ts-muted);
+  font-size: 13px;
+}
+
+.ts-intro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.ts-table-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 12px;
+  color: var(--ts-ink);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.ts-table-heading__meta {
+  color: var(--ts-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.ts-callout {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 11px 13px;
+  border: 1px solid #D9E7FA;
+  border-radius: 10px;
+  background: #F5F9FF;
+  color: #47617F;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.ts-callout .el-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--ts-sky);
+}
+
+.ts-metric-value {
+  color: var(--ts-ink);
+  font-size: 22px;
+  font-weight: 750;
+  line-height: 1;
+}
+
+.ts-metric-value--muted {
+  color: var(--ts-muted);
+  font-size: 18px;
+}
+
+.ts-metric-label {
+  color: var(--ts-muted);
+  font-size: 12px;
+}
+
 ::selection {
   background: #CDE9F8;
   color: var(--ts-ink);

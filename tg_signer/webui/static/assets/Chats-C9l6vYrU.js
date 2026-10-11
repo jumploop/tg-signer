@@ -1,7 +1,7 @@
-import { E as ElMessage } from './index-BtUHGqts.js';
-import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, Q as asArray, j as errMsg, r as resolveComponent, g as ref, u as useRouter, M as resolveDirective, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, I as toDisplayString, a as createElementBlock, O as Fragment, P as renderList, t as normalizeClass, N as withDirectives, aw as copyText } from './index-BpR2pxEj.js';
+import { E as ElMessage } from './index-CSzpTkra.js';
+import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, Q as asArray, j as errMsg, r as resolveComponent, g as ref, u as useRouter, M as resolveDirective, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, I as toDisplayString, a as createElementBlock, O as Fragment, P as renderList, t as normalizeClass, N as withDirectives, aw as copyText } from './index-VXpsw_ek.js';
 
-const _hoisted_1 = { class: "chats-intro" };
+const _hoisted_1 = { class: "ts-intro" };
 const _hoisted_2 = { class: "chats-controls" };
 
 
@@ -126,8 +126,8 @@ return (_ctx, _cache) => {
     default: withCtx(() => [
       createBaseVNode("div", _hoisted_1, [
         _cache[1] || (_cache[1] = createBaseVNode("div", null, [
-          createBaseVNode("span", { class: "section-label" }, "对话资源"),
-          createBaseVNode("p", { class: "section-caption" }, "从已登录账号读取群组和频道，快速复制 ID 或填入配置。")
+          createBaseVNode("span", { class: "ts-section-label" }, "对话资源"),
+          createBaseVNode("p", { class: "ts-section-caption" }, "从已登录账号读取群组和频道，快速复制 ID 或填入配置。")
         ], -1)),
         createVNode(_component_el_tag, {
           type: "info",
@@ -179,16 +179,16 @@ return (_ctx, _cache) => {
         }, 8, ["loading"])
       ]),
       createBaseVNode("div", {
-        class: normalizeClass(["status-line", { 'is-empty': !statusText.value }]),
+        class: normalizeClass(["ts-callout status-line", { 'is-empty': !statusText.value }]),
         role: "status",
         "aria-live": "polite"
       }, [
         _cache[4] || (_cache[4] = createBaseVNode("span", { class: "status-dot" }, null, -1)),
         createBaseVNode("span", null, toDisplayString(statusText.value || '尚未读取对话数据'), 1)
       ], 2),
-      _cache[9] || (_cache[9] = createBaseVNode("div", { class: "table-heading" }, [
+      _cache[9] || (_cache[9] = createBaseVNode("div", { class: "ts-table-heading" }, [
         createBaseVNode("span", null, "群组 / 频道"),
-        createBaseVNode("span", { class: "table-heading__meta" }, "支持复制到 Signer 或 Automation")
+        createBaseVNode("span", { class: "ts-table-heading__meta" }, "支持复制到 Signer 或 Automation")
       ], -1)),
       withDirectives((openBlock(), createBlock(_component_el_table, {
         data: chats.value,
@@ -286,6 +286,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Chats = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-ecb86368"]]);
+const Chats = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-8dfb2842"]]);
 
 export { Chats as default };

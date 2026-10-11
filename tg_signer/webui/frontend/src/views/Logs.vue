@@ -2,8 +2,8 @@
   <el-card shadow="never" class="logs-card">
     <div class="logs-intro">
       <div>
-        <span class="section-label">日志查看器</span>
-        <p class="section-caption">按文件查看最近运行输出，支持自动刷新和复制当前内容。</p>
+        <span class="ts-section-label">日志查看器</span>
+        <p class="ts-section-caption">按文件查看最近运行输出，支持自动刷新和复制当前内容。</p>
       </div>
       <el-tag :type="autoRefresh ? 'success' : 'info'" effect="light" round>
         {{ autoRefresh ? '自动刷新已开启' : '手动刷新' }}
@@ -106,18 +106,6 @@ onUnmounted(() => clearInterval(timer))
   justify-content: space-between;
   gap: 18px;
   margin-bottom: 18px;
-}
-.section-label {
-  display: block;
-  margin-bottom: 5px;
-  color: var(--ts-ink);
-  font-size: 16px;
-  font-weight: 700;
-}
-.section-caption {
-  margin: 0;
-  color: var(--ts-muted);
-  font-size: 13px;
 }
 .logs-controls {
   display: flex;

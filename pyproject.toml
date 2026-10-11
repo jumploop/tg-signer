@@ -98,7 +98,7 @@ extend-select = [
     "C4", # flake8-comprehensions
 ]
 ignore = [
-    "E501", # line too long, handled by black
+    "E501", # line too long, handled by the formatter
     "B008", # do not perform function calls in argument defaults
     "C901", # too complex
     "W191", # indentation contains tabs

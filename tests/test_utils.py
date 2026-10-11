@@ -133,7 +133,7 @@ def test_get_local_timezone_uses_python_local_timezone(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# resolve_under / resolve_within：外部字符串 → 受限路径的唯一入口
+# resolve_under / resolve_log_under：外部字符串 → 受限路径的唯一入口
 # ---------------------------------------------------------------------------
 
 
@@ -171,47 +171,6 @@ def test_resolve_under_accepts_ordinary_names(tmp_path, name):
 
 def test_resolve_under_appends_suffix(tmp_path):
     assert utils.resolve_under(tmp_path, "acc", suffix=".lock") == tmp_path / "acc.lock"
-
-
-def test_resolve_within_accepts_paths_inside_root(tmp_path):
-    root = tmp_path / "logs"
-    root.mkdir()
-    (root / "a.log").write_text("x", encoding="utf-8")
-
-    assert utils.resolve_within(root, root / "a.log") == (root / "a.log").resolve()
-    # 相对路径按 root 解析，不是按当前工作目录
-    assert utils.resolve_within(root, "a.log") == (root / "a.log").resolve()
-
-
-@pytest.mark.parametrize(
-    "relative",
-    ["../x.log", "..", ".", "sub/../../x.log", ""],
-)
-def test_resolve_within_rejects_paths_outside_root(tmp_path, relative):
-    root = tmp_path / "logs"
-    root.mkdir()
-    with pytest.raises(ValueError):
-        utils.resolve_within(root, relative)
-
-
-def test_resolve_within_rejects_symlink_escape(tmp_path):
-    """root 内指向外部的软链同样必须被拒（resolve 会展开软链）。"""
-    root = tmp_path / "logs"
-    root.mkdir()
-    outside = tmp_path / "outside.log"
-    outside.write_text("SECRET", encoding="utf-8")
-    link = root / "link.log"
-    try:
-        link.symlink_to(outside)
-    except (OSError, NotImplementedError):
-        pytest.skip("当前环境不允许创建符号链接")
-    if not link.is_symlink():
-        # 部分 Windows 环境（缺少 SeCreateSymbolicLinkPrivilege / 被安全软件拦截）
-        # 不会抛错，而是静默退化成普通文件，此时本用例没有可验证的对象。
-        pytest.skip("当前环境把符号链接静默降级为普通文件，无法验证软链逃逸")
-
-    with pytest.raises(ValueError):
-        utils.resolve_within(root, link)
 
 
 # ---------------------------------------------------------------------------

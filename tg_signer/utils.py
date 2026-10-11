@@ -2,7 +2,7 @@ import json
 import os
 import pathlib
 import re
-import threading
+import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Literal, TypeAlias
@@ -42,9 +42,12 @@ def write_json_atomic(
     """Write JSON through a same-directory temporary file and atomic replace."""
     target = pathlib.Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    fd, tmp_name = tempfile.mkstemp(
+        dir=target.parent, prefix=f"{target.name}.", suffix=".tmp"
+    )
+    tmp = pathlib.Path(tmp_name)
     try:
-        with open(tmp, "w", encoding="utf-8") as fp:
+        with os.fdopen(fd, "w", encoding="utf-8") as fp:
             json.dump(payload, fp, ensure_ascii=False, indent=2, default=default)
             fp.flush()
             if fsync:
@@ -103,30 +106,6 @@ def resolve_under(
     return target
 
 
-def resolve_within(
-    root: str | os.PathLike[str], path: str | os.PathLike[str]
-) -> pathlib.Path:
-    """把 ``path`` 解析为 ``root`` 内的直接子项,越界即抛 ``ValueError``。
-
-    与 :func:`resolve_under` 的差别在于允许 ``path`` 自带路径分量(前端会把
-    ``<workdir>/logs/x.log`` 这类绝对路径回传),只要求最终落在 ``root`` 内;
-    相对路径按 ``root`` 解析而非当前工作目录。``resolve()`` 会展开符号链接,
-    所以指向 root 之外的软链同样会被拒绝。
-    """
-    raw = os.fspath(path)
-    if not raw or "\x00" in raw:
-        raise ValueError(f"路径非法: {raw!r}")
-    root_path = pathlib.Path(root).resolve()
-    candidate = pathlib.Path(raw).expanduser()
-    if candidate.is_absolute():
-        resolved = candidate.resolve()
-    else:
-        resolved = (root_path / candidate).resolve()
-    if resolved.parent != root_path:
-        raise ValueError(f"路径越界: {raw!r}")
-    return resolved
-
-
 def resolve_log_under(
     root: str | os.PathLike[str], path: str | os.PathLike[str]
 ) -> pathlib.Path:
@@ -138,11 +117,8 @@ def resolve_log_under(
       (见 ``webui/runner.py``:每个子进程用独立 RotatingFileHandler,否则多个
       handler 会互相截断同一个文件)
 
-    ``resolve_within`` 只允许直接子项,会把上面第二类全部判成「路径越界」,
-    于是子目录日志既列不出来也读不到。这里单独放宽到一层子目录,并额外要求
-    后缀是 ``.log``,而不是去动 ``resolve_within`` 本身 —— 后者还有其它调用方,
-    放宽它等于把 ``*.session_string`` / ``.openai_config.json`` 重新暴露给
-    ``?path=`` 参数。``resolve()`` 会展开符号链接,指向 root 之外的软链仍被拒。
+    这里只允许直接子项或一层任务子目录，并强制 ``.log`` 后缀。
+    ``resolve()`` 会展开符号链接,指向 root 之外的软链仍被拒。
     """
     raw = os.fspath(path)
     if not raw or "\x00" in raw:

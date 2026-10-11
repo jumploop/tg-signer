@@ -1,5 +1,5 @@
-import { E as ElMessage } from './index-BtUHGqts.js';
-import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, j as errMsg, r as resolveComponent, g as ref, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode } from './index-BpR2pxEj.js';
+import { E as ElMessage } from './index-CSzpTkra.js';
+import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, j as errMsg, r as resolveComponent, g as ref, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode } from './index-VXpsw_ek.js';
 
 const _sfc_main = {
   __name: 'Settings',
@@ -62,8 +62,8 @@ return (_ctx, _cache) => {
   }, {
     default: withCtx(() => [
       _cache[3] || (_cache[3] = createBaseVNode("div", { class: "settings-intro" }, [
-        createBaseVNode("span", { class: "section-label" }, "工作区设置"),
-        createBaseVNode("p", { class: "section-caption" }, "调整 WebUI 使用的本地目录，配置和运行记录会跟随此目录读取。")
+        createBaseVNode("span", { class: "ts-section-label" }, "工作区设置"),
+        createBaseVNode("p", { class: "ts-section-caption" }, "调整 WebUI 使用的本地目录，配置和运行记录会跟随此目录读取。")
       ], -1)),
       createVNode(_component_el_alert, {
         title: "切换工作目录不会自动迁移已有数据",
@@ -130,6 +130,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Settings = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-da89b25b"]]);
+const Settings = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-b24d0b9c"]]);
 
 export { Settings as default };

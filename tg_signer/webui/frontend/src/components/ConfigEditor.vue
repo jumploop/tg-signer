@@ -34,7 +34,7 @@
     </div>
     <div class="editor-status">
       <div>
-        <span class="section-label">{{ kindLabel }}</span>
+        <span class="ts-section-label">{{ kindLabel }}</span>
         <p class="hint">{{ hint }}</p>
       </div>
       <el-tag :type="editing ? 'primary' : 'info'" effect="light" round>
@@ -344,12 +344,8 @@ onMounted(refresh)
   padding-bottom: 18px;
   border-bottom: 1px solid var(--ts-line);
 }
-.section-label {
-  display: block;
-  margin-bottom: 5px;
-  color: var(--ts-ink);
+.ts-section-label {
   font-size: 15px;
-  font-weight: 700;
 }
 .editor-status .hint {
   margin: 0;
