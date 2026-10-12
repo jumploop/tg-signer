@@ -1883,6 +1883,8 @@ class _DummyApp:
     """驱动 normal_run 用的最小 app 替身(不触碰 Telegram)。"""
 
     key = "dummy-app"
+    in_memory = False
+    session_string = None
 
     def add_handler(self, *_args, **_kwargs):
         return None
@@ -2419,12 +2421,15 @@ async def test_later_chat_message_is_not_dropped(signer_factory, monkeypatch):
     B 群的消息会因为 sign_chats 里还没有 B 而被判成「意料之外的聊天」
     直接丢弃，B 随后必然等满 timeout。
     """
-    signer = signer_factory(task_name="multi_chat_buffer")
-    signer.user = SimpleNamespace(id=42)
     chat_a = SignChatV3(chat_id=1, actions=[ClickKeyboardByTextAction(text="a")])
     chat_b = SignChatV3(chat_id=2, actions=[ClickKeyboardByTextAction(text="b")])
-    signer.load_config = lambda _cls: SignConfigV3(
-        chats=[chat_a, chat_b], sign_at="* * * * *", sign_interval=0
+    signer = _signer_for_run(
+        signer_factory,
+        monkeypatch,
+        task_name="multi_chat_buffer",
+        sign_at="* * * * *",
+        now=datetime(2026, 9, 30, 6, 0, tzinfo=timezone(timedelta(hours=8))),
+        chats=[chat_a, chat_b],
     )
     signer.load_sign_record = lambda: {}
     signer.persist_sign_record = lambda *a, **k: None
@@ -2494,11 +2499,14 @@ def test_ensure_ai_cfg_reports_shape_invalid_config(signer_factory, monkeypatch)
 async def test_run_once_returns_false_when_every_chat_fails(
     signer_factory, monkeypatch
 ):
-    signer = signer_factory(task_name="run_once_fail")
-    signer.user = SimpleNamespace(id=42)
     chat = SignChatV3(chat_id=1, actions=[ClickKeyboardByTextAction(text="a")])
-    signer.load_config = lambda _cls: SignConfigV3(
-        chats=[chat], sign_at="* * * * *", sign_interval=0
+    signer = _signer_for_run(
+        signer_factory,
+        monkeypatch,
+        task_name="run_once_fail",
+        sign_at="* * * * *",
+        now=datetime(2026, 9, 30, 6, 0, tzinfo=timezone(timedelta(hours=8))),
+        chats=[chat],
     )
     signer.load_sign_record = lambda: {}
     signer.persist_sign_record = lambda *a, **k: None
@@ -2516,11 +2524,14 @@ async def test_run_once_returns_false_when_every_chat_fails(
 
 @pytest.mark.asyncio
 async def test_run_once_returns_true_on_success(signer_factory, monkeypatch):
-    signer = signer_factory(task_name="run_once_ok")
-    signer.user = SimpleNamespace(id=42)
     chat = SignChatV3(chat_id=1, actions=[ClickKeyboardByTextAction(text="a")])
-    signer.load_config = lambda _cls: SignConfigV3(
-        chats=[chat], sign_at="* * * * *", sign_interval=0
+    signer = _signer_for_run(
+        signer_factory,
+        monkeypatch,
+        task_name="run_once_ok",
+        sign_at="* * * * *",
+        now=datetime(2026, 9, 30, 6, 0, tzinfo=timezone(timedelta(hours=8))),
+        chats=[chat],
     )
     signer.load_sign_record = lambda: {}
     signer.persist_sign_record = lambda *a, **k: None
