@@ -208,7 +208,7 @@ async def resolve_ai_input(
     if input_text is not None:
         return str(render_template(input_text, event, ctx))
 
-    recent_limit = params.get("recent_limit", params.get("recent_messages"))
+    recent_limit = params.get("recent_limit")
     if recent_limit is None:
         return message_text(event.message)
     try:
@@ -218,13 +218,9 @@ async def resolve_ai_input(
     if recent_limit <= 0:
         return message_text(event.message)
 
-    history_chat_id = (
-        params.get("history_chat_id") or params.get("chat_id") or event.chat_id
-    )
-    if history_chat_id is None:
-        ctx.log(
-            "ai_reply: 缺少history_chat_id/chat_id，无法读取历史消息", level="WARNING"
-        )
+    chat_id = params.get("chat_id") or event.chat_id
+    if chat_id is None:
+        ctx.log("ai_reply: 缺少chat_id，无法读取历史消息", level="WARNING")
         return message_text(event.message)
 
     lines: list[str] = []
@@ -233,9 +229,7 @@ async def resolve_ai_input(
     async def _fetch_history():
         msgs = []
         # get_chat_history 通常返回新->旧,这里先按新->旧收集,reverse 后成旧->新
-        async for msg in ctx.client.get_chat_history(
-            history_chat_id, limit=recent_limit
-        ):
+        async for msg in ctx.client.get_chat_history(chat_id, limit=recent_limit):
             msgs.append(msg)
         return msgs
 
@@ -450,7 +444,7 @@ _EXTRACT_REGEX_DEFAULT_VAR = "extracted"
 async def extract_regex(
     event: Event, ctx: AutomationContext, params: Dict[str, Any]
 ) -> HandlerResult:
-    pattern = params.get("pattern") or params.get("regex")
+    pattern = params.get("pattern")
     if not pattern:
         ctx.log("extract_regex: 缺少pattern", level="WARNING")
         return "stop"
@@ -710,38 +704,28 @@ async def server_chan(
 async def schedule_next(
     event: Event, ctx: AutomationContext, params: Dict[str, Any]
 ) -> HandlerResult:
-    # 支持 trigger_id / target_trigger_id 两种命名，默认回落为当前触发器。
-    target_trigger_id = (
-        params.get("trigger_id") or params.get("target_trigger_id") or event.trigger_id
-    )
+    # 默认回落为当前触发器。
+    target_trigger_id = params.get("trigger_id") or event.trigger_id
     # 先解析基础 delay，再叠加 offset，最终写入 next_run_at。
-    delay_seconds = params.get("delay_seconds")
-    if delay_seconds is None:
-        delay_minutes = params.get("delay_minutes")
-        try:
-            delay_seconds = float(delay_minutes or 0) * 60
-        except (TypeError, ValueError):
-            delay_seconds = 0
+    try:
+        delay_seconds = float(params.get("delay_seconds") or 0)
+    except (TypeError, ValueError):
+        delay_seconds = 0
     from_var = params.get("from_var")
     if from_var:
         try:
             value = float(ctx.vars.get(from_var, delay_seconds))
             unit = str(params.get("from_var_unit") or "").lower().strip()
-            if not unit and as_bool(params.get("from_var_minutes", False)):
-                unit = "minutes"
             if unit in {"minute", "minutes", "min", "m"}:
                 delay_seconds = value * 60
             else:
                 delay_seconds = value
         except (TypeError, ValueError):
             pass
-    offset_seconds = params.get("offset_seconds")
-    if offset_seconds is None:
-        offset_minutes = params.get("offset_minutes")
-        try:
-            offset_seconds = float(offset_minutes or 0) * 60
-        except (TypeError, ValueError):
-            offset_seconds = 0
+    try:
+        offset_seconds = float(params.get("offset_seconds") or 0)
+    except (TypeError, ValueError):
+        offset_seconds = 0
     try:
         total_seconds = float(delay_seconds) + float(offset_seconds)
     except (TypeError, ValueError):

@@ -1,6 +1,6 @@
 <template>
   <el-card shadow="never" class="records-card">
-    <div class="records-intro">
+    <div class="ts-intro">
       <div>
         <span class="ts-section-label">签到历史</span>
         <p class="ts-section-caption">按任务查看签到日期、执行时间和历史记录数量。</p>
@@ -88,14 +88,7 @@ onMounted(refresh)
 </script>
 
 <style scoped>
-.records-intro,
-.ts-table-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-}
-.records-intro {
+.ts-intro {
   margin-bottom: 20px;
 }
 .record-metrics {
@@ -136,7 +129,7 @@ onMounted(refresh)
 }
 
 @media (max-width: 600px) {
-  .records-intro,
+  .ts-intro,
   .ts-table-heading {
     align-items: flex-start;
     flex-direction: column;

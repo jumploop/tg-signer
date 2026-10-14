@@ -20,12 +20,13 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from tg_signer.ai_tools import OpenAIConfigManager, test_openai_connection
+from tg_signer.automation.engine import UserAutomation
 from tg_signer.webui import account as account_mod
 from tg_signer.webui import auth as auth_helpers
 from tg_signer.webui import data as data_mod
@@ -71,39 +72,6 @@ SIGNER_TEMPLATE: Dict[str, object] = {
     "sign_at": "0 6 * * *",
     "random_seconds": 0,
     "sign_interval": 1,
-}
-
-AUTOMATION_TEMPLATE: Dict[str, object] = {
-    "rules": [
-        {
-            "id": "demo_message_reply",
-            "enabled": True,
-            "triggers": [
-                {
-                    "id": None,
-                    "type": "message",
-                    "params": {
-                        "chat_id": "@channel_or_user",
-                        "chat_ids": None,
-                        "from_user_ids": None,
-                        "reply_to_me": False,
-                        "reply_to_message_id": None,
-                        "ignore_case": True,
-                    },
-                }
-            ],
-            "filters": {
-                "chat_id": None,
-                "chat_ids": None,
-                "from_user_ids": None,
-                "text_rule": "contains",
-                "text_value": "关键词",
-                "ignore_case": True,
-            },
-            "handlers": [{"handler": "send_text", "params": {"text": "自动回复"}}],
-            "vars": {},
-        }
-    ]
 }
 
 
@@ -206,6 +174,8 @@ async def _lifespan(_app: FastAPI):
 # 于是设了访问码 + --host 0.0.0.0 时，同网段任何人都不需要任何凭据就能拿到
 # 完整的 24 个 API 端点地图（开闭目录会暴露所有参数与作用），
 # 而且 /openapi.json 里连 Bearer 认证方案都没声明，图还是错的。
+protected = APIRouter(dependencies=[Depends(require_auth)])
+
 app = FastAPI(
     title="tg-signer WebUI",
     lifespan=_lifespan,
@@ -258,8 +228,8 @@ def _user_infos_payload(infos: List[data_mod.UserInfo]) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/state")
-def get_state(_: None = Depends(require_auth)) -> Dict[str, Any]:
+@protected.get("/api/state")
+def get_state() -> Dict[str, Any]:
     return {
         "workdir": str(state.workdir),
         "log_path": str(state.log_path),
@@ -267,8 +237,8 @@ def get_state(_: None = Depends(require_auth)) -> Dict[str, Any]:
     }
 
 
-@app.post("/api/state")
-def set_state(body: StateBody, _: None = Depends(require_auth)) -> Dict[str, str]:
+@protected.post("/api/state")
+def set_state(body: StateBody) -> Dict[str, str]:
     # set_state 是同步端点，跑在 Starlette 的线程池里，两个请求可以真的并发。
     # 整段「快照 → 切换 → 重绑日志」必须互斥，且回滚只能撤销**自己**的写入：
     # 原来 A 线程快照 previous=W1、切到 W2、日志重绑失败，B 线程此时成功切到
@@ -311,8 +281,8 @@ def set_state(body: StateBody, _: None = Depends(require_auth)) -> Dict[str, str
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/configs/{kind}")
-def list_configs(kind: str, _: None = Depends(require_auth)) -> Dict[str, List[str]]:
+@protected.get("/api/configs/{kind}")
+def list_configs(kind: str) -> Dict[str, List[str]]:
     if kind == "automation":
         # 只提供任务名列表供「任务运行」页选择;automation 配置编辑仍走 CLI。
         return {"names": data_mod.list_automation_names(state.workdir)}
@@ -321,22 +291,21 @@ def list_configs(kind: str, _: None = Depends(require_auth)) -> Dict[str, List[s
     return {"names": data_mod.list_task_names(kind, state.workdir)}
 
 
-@app.get("/api/configs/{kind}/template")
-def config_template(kind: str, _: None = Depends(require_auth)) -> Dict[str, Any]:
+@protected.get("/api/configs/{kind}/template")
+def config_template(kind: str) -> Dict[str, Any]:
     if kind == "signer":
         return {"payload": copy.deepcopy(SIGNER_TEMPLATE)}
     if kind == "automation":
-        return {"payload": copy.deepcopy(AUTOMATION_TEMPLATE)}
+        return {"payload": UserAutomation.template_config().to_jsonable()}
     raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")
 
 
-@app.get("/api/configs/{kind}/suggest-name")
+@protected.get("/api/configs/{kind}/suggest-name")
 def config_suggest_name(
     kind: str,
     chat_id: str = Query(default=""),
     title: str = Query(default=""),
     username: str = Query(default=""),
-    _: None = Depends(require_auth),
 ) -> Dict[str, str]:
     """为「群组/频道 → 复制到配置」生成一个未被占用的默认配置名。"""
     if kind not in data_mod.CONFIG_KINDS:
@@ -345,8 +314,8 @@ def config_suggest_name(
     return {"name": data_mod.generate_random_config_name(kind, chat, state.workdir)}
 
 
-@app.get("/api/configs/{kind}/{name}")
-def get_config(kind: str, name: str, _: None = Depends(require_auth)) -> Dict[str, Any]:
+@protected.get("/api/configs/{kind}/{name}")
+def get_config(kind: str, name: str) -> Dict[str, Any]:
     try:
         if kind == "automation":
             entry = data_mod.load_automation_config(name, workdir=state.workdir)
@@ -363,12 +332,11 @@ def get_config(kind: str, name: str, _: None = Depends(require_auth)) -> Dict[st
     return _config_entry_payload(entry)
 
 
-@app.post("/api/configs/{kind}/{name}")
+@protected.post("/api/configs/{kind}/{name}")
 def save_config(
     kind: str,
     name: str,
     payload: Dict[str, Any],
-    _: None = Depends(require_auth),
 ) -> Dict[str, Any]:
     try:
         if kind == "automation":
@@ -386,10 +354,8 @@ def save_config(
     return _config_entry_payload(entry)
 
 
-@app.delete("/api/configs/{kind}/{name}")
-def delete_config(
-    kind: str, name: str, _: None = Depends(require_auth)
-) -> Dict[str, bool]:
+@protected.delete("/api/configs/{kind}/{name}")
+def delete_config(kind: str, name: str) -> Dict[str, bool]:
     try:
         if kind == "automation":
             data_mod.delete_automation_config(name, workdir=state.workdir)
@@ -416,13 +382,13 @@ def delete_config(
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/records")
-def list_records(_: None = Depends(require_auth)) -> List[Dict[str, Any]]:
+@protected.get("/api/records")
+def list_records() -> List[Dict[str, Any]]:
     return _sign_records_payload(data_mod.load_sign_records(state.workdir))
 
 
-@app.get("/api/users")
-def list_users(_: None = Depends(require_auth)) -> List[Dict[str, Any]]:
+@protected.get("/api/users")
+def list_users() -> List[Dict[str, Any]]:
     return _user_infos_payload(data_mod.load_user_infos(state.workdir))
 
 
@@ -469,8 +435,8 @@ def _mask_api_key(api_key: str) -> str:
     return f"****{key[-4:]}"
 
 
-@app.get("/api/llm-config")
-def get_llm_config(_: None = Depends(require_auth)) -> Dict[str, Any]:
+@protected.get("/api/llm-config")
+def get_llm_config() -> Dict[str, Any]:
     manager = _llm_manager()
     has_env = manager.has_env_config()
     cfg = _safe_llm_config(manager, effective=True)
@@ -484,10 +450,8 @@ def get_llm_config(_: None = Depends(require_auth)) -> Dict[str, Any]:
     }
 
 
-@app.post("/api/llm-config")
-def save_llm_config(
-    body: LmConfigBody, _: None = Depends(require_auth)
-) -> Dict[str, Any]:
+@protected.post("/api/llm-config")
+def save_llm_config(body: LmConfigBody) -> Dict[str, Any]:
     """保存 LLM 配置。
 
     ``api_key`` 为空、或恰好是服务端回显的掩码时都视为「不修改已有密钥」,
@@ -525,10 +489,8 @@ def save_llm_config(
     return {"ok": True, "api_key_unchanged": api_key != posted}
 
 
-@app.post("/api/llm-config/test")
-async def test_llm_config(
-    body: LmConfigBody, _: None = Depends(require_auth)
-) -> Dict[str, Any]:
+@protected.post("/api/llm-config/test")
+async def test_llm_config(body: LmConfigBody) -> Dict[str, Any]:
     manager = _llm_manager()
     effective_key = (
         _safe_llm_config(manager, effective=True).get("api_key") or ""
@@ -552,15 +514,13 @@ async def test_llm_config(
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/accounts")
-def list_accounts(_: None = Depends(require_auth)) -> List[Dict[str, Any]]:
+@protected.get("/api/accounts")
+def list_accounts() -> List[Dict[str, Any]]:
     return account_mod.list_accounts(state.workdir)
 
 
-@app.post("/api/accounts/send-code")
-async def account_send_code(
-    body: LoginCodeBody, _: None = Depends(require_auth)
-) -> Dict[str, Any]:
+@protected.post("/api/accounts/send-code")
+async def account_send_code(body: LoginCodeBody) -> Dict[str, Any]:
     try:
         result, message = await asyncio.to_thread(
             account_mod.send_login_code, body.account, body.phone, state.workdir
@@ -570,20 +530,16 @@ async def account_send_code(
     return {"result": result, "message": message}
 
 
-@app.post("/api/accounts/complete-login")
-async def account_complete_login(
-    body: LoginCompleteBody, _: None = Depends(require_auth)
-) -> Dict[str, Any]:
+@protected.post("/api/accounts/complete-login")
+async def account_complete_login(body: LoginCompleteBody) -> Dict[str, Any]:
     result, message = await asyncio.to_thread(
         account_mod.complete_login, body.account, body.code, body.password
     )
     return {"result": result, "message": message}
 
 
-@app.get("/api/accounts/{account}/authorized")
-async def account_authorized(
-    account: str, _: None = Depends(require_auth)
-) -> Dict[str, Any]:
+@protected.get("/api/accounts/{account}/authorized")
+async def account_authorized(account: str) -> Dict[str, Any]:
     try:
         ok, message = await account_mod.is_account_authorized(account, state.workdir)
     except ValueError as exc:
@@ -591,10 +547,8 @@ async def account_authorized(
     return {"ok": ok, "message": message}
 
 
-@app.post("/api/accounts/logout")
-async def account_logout(
-    body: AccountBody, _: None = Depends(require_auth)
-) -> Dict[str, Any]:
+@protected.post("/api/accounts/logout")
+async def account_logout(body: AccountBody) -> Dict[str, Any]:
     # 先做纯本地检查：账号连 session 文件都没有时，本就不存在可登出的登录态，
     # 旧实现照样 _new_client(...).connect() —— 为一个不存在的账号发起真实
     # Telegram 连接（account.logout_account 内有同名守卫兜底）。
@@ -619,15 +573,13 @@ async def account_logout(
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/chats")
-def list_chats(_: None = Depends(require_auth)) -> List[Dict[str, Any]]:
+@protected.get("/api/chats")
+def list_chats() -> List[Dict[str, Any]]:
     return data_mod.load_group_chats(state.workdir)
 
 
-@app.post("/api/chats/fetch")
-async def fetch_chats(
-    body: ChatFetchBody, _: None = Depends(require_auth)
-) -> Dict[str, Any]:
+@protected.post("/api/chats/fetch")
+async def fetch_chats(body: ChatFetchBody) -> Dict[str, Any]:
     try:
         ok, message, chats = await account_mod.fetch_dialogs(
             body.account, state.workdir, 50
@@ -642,8 +594,8 @@ async def fetch_chats(
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/run")
-def run_status(_: None = Depends(require_auth)) -> Dict[str, Any]:
+@protected.get("/api/run")
+def run_status() -> Dict[str, Any]:
     # 必须按当前 workdir 过滤：run_stop 用的是 state.workdir 去解析 key,
     # 若把其它目录的进程也列出来,用户在「运行中」列表里看到的每一行
     # 「停止」按钮都只会回一句「未在运行」。
@@ -653,8 +605,8 @@ def run_status(_: None = Depends(require_auth)) -> Dict[str, Any]:
     }
 
 
-@app.post("/api/run/start")
-def run_start(body: RunStartBody, _: None = Depends(require_auth)) -> Dict[str, Any]:
+@protected.post("/api/run/start")
+def run_start(body: RunStartBody) -> Dict[str, Any]:
     ok, message = runner_mod.start(
         body.kind,
         body.tasks,
@@ -665,14 +617,14 @@ def run_start(body: RunStartBody, _: None = Depends(require_auth)) -> Dict[str, 
     return {"ok": ok, "message": message}
 
 
-@app.post("/api/run/stop")
-def run_stop(body: RunStopBody, _: None = Depends(require_auth)) -> Dict[str, Any]:
+@protected.post("/api/run/stop")
+def run_stop(body: RunStopBody) -> Dict[str, Any]:
     ok, message = runner_mod.stop(body.kind, body.account, state.workdir)
     return {"ok": ok, "message": message}
 
 
-@app.post("/api/run/shutdown")
-def run_shutdown(_: None = Depends(require_auth)) -> Dict[str, Any]:
+@protected.post("/api/run/shutdown")
+def run_shutdown() -> Dict[str, Any]:
     stopped = runner_mod.shutdown_all()
     return {"stopped": stopped}
 
@@ -682,17 +634,16 @@ def run_shutdown(_: None = Depends(require_auth)) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/logs/files")
-def list_logs(_: None = Depends(require_auth)) -> Dict[str, List[str]]:
+@protected.get("/api/logs/files")
+def list_logs() -> Dict[str, List[str]]:
     log_dir = state.log_path.parent
     return {"files": [str(p) for p in data_mod.list_log_files(log_dir)]}
 
 
-@app.get("/api/logs")
+@protected.get("/api/logs")
 def read_logs(
     path: Optional[str] = Query(default=None),
     limit: int = Query(default=200, ge=1, le=5000),
-    _: None = Depends(require_auth),
 ) -> Dict[str, Any]:
     try:
         resolved, lines = data_mod.load_logs(
@@ -709,6 +660,8 @@ def read_logs(
 
 
 # ---------------------------------------------------------------------------
+app.router.routes.extend(protected.routes)
+
 # 鉴权
 # ---------------------------------------------------------------------------
 

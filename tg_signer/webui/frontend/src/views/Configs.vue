@@ -1,6 +1,6 @@
 <template>
   <div class="configs-shell">
-    <div class="configs-intro">
+    <div class="ts-intro">
       <div>
         <span class="ts-section-label">配置中心</span>
         <p class="ts-section-caption">选择配置类型，开始编辑 JSON、运行模板或维护模型连接。</p>
@@ -76,11 +76,7 @@ function clearPrefill() {
 </script>
 
 <style scoped>
-.configs-intro {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
+.ts-intro {
   margin-bottom: 20px;
 }
 .config-tabs :deep(.el-tabs__header) {
@@ -94,7 +90,7 @@ function clearPrefill() {
 }
 
 @media (max-width: 600px) {
-  .configs-intro {
+  .ts-intro {
     align-items: flex-start;
     flex-direction: column;
   }

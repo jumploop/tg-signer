@@ -45,7 +45,7 @@ class AutomationHarness(UserAutomation):
         self.logger = logging.getLogger("tg-signer")
         _ = self.task_dir  # 触发目录创建
         self._state = None
-        self.state = RuleStateStore(self.task_dir / "state.json", self.logger)
+        self._state = RuleStateStore(self.task_dir / "state.json", self.logger)
         self._tick_seconds = 1.0
         self._rule_locks = {}
         self._dispatch_tasks = set()
@@ -805,7 +805,7 @@ async def test_timer_schedule_advances_even_when_rule_raises(tmp_path, monkeypat
         "load_config",
         lambda cfg_cls=None: SimpleNamespace(rules=[_timer_rule("r1")]),
     )
-    engine.state = RuleStateStore(tmp_path / "state.json", logging.getLogger("test"))
+    engine._state = RuleStateStore(tmp_path / "state.json", logging.getLogger("test"))
     engine.state.set_trigger_next_run("r1", "r1-t", now - timedelta(seconds=1))
 
     for _ in range(3):
@@ -836,7 +836,7 @@ async def test_one_bad_rule_does_not_block_other_rules(tmp_path, monkeypatch):
             rules=[_timer_rule("bad"), _timer_rule("good")]
         ),
     )
-    engine.state = RuleStateStore(tmp_path / "state.json", logging.getLogger("test"))
+    engine._state = RuleStateStore(tmp_path / "state.json", logging.getLogger("test"))
     engine.state.set_trigger_next_run("bad", "bad-t", now - timedelta(seconds=1))
     engine.state.set_trigger_next_run("good", "good-t", now - timedelta(seconds=1))
 
@@ -858,7 +858,7 @@ async def test_unhashable_handler_result_does_not_skip_persistence(
     engine = UserAutomation(
         task_name="unhashable", workdir=tmp_path, session_dir=tmp_path
     )
-    engine.state = RuleStateStore(tmp_path / "state.json", logging.getLogger("test"))
+    engine._state = RuleStateStore(tmp_path / "state.json", logging.getLogger("test"))
 
     calls = []
 

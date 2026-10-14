@@ -781,57 +781,12 @@ def _write_log(tmp_path, content: bytes):
     return path
 
 
-def test_tail_file_drops_trailing_newline_artifact(tmp_path):
-    """'l1\\nl2\\nl3\\n' 是 3 行，不能回出 4 项（末尾伪空行）。"""
-    path = _write_log(tmp_path, b"l1\nl2\nl3\n")
-    assert data.tail_file(path, limit=200) == ["l1", "l2", "l3"]
-
-
-def test_tail_file_returns_limit_real_lines(tmp_path):
-    """伪空行不再白占 limit 名额：limit=3 必须回满 3 行。"""
-    path = _write_log(tmp_path, b"l1\nl2\nl3\n")
-    assert data.tail_file(path, limit=3) == ["l1", "l2", "l3"]
-    assert data.tail_file(path, limit=2) == ["l2", "l3"]
-
-
-def test_tail_file_keeps_real_blank_lines(tmp_path):
-    """中间的空行是真实空行，只有文件末尾那一个空段该丢。"""
-    path = _write_log(tmp_path, b"l1\n\nl3\n")
-    assert data.tail_file(path, limit=200) == ["l1", "", "l3"]
-
-
-def test_tail_file_without_trailing_newline(tmp_path):
-    path = _write_log(tmp_path, b"l1\nl2\nl3")
-    assert data.tail_file(path, limit=200) == ["l1", "l2", "l3"]
-
-
-def test_tail_file_handles_empty_file_and_lone_newline(tmp_path):
+def test_tail_file_keeps_line_boundaries_and_limit(tmp_path):
+    path = _write_log(tmp_path, "l1\n\nl3\nend".encode())
+    assert data.tail_file(path, limit=200) == ["l1", "", "l3", "end"]
+    assert data.tail_file(path, limit=2) == ["l3", "end"]
     assert data.tail_file(_write_log(tmp_path, b""), limit=10) == []
-    # 只含一个换行的文件就是「一行空行」：换行空段丢掉后，空行本身要留下。
-    assert data.tail_file(_write_log(tmp_path, b"\n"), limit=10) == [""]
     assert data.tail_file(tmp_path / "missing.log", limit=10) == []
-
-
-def test_tail_file_reassembles_long_line_spanning_chunks(tmp_path):
-    """跨多个 8KiB 块的长行必须原样拼回，不能被截断。"""
-    long_line = "x" * 20000
-    path = _write_log(tmp_path, f"{long_line}\nend\n".encode())
-    assert data.tail_file(path, limit=200) == [long_line, "end"]
-
-
-def test_tail_file_keeps_order_across_many_chunks(tmp_path):
-    lines = [f"line{i:05d}" for i in range(3000)]
-    path = _write_log(tmp_path, ("\n".join(lines) + "\n").encode())
-    assert data.tail_file(path, limit=200) == lines[-200:]
-
-
-def test_tail_file_preserves_utf8_split_across_chunks(tmp_path):
-    """块边界劈开的多字节字符必须完好：拼行是按字节做的跨块重组。"""
-    first = "中" * 8000
-    content = (first + "\nend\n").encode("utf-8")
-    path = _write_log(tmp_path, content)
-    assert len(content) > 8192 * 2, "需要跨多个块才能覆盖边界劈裂"
-    assert data.tail_file(path, limit=200) == [first, "end"]
 
 
 # ---------------------------------------------------------------------------

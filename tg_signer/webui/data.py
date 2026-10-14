@@ -6,7 +6,6 @@ import secrets
 import shutil
 import sqlite3
 import threading
-from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
@@ -483,46 +482,7 @@ def tail_file(path: Path, limit: int = 200) -> List[str]:
         return []
     if limit <= 0:
         return []
-
-    buffer: deque[str] = deque()
-    chunk_size = 8192
-
-    # Read from the end in chunks to avoid loading large files entirely.
-    with open(path, "rb") as fp:
-        fp.seek(0, os.SEEK_END)
-        position = fp.tell()
-        leftover = b""
-        have_leftover = False
-        first_chunk = True
-        while position > 0 and len(buffer) < limit:
-            read_size = min(chunk_size, position)
-            position -= read_size
-            fp.seek(position)
-            chunk = fp.read(read_size)
-            # ``data`` 跨块拼回同一行，因此被块边界劈开的 UTF-8 序列也能还原。
-            data = chunk + leftover
-            lines = data.split(b"\n")
-            leftover = lines[0]
-            have_leftover = True
-            tail = lines[1:]
-            if first_chunk:
-                first_chunk = False
-                # 文件以换行结尾时 split 会在末尾多出一个空串；它不是真实的空行，
-                # 却会白占一个 limit 名额（limit=3 的 3 行文件只回 2 行 + 一条
-                # 伪空行）。只丢文件末尾这一个空段，中间的空行是真实空行。
-                if tail and tail[-1] == b"":
-                    tail = tail[:-1]
-            for line in reversed(tail):
-                buffer.appendleft(line.decode("utf-8", errors="ignore").rstrip("\r"))
-                if len(buffer) >= limit:
-                    break
-
-        # 走到文件头时 leftover 才是真正的一行（可能本身就是空行）；提前凑够
-        # limit 而中断时它只是半行，此时 len(buffer) >= limit，不会追加。
-        if len(buffer) < limit and have_leftover:
-            buffer.appendleft(leftover.decode("utf-8", errors="ignore").rstrip("\r"))
-
-    return list(buffer)
+    return path.read_text(encoding="utf-8", errors="ignore").splitlines()[-limit:]
 
 
 def _is_readable_log(base: Path, candidate: Path) -> bool:

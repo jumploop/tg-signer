@@ -1,6 +1,6 @@
 <template>
   <el-card shadow="never" class="accounts-card">
-    <div class="accounts-intro">
+    <div class="ts-intro">
       <div>
         <span class="ts-section-label">账号会话</span>
         <p class="ts-section-caption">管理已登录的 Telegram 会话，检查授权状态或添加新账号。</p>
@@ -260,11 +260,7 @@ onMounted(refresh)
 </script>
 
 <style scoped>
-.accounts-intro {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
+.ts-intro {
   margin-bottom: 20px;
 }
 .account-metrics {
@@ -295,7 +291,7 @@ onMounted(refresh)
 }
 
 @media (max-width: 600px) {
-  .accounts-intro {
+  .ts-intro {
     align-items: flex-start;
     flex-direction: column;
   }

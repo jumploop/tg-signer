@@ -9,22 +9,11 @@
  * 不依赖 Python：用内置静态服务托管已构建的 static/，并对 /api/* 返回桩数据。
  * 运行：npm run test:e2e
  */
-import { createServer } from 'node:http'
-import { readFile } from 'node:fs/promises'
-import { extname, join, normalize } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { startServer } from './harness.mjs'
+
 import { chromium } from 'playwright-core'
 
-const STATIC_DIR = fileURLToPath(new URL('../../static', import.meta.url))
 const CHAT_ID = '-1001234567890'
-
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.svg': 'image/svg+xml',
-}
-
 const STUB_API = {
   '/api/auth/status': { required: false, locked_until: 0 },
   '/api/state': { workdir: '/tmp/e2e', log_path: '/tmp/e2e/logs/tg-signer.log' },
@@ -38,31 +27,6 @@ const STUB_API = {
       account: 'demo_account',
     },
   ],
-}
-
-function startServer() {
-  const server = createServer(async (req, res) => {
-    const path = new URL(req.url, 'http://localhost').pathname
-
-    if (path in STUB_API) {
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify(STUB_API[path]))
-      return
-    }
-
-    const rel = normalize(path === '/' ? '/index.html' : path).replace(/^([/\\])+/, '')
-    try {
-      const body = await readFile(join(STATIC_DIR, rel))
-      res.writeHead(200, { 'Content-Type': MIME[extname(rel)] || 'application/octet-stream' })
-      res.end(body)
-    } catch {
-      res.writeHead(404).end('not found')
-    }
-  })
-
-  return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }))
-  })
 }
 
 // 记录两条复制路径各自收到的文本，用来断言走的是哪条分支。
@@ -110,7 +74,7 @@ const SCENARIOS = [
 ]
 
 async function run() {
-  const { server, port } = await startServer()
+  const { server, port } = await startServer({ stubs: STUB_API })
   const browser = await chromium.launch({
     channel: 'chrome',
     headless: true,

@@ -256,7 +256,7 @@ async def test_blacklist_filter_source_var(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_ai_reply_uses_recent_messages(tmp_path):
+async def test_ai_reply_uses_recent_limit(tmp_path):
     """ai_reply 可按 recent_limit 读取历史消息作为输入。"""
     state = RuleStateStore(tmp_path / "state.json", logging.getLogger("test"))
     worker = DummyWorker()

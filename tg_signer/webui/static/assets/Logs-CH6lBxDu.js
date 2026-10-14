@@ -1,7 +1,7 @@
-import { E as ElMessage } from './index-CSzpTkra.js';
-import { _ as _export_sfc, m as watch, o as onMounted, k as onUnmounted, n as createBlock, w as withCtx, q as api, Q as asArray, g as ref, r as resolveComponent, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, I as toDisplayString, a as createElementBlock, O as Fragment, P as renderList, aw as copyText } from './index-VXpsw_ek.js';
+import { E as ElMessage } from './index-C5oA3b00.js';
+import { _ as _export_sfc, m as watch, o as onMounted, k as onUnmounted, n as createBlock, w as withCtx, q as api, Q as asArray, g as ref, r as resolveComponent, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, I as toDisplayString, a as createElementBlock, O as Fragment, P as renderList, aw as copyText } from './index-DpF7b0Gh.js';
 
-const _hoisted_1 = { class: "logs-intro" };
+const _hoisted_1 = { class: "ts-intro" };
 const _hoisted_2 = { class: "logs-controls" };
 
 
@@ -162,6 +162,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Logs = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-e8c68eb5"]]);
+const Logs = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-4b76077f"]]);
 
 export { Logs as default };

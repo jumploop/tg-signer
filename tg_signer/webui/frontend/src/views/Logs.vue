@@ -1,6 +1,6 @@
 <template>
   <el-card shadow="never" class="logs-card">
-    <div class="logs-intro">
+    <div class="ts-intro">
       <div>
         <span class="ts-section-label">日志查看器</span>
         <p class="ts-section-caption">按文件查看最近运行输出，支持自动刷新和复制当前内容。</p>
@@ -100,11 +100,7 @@ onUnmounted(() => clearInterval(timer))
 </script>
 
 <style scoped>
-.logs-intro {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
+.ts-intro {
   margin-bottom: 18px;
 }
 .logs-controls {
@@ -126,7 +122,7 @@ onUnmounted(() => clearInterval(timer))
 }
 
 @media (max-width: 600px) {
-  .logs-intro {
+  .ts-intro {
     align-items: flex-start;
     flex-direction: column;
   }

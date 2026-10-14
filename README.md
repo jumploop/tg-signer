@@ -49,7 +49,7 @@ WebUI 包含账号管理（登录/登出）、配置管理（Signer / Automation
 在 GitHub Container Registry 提供了两种预构建镜像：`ghcr.io/amchii/tg-signer:<tag>`（CLI）和 `ghcr.io/amchii/tg-signer:<tag>-webui`（CLI + WebUI）。
 
 #### 本地
-如果需要自行构建镜像，本地 build 方式仍然保留，见 [docker](./docker) 目录下的 Dockerfile 和 [README](./docker/README.md) 。
+如果需要自行构建镜像，本地 build 方式仍然保留，见 [docker](./docker) 目录下的各 Dockerfile 和 [README](./docker/README.md) 。
 
 ### 使用方法
 

@@ -13,22 +13,13 @@
  * 不依赖 Python：用内置静态服务托管已构建的 static/，并对 /api/* 返回桩数据。
  * 运行：npm run test:e2e
  */
-import { createServer } from 'node:http'
-import { readFile } from 'node:fs/promises'
-import { extname, join, normalize } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { startServer } from './harness.mjs'
+
 import { chromium } from 'playwright-core'
 
-const STATIC_DIR = fileURLToPath(new URL('../../static', import.meta.url))
 const LOG_DIR = '/srv/workdir/logs'
 const TASK_LOG = `${LOG_DIR}/signer-demo/tg-signer.log`
 const TASK_LINES = ['task line 1', 'task line 2', 'task line 3']
-
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-}
 
 // 后端已排好序：非空的任务日志排第一，0 字节的主日志排最后。
 const LOG_FILES = [TASK_LOG, `${LOG_DIR}/error.log`, `${LOG_DIR}/tg-signer.log`]
@@ -38,51 +29,18 @@ const STUB_API = {
   '/api/state': { workdir: '/srv/workdir', log_path: `${LOG_DIR}/tg-signer.log` },
 }
 
-function startServer() {
-  const server = createServer(async (req, res) => {
-    const url = new URL(req.url, 'http://localhost')
-    const path = url.pathname
-
-    if (path in STUB_API) {
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify(STUB_API[path]))
-      return
+const ROUTES = {
+  '/api/logs/files': () => ({ files: LOG_FILES }),
+  '/api/logs': (url) => {
+    const requested = url.searchParams.get('path') || `${LOG_DIR}/tg-signer.log`
+    return {
+      path: requested,
+      lines: requested === TASK_LOG ? TASK_LINES : [],
     }
-
-    if (path === '/api/logs/files') {
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ files: LOG_FILES }))
-      return
-    }
-
-    if (path === '/api/logs') {
-      const requested = url.searchParams.get('path') || `${LOG_DIR}/tg-signer.log`
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(
-        JSON.stringify({
-          path: requested,
-          lines: requested === TASK_LOG ? TASK_LINES : [],
-        }),
-      )
-      return
-    }
-
-    const rel = normalize(path === '/' ? '/index.html' : path).replace(/^([/\\])+/, '')
-    try {
-      const body = await readFile(join(STATIC_DIR, rel))
-      res.writeHead(200, { 'Content-Type': MIME[extname(rel)] || 'application/octet-stream' })
-      res.end(body)
-    } catch {
-      res.writeHead(404).end('not found')
-    }
-  })
-
-  return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }))
-  })
+  },
 }
 
-const { server, port } = await startServer()
+const { server, port } = await startServer({ stubs: STUB_API, routes: ROUTES })
 const browser = await chromium.launch({ channel: 'chrome' })
 
 try {

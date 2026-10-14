@@ -1,6 +1,6 @@
 <template>
   <el-card v-loading="loading" shadow="never" class="llm-card">
-    <div class="llm-intro">
+    <div class="ts-intro">
       <div>
         <span class="ts-section-label">大模型连接</span>
         <p class="ts-section-caption">配置用于 AI 能力的 OpenAI 兼容接口，密钥仅保存在当前工作目录。</p>
@@ -129,11 +129,7 @@ onMounted(refresh)
 </script>
 
 <style scoped>
-.llm-intro {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
+.ts-intro {
   margin-bottom: 18px;
 }
 .llm-alert {
@@ -150,7 +146,7 @@ onMounted(refresh)
 }
 
 @media (max-width: 600px) {
-  .llm-intro {
+  .ts-intro {
     align-items: flex-start;
     flex-direction: column;
   }

@@ -90,10 +90,6 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             self._state = RuleStateStore(self.state_file, logger)
         return self._state
 
-    @state.setter
-    def state(self, value: RuleStateStore) -> None:
-        self._state = value
-
     @property
     def state_file(self) -> Path:
         return self.task_dir / "state.json"
@@ -226,7 +222,8 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
     def ask_for_config(self) -> AutomationConfig:
         return self.template_config()
 
-    def template_config(self) -> AutomationConfig:
+    @staticmethod
+    def template_config() -> AutomationConfig:
         return AutomationConfig(
             rules=[
                 RuleConfig(

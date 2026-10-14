@@ -1,6 +1,6 @@
 <template>
   <el-card shadow="never" class="users-card">
-    <div class="users-intro">
+    <div class="ts-intro">
       <div>
         <span class="ts-section-label">用户信息</span>
         <p class="ts-section-caption">查看本地缓存的账户资料与最近对话，不触发 Telegram 网络请求。</p>
@@ -94,14 +94,7 @@ onMounted(refresh)
 </script>
 
 <style scoped>
-.users-intro,
-.ts-table-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-}
-.users-intro {
+.ts-intro {
   margin-bottom: 14px;
 }
 .users-note {
@@ -132,7 +125,7 @@ onMounted(refresh)
 }
 
 @media (max-width: 600px) {
-  .users-intro,
+  .ts-intro,
   .ts-table-heading {
     align-items: flex-start;
     flex-direction: column;
