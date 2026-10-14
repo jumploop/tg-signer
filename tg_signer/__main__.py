@@ -1,5 +1,3 @@
-__all__ = ("signer",)
-
 import sys
 
 

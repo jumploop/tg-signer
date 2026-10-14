@@ -14,7 +14,6 @@ from pydantic import ValidationError
 from tg_signer.automation.engine import (
     MESSAGE_TRIGGER_TYPE,
     STARTUP_TRIGGER_TYPE,
-    SUPPORTED_TRIGGER_TYPES,
     TIMER_TRIGGER_TYPE,
     UserAutomation,
 )
@@ -582,7 +581,7 @@ def test_engine_drives_every_declared_trigger_type():
     for trigger_cls in get_args(get_args(TriggerConfig)[0]):
         declared |= set(get_args(trigger_cls.model_fields["type"].annotation))
 
-    assert declared == set(SUPPORTED_TRIGGER_TYPES)
+    assert declared == {STARTUP_TRIGGER_TYPE, TIMER_TRIGGER_TYPE, MESSAGE_TRIGGER_TYPE}
 
 
 def test_iter_triggers_filter_by_type_keeps_the_original_index(tmp_path):

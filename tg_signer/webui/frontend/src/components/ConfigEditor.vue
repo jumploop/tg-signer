@@ -32,7 +32,7 @@
       <el-button :loading="loading" @click="refresh">刷新</el-button>
       </div>
     </div>
-    <div class="editor-status">
+    <div class="ts-intro editor-status">
       <div>
         <span class="ts-section-label">{{ kindLabel }}</span>
         <p class="hint">{{ hint }}</p>
@@ -41,7 +41,7 @@
         {{ editing ? '编辑中' : '新建模式' }}
       </el-tag>
     </div>
-    <div class="code-heading">
+    <div class="ts-intro code-heading">
       <span>JSON 配置</span>
       <span class="hint">保存前会自动校验 JSON 格式</span>
     </div>
@@ -331,13 +331,7 @@ onMounted(refresh)
 .config-name {
   width: 190px;
 }
-.editor-status,
-.code-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-}
+
 .editor-status {
   align-items: flex-start;
   margin-bottom: 22px;

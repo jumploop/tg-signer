@@ -7,9 +7,9 @@ import random
 import sqlite3
 import time
 from collections import defaultdict
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import (
-    Annotated,
     Awaitable,
     BinaryIO,
     Callable,
@@ -25,7 +25,7 @@ from typing import (
 from urllib import parse
 
 from croniter import CroniterError, croniter
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import ValidationError
 from pyrogram import Client as BaseClient
 from pyrogram import errors, filters
 from pyrogram.enums import ChatMembersFilter, ChatType
@@ -991,19 +991,16 @@ class BaseUserWorker(Generic[ConfigT]):
         return self._ai_tools
 
 
-class UserSignerWorkerContext(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    sign_chats: defaultdict[RouteKey, list[SignChatV3]]  # 签到配置列表
-    resolved_route_keys: dict[RouteKey, RouteKey]
-    chat_messages: defaultdict[
-        RouteKey,
-        Annotated[
-            dict[int, Optional[Message]],
-            Field(default_factory=dict),
-        ],
-    ]  # 收到的消息，key为(chat id, message_thread_id)
-    waiting_message: Optional[Message]  # 正在处理的消息
+@dataclass
+class UserSignerWorkerContext:
+    sign_chats: defaultdict[RouteKey, list[SignChatV3]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
+    resolved_route_keys: dict[RouteKey, RouteKey] = field(default_factory=dict)
+    chat_messages: defaultdict[RouteKey, dict[int, Optional[Message]]] = field(
+        default_factory=lambda: defaultdict(dict)
+    )
+    waiting_message: Optional[Message] = None
 
 
 class UserSigner(BaseUserWorker[SignConfigV3]):
@@ -1013,12 +1010,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     context: UserSignerWorkerContext
 
     def ensure_ctx(self) -> UserSignerWorkerContext:
-        return UserSignerWorkerContext(
-            sign_chats=defaultdict(list),
-            resolved_route_keys={},
-            chat_messages=defaultdict(dict),
-            waiting_message=None,
-        )
+        return UserSignerWorkerContext()
 
     @property
     def sign_record_store(self) -> SignRecordStore:

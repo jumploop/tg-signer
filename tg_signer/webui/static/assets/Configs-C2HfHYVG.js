@@ -1,9 +1,9 @@
-import { _ as _export_sfc, m as watch, o as onMounted, r as resolveComponent, N as resolveDirective, O as withDirectives, h as openBlock, n as createBlock, w as withCtx, b as createBaseVNode, d as createVNode, a as createElementBlock, P as Fragment, Q as renderList, f as createTextVNode, J as toDisplayString, q as api, R as asArray, g as ref, L as computed, S as ElMessageBox, E as ElMessage, j as errMsg, T as asObject, U as vShow, G as createCommentVNode, s as useRoute, u as useRouter } from './index-1SY902xg.js';
+import { _ as _export_sfc, m as watch, o as onMounted, r as resolveComponent, N as resolveDirective, O as withDirectives, h as openBlock, n as createBlock, w as withCtx, b as createBaseVNode, d as createVNode, a as createElementBlock, P as Fragment, Q as renderList, f as createTextVNode, J as toDisplayString, q as api, R as asArray, g as ref, L as computed, S as ElMessageBox, E as ElMessage, j as errMsg, T as asObject, U as vShow, G as createCommentVNode, s as useRoute, u as useRouter } from './index-DQY2xS5L.js';
 
 const _hoisted_1$3 = { class: "editor-toolbar" };
 const _hoisted_2$3 = { class: "toolbar-fields" };
 const _hoisted_3$2 = { class: "toolbar-actions" };
-const _hoisted_4$1 = { class: "editor-status" };
+const _hoisted_4$1 = { class: "ts-intro editor-status" };
 const _hoisted_5$1 = { class: "ts-section-label" };
 const _hoisted_6$1 = { class: "hint" };
 
@@ -369,7 +369,7 @@ return (_ctx, _cache) => {
           _: 1
         }, 8, ["type"])
       ]),
-      _cache[7] || (_cache[7] = createBaseVNode("div", { class: "code-heading" }, [
+      _cache[7] || (_cache[7] = createBaseVNode("div", { class: "ts-intro code-heading" }, [
         createBaseVNode("span", null, "JSON 配置"),
         createBaseVNode("span", { class: "hint" }, "保存前会自动校验 JSON 格式")
       ], -1)),
@@ -390,7 +390,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const ConfigEditor = /*#__PURE__*/_export_sfc(_sfc_main$3, [['__scopeId',"data-v-8a777a01"]]);
+const ConfigEditor = /*#__PURE__*/_export_sfc(_sfc_main$3, [['__scopeId',"data-v-ef0fa1bb"]]);
 
 const _hoisted_1$2 = { class: "ts-intro" };
 const _hoisted_2$2 = { class: "hint" };

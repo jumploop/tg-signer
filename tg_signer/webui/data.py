@@ -63,7 +63,6 @@ class ConfigEntry:
     path: Path
     updated_from_old: bool
     payload: Dict[str, Any]
-    cfg: BaseJSONConfig
 
 
 @dataclass
@@ -163,7 +162,6 @@ def _config_entry(
         path=path,
         updated_from_old=from_old,
         payload=cfg.to_jsonable(),
-        cfg=cfg,
     )
 
 
@@ -210,7 +208,6 @@ def resolve_automation_config_file(
 
 
 # YAML/JSON 读取与 CLI 引擎共用一份实现（config.read_automation_config_payload）。
-_read_automation_payload = read_automation_config_payload
 
 
 def load_automation_config(
@@ -223,7 +220,7 @@ def load_automation_config(
         )
     # 与 _write_json_atomic 共用锁:读期间不与 os.replace 抢同一个文件句柄。
     with _CONFIG_LOCK:
-        payload = _read_automation_payload(config_file)
+        payload = read_automation_config_payload(config_file)
     cfg, from_old, err = AutomationConfig.load_checked(payload)
     if cfg is None:
         raise ValueError(f"无法解析配置: {config_file}（{err or '未知原因'}）")

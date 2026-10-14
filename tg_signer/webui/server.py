@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import logging
 import os
 import pathlib
@@ -125,10 +124,6 @@ class AuthBody(BaseModel):
     code: str
 
 
-def _challenge() -> HTTPException:
-    return HTTPException(status_code=401, detail="未授权或授权码错误")
-
-
 def require_auth(
     authorization: Optional[str] = Header(default=None),
 ) -> None:
@@ -152,7 +147,7 @@ def require_auth(
                 status_code=429,
                 detail=f"尝试次数过多，请 {remaining:.0f} 秒后再试",
             )
-        raise _challenge()
+        raise HTTPException(status_code=401, detail="未授权或授权码错误")
 
 
 @asynccontextmanager
@@ -290,7 +285,7 @@ def list_configs(kind: str) -> Dict[str, List[str]]:
 @protected.get("/api/configs/{kind}/template")
 def config_template(kind: str) -> Dict[str, Any]:
     if kind == "signer":
-        return {"payload": copy.deepcopy(SIGNER_TEMPLATE)}
+        return {"payload": SIGNER_TEMPLATE}
     if kind == "automation":
         return {"payload": UserAutomation.template_config().to_jsonable()}
     raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")

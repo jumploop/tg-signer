@@ -46,9 +46,6 @@ logger = logging.getLogger("tg-signer")
 STARTUP_TRIGGER_TYPE = "startup"
 TIMER_TRIGGER_TYPE = "timer"
 MESSAGE_TRIGGER_TYPE = "message"
-SUPPORTED_TRIGGER_TYPES = frozenset(
-    {STARTUP_TRIGGER_TYPE, TIMER_TRIGGER_TYPE, MESSAGE_TRIGGER_TYPE}
-)
 
 
 class UserAutomation(BaseUserWorker[AutomationConfig]):
