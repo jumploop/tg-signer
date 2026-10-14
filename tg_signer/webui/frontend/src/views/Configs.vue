@@ -89,15 +89,4 @@ function clearPrefill() {
   margin-bottom: 14px;
 }
 
-@media (max-width: 600px) {
-  .ts-intro {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .config-tab-intro {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-}
 </style>

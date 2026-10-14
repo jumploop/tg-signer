@@ -1,5 +1,4 @@
-import { E as ElMessage } from './index-C5oA3b00.js';
-import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, Q as asArray, j as errMsg, r as resolveComponent, g as ref, u as useRouter, M as resolveDirective, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, I as toDisplayString, a as createElementBlock, O as Fragment, P as renderList, t as normalizeClass, N as withDirectives, aw as copyText } from './index-DpF7b0Gh.js';
+import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, R as asArray, E as ElMessage, j as errMsg, r as resolveComponent, g as ref, u as useRouter, N as resolveDirective, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, J as toDisplayString, a as createElementBlock, P as Fragment, Q as renderList, t as normalizeClass, O as withDirectives, X as copyText } from './index-1SY902xg.js';
 
 const _hoisted_1 = { class: "ts-intro" };
 const _hoisted_2 = { class: "chats-controls" };
@@ -286,6 +285,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Chats = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-8dfb2842"]]);
+const Chats = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-fb9954f3"]]);
 
 export { Chats as default };

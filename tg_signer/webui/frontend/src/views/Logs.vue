@@ -122,11 +122,6 @@ onUnmounted(() => clearInterval(timer))
 }
 
 @media (max-width: 600px) {
-  .ts-intro {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
   .logs-controls > * {
     width: 100% !important;
   }

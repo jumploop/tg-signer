@@ -14,6 +14,7 @@ from .signer import (
     from_folder_option,
     import_config,
     import_file_option,
+    make_worker,
     run_coroutines,
     tg_signer,
 )
@@ -22,17 +23,7 @@ from .signer import (
 def get_automation(
     task_name, ctx_obj: dict, loop: Optional[asyncio.AbstractEventLoop] = None
 ):
-    automation = UserAutomation(
-        task_name=task_name,
-        account=ctx_obj["account"],
-        proxy=ctx_obj["proxy"],
-        session_dir=ctx_obj["session_dir"],
-        workdir=ctx_obj["workdir"],
-        session_string=ctx_obj["session_string"],
-        in_memory=ctx_obj["in_memory"],
-        loop=loop,
-    )
-    return automation
+    return make_worker(UserAutomation, task_name, ctx_obj, loop)
 
 
 @tg_signer.group(name="automation", help="配置和运行自动化")

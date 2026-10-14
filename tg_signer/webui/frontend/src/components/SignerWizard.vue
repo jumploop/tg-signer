@@ -535,25 +535,12 @@ async function saveAll() {
 }
 
 @media (max-width: 600px) {
-  .wizard-progress,
-  .task-toolbar,
-  .task-row,
-  .wizard-footer {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
   .task-actions {
     width: 100%;
   }
 
   .task-actions > * {
     flex: 1;
-  }
-
-  .action-row {
-    align-items: flex-start;
-    flex-direction: column;
   }
 
   .action-fields {

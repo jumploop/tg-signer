@@ -125,12 +125,6 @@ onMounted(refresh)
 }
 
 @media (max-width: 600px) {
-  .ts-intro,
-  .ts-table-heading {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
   .users-note {
     align-items: flex-start;
   }

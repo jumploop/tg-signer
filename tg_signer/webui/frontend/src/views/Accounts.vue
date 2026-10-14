@@ -291,11 +291,6 @@ onMounted(refresh)
 }
 
 @media (max-width: 600px) {
-  .ts-intro {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
   .account-metrics {
     grid-template-columns: 1fr;
   }

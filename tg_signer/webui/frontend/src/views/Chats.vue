@@ -197,12 +197,6 @@ onMounted(() => {
   box-shadow: none;
 }
 @media (max-width: 600px) {
-  .ts-intro,
-  .ts-table-heading {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
   .chats-controls > * {
     width: 100% !important;
   }

@@ -125,10 +125,6 @@ class AuthBody(BaseModel):
     code: str
 
 
-class ChatFetchBody(BaseModel):
-    account: str
-
-
 def _challenge() -> HTTPException:
     return HTTPException(status_code=401, detail="未授权或授权码错误")
 
@@ -579,7 +575,7 @@ def list_chats() -> List[Dict[str, Any]]:
 
 
 @protected.post("/api/chats/fetch")
-async def fetch_chats(body: ChatFetchBody) -> Dict[str, Any]:
+async def fetch_chats(body: AccountBody) -> Dict[str, Any]:
     try:
         ok, message, chats = await account_mod.fetch_dialogs(
             body.account, state.workdir, 50
@@ -659,9 +655,9 @@ def read_logs(
     return {"path": str(resolved), "lines": lines}
 
 
-# ---------------------------------------------------------------------------
-app.router.routes.extend(protected.routes)
+app.include_router(protected)
 
+# ---------------------------------------------------------------------------
 # 鉴权
 # ---------------------------------------------------------------------------
 

@@ -1183,7 +1183,15 @@ def test_interactive_api_docs_are_not_served(client, monkeypatch):
     """
     monkeypatch.setenv(server.AUTH_CODE_ENV, "secret123")
 
-    registered = {route.path for route in server.app.routes}
+    def route_paths(routes):
+        for route in routes:
+            if path := getattr(route, "path", None):
+                yield path
+            original = getattr(route, "original_router", None)
+            if original is not None:
+                yield from route_paths(original.routes)
+
+    registered = set(route_paths(server.app.routes))
     assert not {"/docs", "/redoc", "/openapi.json"} & registered, "仍注册着接口地图路由"
 
     for path in ("/docs", "/redoc", "/openapi.json"):

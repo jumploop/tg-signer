@@ -43,10 +43,10 @@ class AliasedGroup(click.Group):
                 formatter.write_text(f"{k} -> {v}")
 
 
-def get_signer(
-    task_name, ctx_obj: dict, loop: Optional[asyncio.AbstractEventLoop] = None
+def make_worker(
+    cls, task_name, ctx_obj: dict, loop: Optional[asyncio.AbstractEventLoop] = None
 ):
-    signer = UserSigner(
+    return cls(
         task_name=task_name,
         account=ctx_obj["account"],
         proxy=ctx_obj["proxy"],
@@ -56,7 +56,12 @@ def get_signer(
         in_memory=ctx_obj["in_memory"],
         loop=loop,
     )
-    return signer
+
+
+def get_signer(
+    task_name, ctx_obj: dict, loop: Optional[asyncio.AbstractEventLoop] = None
+):
+    return make_worker(UserSigner, task_name, ctx_obj, loop)
 
 
 def from_folder_option(command):

@@ -962,9 +962,6 @@ class BaseUserWorker(Generic[ConfigT]):
         with open(self.config_file, "w", encoding="utf-8") as fp:
             fp.write(config_str)
 
-    def ask_one(self):
-        raise NotImplementedError
-
     def ensure_ai_cfg(self):
         cfg_manager = OpenAIConfigManager(self.workdir)
         # load_file_config() 对损坏文件直接抛底层错误（截断是 JSONDecodeError，

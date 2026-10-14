@@ -146,11 +146,6 @@ onMounted(refresh)
 }
 
 @media (max-width: 600px) {
-  .ts-intro {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
   .llm-form :deep(.el-form-item) {
     display: block;
   }
