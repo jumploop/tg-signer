@@ -279,6 +279,21 @@ def build_env(proxy: Optional[str] = None) -> Dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+def _running_snapshot(
+    workdir: Path | str | None = None,
+) -> list[tuple[str, subprocess.Popen, List[str]]]:
+    """按 workdir 过滤后的进程快照，供两个运行态查询共用。"""
+    prefix = None if workdir is None else f"{Path(workdir).resolve()}|"
+    with _STATE_LOCK:
+        snapshot = [
+            (key, proc, list(_TASK_NAMES.get(key, [])))
+            for key, proc in _PROCESSES.items()
+        ]
+    if prefix is None:
+        return snapshot
+    return [item for item in snapshot if item[0].startswith(prefix)]
+
+
 def running_tasks(workdir: Path | str | None = None) -> Dict[str, bool]:
     """返回 {display_key: is_running},并清理已退出条目。
 
@@ -288,12 +303,7 @@ def running_tasks(workdir: Path | str | None = None) -> Dict[str, bool]:
     目录去解析 key 必然匹配不上,用户看到的每一行「停止」按钮都是点不动的。
     """
     result: Dict[str, bool] = {}
-    prefix = None if workdir is None else f"{Path(workdir).resolve()}|"
-    with _STATE_LOCK:
-        snapshot = list(_PROCESSES.items())
-    for key, proc in snapshot:
-        if prefix is not None and not key.startswith(prefix):
-            continue
+    for key, proc, _names in _running_snapshot(workdir):
         shown = key.split("|", 1)[-1]
         if proc.poll() is None:
             result[shown] = True
@@ -311,15 +321,9 @@ def running_task_names(
     与 :func:`running_tasks` 一样默认按 workdir 过滤。
     """
     result: Dict[str, List[str]] = {}
-    prefix = None if workdir is None else f"{Path(workdir).resolve()}|"
-    with _STATE_LOCK:
-        snapshot = list(_PROCESSES.items())
-        names = {key: list(_TASK_NAMES.get(key, [])) for key, _ in snapshot}
-    for key, proc in snapshot:
-        if prefix is not None and not key.startswith(prefix):
-            continue
+    for key, proc, names in _running_snapshot(workdir):
         if proc.poll() is None:
-            result[key.split("|", 1)[-1]] = names[key]
+            result[key.split("|", 1)[-1]] = names
     return result
 
 

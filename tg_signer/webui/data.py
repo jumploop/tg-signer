@@ -11,10 +11,10 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
 from tg_signer.config import (
-    AUTOMATION_CONFIG_FILE_NAMES,
     AutomationConfig,
     BaseJSONConfig,
     SignConfigV3,
+    find_automation_config_file,
     read_automation_config_payload,
 )
 from tg_signer.sign_record_store import SignRecordStore
@@ -117,6 +117,14 @@ def _config_path(kind: ConfigKind, name: str, workdir: Optional[Path | str]) -> 
     return resolve_under(_config_root(kind, workdir), name) / "config.json"
 
 
+def _automation_root(workdir: Optional[Path | str]) -> Path:
+    return get_workdir(workdir) / "automations"
+
+
+def _automation_dir(name: str, workdir: Optional[Path | str]) -> Path:
+    return resolve_under(_automation_root(workdir), name)
+
+
 # 配置读写的进程内互斥锁。
 # Windows 上 os.replace 要求目标文件没有未共享删除的打开句柄,而本模块读配置
 # 用的 open(path, "r") 不共享删除;不加这把锁,一个正在读配置的线程就能让
@@ -183,15 +191,13 @@ def list_automation_names(workdir: Optional[Path | str] = None) -> List[str]:
     Automation 配置支持 config.json / config.yaml / config.yml 三种文件名,
     与 CLI 的解析顺序一致,只要存在其一即视为有效任务。
     """
-    base = get_workdir(workdir)
-    root = base / "automations"
+    root = _automation_root(workdir)
     if not root.is_dir():
         return []
     return sorted(
         p.name
         for p in root.iterdir()
-        if p.is_dir()
-        and any((p / name).is_file() for name in AUTOMATION_CONFIG_FILE_NAMES)
+        if p.is_dir() and find_automation_config_file(p, require_file=True) is not None
     )
 
 
@@ -199,12 +205,9 @@ def resolve_automation_config_file(
     name: str, workdir: Optional[Path | str] = None
 ) -> Optional[Path]:
     """返回 automations/<name>/ 下第一个存在的配置文件。"""
-    root = resolve_under(get_workdir(workdir) / "automations", name)
-    for file_name in AUTOMATION_CONFIG_FILE_NAMES:
-        candidate = root / file_name
-        if candidate.is_file():
-            return candidate
-    return None
+    return find_automation_config_file(
+        _automation_dir(name, workdir), require_file=True
+    )
 
 
 # YAML/JSON 读取与 CLI 引擎共用一份实现（config.read_automation_config_payload）。
@@ -215,9 +218,7 @@ def load_automation_config(
 ) -> ConfigEntry:
     config_file = resolve_automation_config_file(name, workdir)
     if config_file is None:
-        raise FileNotFoundError(
-            f"配置不存在: {get_workdir(workdir) / 'automations' / name}"
-        )
+        raise FileNotFoundError(f"配置不存在: {_automation_dir(name, workdir)}")
     # 与 _write_json_atomic 共用锁:读期间不与 os.replace 抢同一个文件句柄。
     with _CONFIG_LOCK:
         payload = read_automation_config_payload(config_file)
@@ -234,8 +235,7 @@ def save_automation_config(
 ) -> Path:
     """校验并写入 automations/<name>/config.json（JSON 优先于 YAML）。"""
     cfg = _validate_config(AutomationConfig, content)
-    config_dir = resolve_under(get_workdir(workdir) / "automations", name)
-    config_file = config_dir / "config.json"
+    config_file = _automation_dir(name, workdir) / "config.json"
     _write_json_atomic(config_file, cfg.to_jsonable())
     return config_file
 
@@ -259,9 +259,7 @@ def delete_automation_config(name: str, workdir: Optional[Path | str] = None) ->
     # 不会走到下面的 rmtree。
     config_file = resolve_automation_config_file(name, workdir)
     if config_file is None:
-        raise FileNotFoundError(
-            f"配置不存在: {get_workdir(workdir) / 'automations' / name}"
-        )
+        raise FileNotFoundError(f"配置不存在: {_automation_dir(name, workdir)}")
     _remove_config_dir(config_file.parent)
     return config_file
 

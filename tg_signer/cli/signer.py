@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from functools import partial
 from typing import Optional
 
 import click
@@ -58,10 +59,7 @@ def make_worker(
     )
 
 
-def get_signer(
-    task_name, ctx_obj: dict, loop: Optional[asyncio.AbstractEventLoop] = None
-):
-    return make_worker(UserSigner, task_name, ctx_obj, loop)
+get_signer = partial(make_worker, UserSigner)
 
 
 def from_folder_option(command):

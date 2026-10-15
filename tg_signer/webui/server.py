@@ -54,7 +54,7 @@ _AUTH_LOGIN_MIN_INTERVAL = 1.0
 # create=False：模块级 state 在 import 时构造，而 UIState 过去会 mkdir 工作目录，
 # 于是「仅仅 import 一下」就会在进程 CWD 下凭空建出 `.signer` —— 传了
 # --workdir 也照样建，随后 main() 改回真正的 workdir，那个野目录却留在磁盘上。
-# 目录改由 _setup_logger()（经 _setup_webui_logger 的 mkdir）在启动时创建。
+# 目录改由 _setup_webui_logger() 的 mkdir 在启动时创建。
 state = data_mod.UIState(create=False)
 
 SIGNER_TEMPLATE: Dict[str, object] = {
@@ -76,11 +76,6 @@ SIGNER_TEMPLATE: Dict[str, object] = {
 
 def _expected_auth_code() -> Optional[str]:
     return os.environ.get(AUTH_CODE_ENV) or None
-
-
-def _setup_logger() -> None:
-    """把 WebUI 自身日志落到 <workdir>/logs/tg-signer.log。"""
-    data_mod._setup_webui_logger(state.workdir)
 
 
 class StateBody(BaseModel):
@@ -152,7 +147,7 @@ def require_auth(
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    _setup_logger()
+    data_mod._setup_webui_logger(state.workdir)
     yield
     # 关闭服务时终止受管子进程，避免遗留孤儿进程。
     stopped = runner_mod.shutdown_all()
@@ -388,10 +383,6 @@ def list_users() -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def _llm_manager() -> OpenAIConfigManager:
-    return OpenAIConfigManager(state.workdir)
-
-
 def _safe_llm_config(
     manager: OpenAIConfigManager, *, effective: bool
 ) -> Dict[str, Any]:
@@ -428,7 +419,7 @@ def _mask_api_key(api_key: str) -> str:
 
 @protected.get("/api/llm-config")
 def get_llm_config() -> Dict[str, Any]:
-    manager = _llm_manager()
+    manager = OpenAIConfigManager(state.workdir)
     has_env = manager.has_env_config()
     cfg = _safe_llm_config(manager, effective=True)
     return {
@@ -448,7 +439,7 @@ def save_llm_config(body: LmConfigBody) -> Dict[str, Any]:
     ``api_key`` 为空、或恰好是服务端回显的掩码时都视为「不修改已有密钥」,
     这样前端即使把回显值原样提交回来也不会覆盖真实密钥。
     """
-    manager = _llm_manager()
+    manager = OpenAIConfigManager(state.workdir)
     stored_key = (
         _safe_llm_config(manager, effective=False).get("api_key") or ""
     ).strip()
@@ -482,7 +473,7 @@ def save_llm_config(body: LmConfigBody) -> Dict[str, Any]:
 
 @protected.post("/api/llm-config/test")
 async def test_llm_config(body: LmConfigBody) -> Dict[str, Any]:
-    manager = _llm_manager()
+    manager = OpenAIConfigManager(state.workdir)
     effective_key = (
         _safe_llm_config(manager, effective=True).get("api_key") or ""
     ).strip()
@@ -771,7 +762,7 @@ def main(
             f"拒绝启动：监听 {host} 会让 WebUI 对整个网络开放，"
             f"请通过 --auth-code 或环境变量 {AUTH_CODE_ENV} 设置授权码。"
         )
-    _setup_logger()
+    data_mod._setup_webui_logger(state.workdir)
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 

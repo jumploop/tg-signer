@@ -23,6 +23,7 @@ from tg_signer.config import (
     RuleConfig,
     TimerTriggerConfig,
     TriggerConfig,
+    find_automation_config_file,
     normalize_chat_ref,
     read_automation_config_payload,
 )
@@ -119,20 +120,13 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         留下一个空的 ``<workdir>/automations/<task>/`` 目录,随后被 ``list``
         当成真实任务列出来。
         """
-        task_dir = self.config_dir_path()
-        for name in AUTOMATION_CONFIG_FILE_NAMES:
-            candidate = task_dir / name
-            if candidate.exists():
-                return candidate
-        return None
+        return find_automation_config_file(self.config_dir_path())
 
     def _resolve_config_file(self) -> Path:
         # 返回第一个存在的配置文件；若都不存在，则返回默认 JSON 路径。
-        candidates = [self.task_dir / name for name in AUTOMATION_CONFIG_FILE_NAMES]
-        for path in candidates:
-            if path.exists():
-                return path
-        return candidates[0]
+        return find_automation_config_file(self.task_dir) or (
+            self.task_dir / AUTOMATION_CONFIG_FILE_NAMES[0]
+        )
 
     def load_config(
         self, cfg_cls: Optional[type[AutomationConfig]] = None

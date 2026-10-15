@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Optional
+from functools import partial
 
 import click
 from click import Group
@@ -19,11 +19,7 @@ from .signer import (
     tg_signer,
 )
 
-
-def get_automation(
-    task_name, ctx_obj: dict, loop: Optional[asyncio.AbstractEventLoop] = None
-):
-    return make_worker(UserAutomation, task_name, ctx_obj, loop)
+get_automation = partial(make_worker, UserAutomation)
 
 
 @tg_signer.group(name="automation", help="配置和运行自动化")

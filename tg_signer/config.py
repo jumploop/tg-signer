@@ -529,6 +529,18 @@ AUTOMATION_CONFIG_FILE_NAMES = ("config.json", "config.yaml", "config.yml")
 YAML_CONFIG_SUFFIXES = frozenset({".yml", ".yaml"})
 
 
+def find_automation_config_file(
+    directory: "Path", *, require_file: bool = False
+) -> Optional["Path"]:
+    """按统一顺序返回目录下第一个自动化配置文件。"""
+    check = Path.is_file if require_file else Path.exists
+    for name in AUTOMATION_CONFIG_FILE_NAMES:
+        candidate = directory / name
+        if check(candidate):
+            return candidate
+    return None
+
+
 def read_automation_config_payload(path: "Path") -> Dict[str, Any]:
     """按后缀读取自动化配置为 dict（JSON 或 YAML）。
 
