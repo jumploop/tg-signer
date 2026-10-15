@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple, Union
 
-from croniter import CroniterBadCronError, croniter
+from croniter import CroniterError, croniter
 from pyrogram import filters
 from pyrogram.handlers import EditedMessageHandler, MessageHandler
 from pyrogram.methods.utilities.idle import idle
@@ -28,7 +28,7 @@ from tg_signer.config import (
     read_automation_config_payload,
 )
 from tg_signer.core import BaseUserWorker, get_now
-from tg_signer.utils import safe_regex_search
+from tg_signer.utils import safe_regex_search, write_json_atomic, write_text_atomic
 
 from .handlers import (
     get_handler,
@@ -188,11 +188,12 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
                 import yaml  # type: ignore
             except ModuleNotFoundError as exc:
                 raise ValueError("未安装pyyaml，无法写入YAML配置") from exc
-            with open(path, "w", encoding="utf-8") as fp:
-                yaml.safe_dump(payload, fp, allow_unicode=True, sort_keys=False)
+            write_text_atomic(
+                path,
+                yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
+            )
             return
-        with open(path, "w", encoding="utf-8") as fp:
-            json.dump(payload, fp, ensure_ascii=False)
+        write_json_atomic(path, payload)
 
     def import_(self, config_str: str) -> None:  # type: ignore[override]
         """按目标文件格式落盘。
@@ -397,37 +398,62 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
                         trigger_id=trigger_id,
                         rule_id=rule.id,
                     )
-                    # 两件事必须分开做:
-                    # 1) 规则异常只跳过该条规则,不能让异常冒泡打断 _tick_timers
-                    #    里后面的规则(那会让它们整轮都不触发)。
-                    # 2) 推进 next_run_at 必须放在 finally:原先它排在
-                    #    `await self._run_rule(...)` 之后,一旦规则链抛异常就永远
-                    #    走不到,next_run_at 停在过去 —— 于是每个 tick 都重新触发
-                    #    一次。实测 interval_seconds=3600 的规则 0.2 秒发了 12 条。
-                    try:
-                        await self._run_rule(rule, event)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:  # noqa: BLE001
-                        self.log(
-                            f"timer 规则执行异常，已跳过本轮: rule={rule.id}, "
-                            f"trigger={trigger_id}",
-                            level="ERROR",
-                        )
-                        logger.exception("timer 规则执行异常: rule=%s", rule.id)
-                    finally:
-                        advanced = self.state.get_trigger_next_run(rule.id, trigger_id)
-                        if not advanced or advanced <= now:
-                            # 未被 schedule_next 覆盖时，按 trigger 默认策略推导下一次。
-                            advanced = self._compute_next_run(timer_trigger, now)
-                        self.state.set_trigger_next_run(rule.id, trigger_id, advanced)
-                        self.state.set_trigger_last_run(rule.id, trigger_id, now)
-                        self.state.save()
-                        self.log(
-                            f"timer 执行完成: rule={rule.id}, trigger={trigger_id}, "
-                            f"next={advanced.isoformat() if advanced else 'None'}",
-                            level="DEBUG",
-                        )
+                    # 先同步把 next_run_at 推离当前时刻，再派发任务。
+                    # 否则慢规则跑着的时候，每个 tick 都会把同一个 timer 再派发一次。
+                    # 任务结束时如果 `schedule_next` 写入了新值，会覆盖这里。
+                    default_next = self._compute_next_run(timer_trigger, now)
+                    self.state.set_trigger_next_run(rule.id, trigger_id, default_next)
+                    self.state.set_trigger_last_run(rule.id, trigger_id, now)
+                    self.state.save()
+                    # 规则链放进独立 task：timer 里可能有 delay / 慢 AI / 慢 HTTP，
+                    # 内联 await 会让后面所有 timer 规则一起排队等它结束。
+                    task = asyncio.ensure_future(
+                        self._run_timer_rule(rule, event, timer_trigger, now)
+                    )
+                    self._dispatch_tasks.add(task)
+                    task.add_done_callback(self._dispatch_tasks.discard)
+                    task.add_done_callback(self._on_dispatch_done)
+                    self.log(
+                        f"timer 已派发: rule={rule.id}, trigger={trigger_id}",
+                        level="DEBUG",
+                    )
+
+    async def _run_timer_rule(
+        self,
+        rule: RuleConfig,
+        event: Event,
+        timer_trigger: TimerTriggerConfig,
+        now: datetime,
+    ) -> None:
+        """执行一次 timer 规则，并在结束时推进 next_run_at。
+
+        异常只在单条规则范围内处理，不能让 ``_tick_timers`` 后面的规则停摆。
+        next_run_at 在派发前已同步推进；这里只处理 ``schedule_next`` 的覆盖，
+        保证它写入的新值不会被默认间隔盖掉。
+        """
+        trigger_id = event.trigger_id
+        try:
+            await self._run_rule(rule, event)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            self.log(
+                f"timer 规则执行异常，已跳过本轮: rule={rule.id}, trigger={trigger_id}",
+                level="ERROR",
+            )
+            logger.exception("timer 规则执行异常: rule=%s", rule.id)
+        finally:
+            advanced = self.state.get_trigger_next_run(rule.id, trigger_id)
+            if not advanced or advanced <= now:
+                # 未被 schedule_next 覆盖时，按 trigger 默认策略推导下一次。
+                advanced = self._compute_next_run(timer_trigger, now)
+            self.state.set_trigger_next_run(rule.id, trigger_id, advanced)
+            self.state.save()
+            self.log(
+                f"timer 执行完成: rule={rule.id}, trigger={trigger_id}, "
+                f"next={advanced.isoformat() if advanced else 'None'}",
+                level="DEBUG",
+            )
 
     async def on_message(self, client, message: Message):
         _ = client
@@ -528,7 +554,10 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             try:
                 it = croniter(trigger_params.cron, start_time=now)
                 next_dt: datetime = it.next(ret_type=datetime)
-            except CroniterBadCronError:
+            # CroniterBadCronError 与 CroniterBadDateError 都是 CroniterError 子类。
+            # 后者出现在「语法合法但永不存在」的 cron（如 0 0 31 2 *）；漏捕它会让
+            # 单个坏 trigger 反复炸掉整个 _tick_timers，拖垮同配置的其它规则。
+            except CroniterError:
                 self.log(f"cron表达式无效: {trigger_params.cron}", level="WARNING")
                 return None
         elif trigger_params.interval_seconds:

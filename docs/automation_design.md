@@ -207,7 +207,8 @@ sequenceDiagram
 - `message` 对象。
 - `chat_id`、`now`。
 
-缺失变量不会抛错，会保留为 `{var_name}` 原文（`SafeFormatDict`）。
+缺失变量会抛 `TemplateRenderError`，不会把未渲染的 `{var_name}` 原样发给 Telegram；
+正文里本来就是普通花括号的 JSON 请求体不算模板，仍按原样返回。
 
 ## 7. 插件机制
 

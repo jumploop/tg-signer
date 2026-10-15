@@ -233,6 +233,31 @@ def test_restrict_file_permissions_real_mode_on_posix(tmp_path):
     assert os.stat(target).st_mode & 0o777 == 0o600
 
 
+def test_write_text_atomic_keeps_old_content_when_replace_fails(tmp_path, monkeypatch):
+    """替换失败时旧文件保持不变，不残留临时文件。"""
+    target = tmp_path / "config.json"
+    target.write_text("old", encoding="utf-8")
+
+    def boom(_src, _dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(utils.os, "replace", boom)
+
+    with pytest.raises(OSError):
+        utils.write_text_atomic(target, "new")
+
+    assert target.read_text(encoding="utf-8") == "old"
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_write_text_atomic_writes_new_content(tmp_path):
+    target = tmp_path / "nested" / "config.yaml"
+
+    utils.write_text_atomic(target, "rules: []\n")
+
+    assert target.read_text(encoding="utf-8") == "rules: []\n"
+
+
 # ---------------------------------------------------------------------------
 # safe_regex_search：配置正则的边界护栏
 # ---------------------------------------------------------------------------

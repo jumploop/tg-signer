@@ -317,6 +317,21 @@ def test_compute_next_run_interval_and_cron(tmp_path):
     assert next_dt > now
 
 
+def test_compute_next_run_returns_none_for_valid_but_impossible_cron(tmp_path):
+    """语法合法但永不存在日期的 cron 必须返回 None，而不是抛异常。
+
+    回归：``0 0 31 2 *`` 语法合法，但 croniter 找不到下一次日期，抛的是
+    ``CroniterBadDateError``。原先只捕获 ``CroniterBadCronError``，异常会冒泡
+    打断整个 ``_tick_timers``，同配置里的其它 timer 规则跟着一起停摆。
+    """
+    worker = make_worker(tmp_path)
+    now = datetime(2024, 1, 1, 0, 0, tzinfo=timezone.utc)
+
+    trigger = TimerTriggerConfig(type="timer", params={"cron": "0 0 31 2 *"})
+
+    assert worker._compute_next_run(trigger, now) is None
+
+
 @pytest.mark.asyncio
 async def test_timer_schedule_next_override(tmp_path, monkeypatch):
     """验证 timer 触发后 schedule_next 能覆盖默认间隔计算。"""
@@ -840,7 +855,50 @@ async def test_one_bad_rule_does_not_block_other_rules(tmp_path, monkeypatch):
     engine.state.set_trigger_next_run("good", "good-t", now - timedelta(seconds=1))
 
     await engine._tick_timers()
+    await asyncio.gather(*list(engine._dispatch_tasks), return_exceptions=True)
     assert ran == ["bad", "good"], f"坏规则打断了后续规则: {ran}"
+
+
+@pytest.mark.asyncio
+async def test_slow_timer_does_not_block_other_timers(tmp_path, monkeypatch):
+    """慢 timer 规则不得让同一配置里的其它 timer 规则排队等待。"""
+    engine = UserAutomation(
+        task_name="timer_slow", workdir=tmp_path, session_dir=tmp_path
+    )
+    now = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    started: list[str] = []
+    release = asyncio.Event()
+
+    async def run_rule(rule, _event):
+        started.append(rule.id)
+        if rule.id == "slow":
+            await release.wait()
+
+    import tg_signer.automation.engine as engine_module
+
+    monkeypatch.setattr(engine, "_run_rule", run_rule)
+    monkeypatch.setattr(engine_module, "get_now", lambda: now)
+    monkeypatch.setattr(
+        engine,
+        "load_config",
+        lambda cfg_cls=None: SimpleNamespace(
+            rules=[_timer_rule("slow"), _timer_rule("fast")]
+        ),
+    )
+    engine._state = RuleStateStore(tmp_path / "state.json", logging.getLogger("test"))
+    engine.state.set_trigger_next_run("slow", "slow-t", now - timedelta(seconds=1))
+    engine.state.set_trigger_next_run("fast", "fast-t", now - timedelta(seconds=1))
+
+    try:
+        await asyncio.wait_for(engine._tick_timers(), timeout=0.5)
+        for _ in range(50):
+            if len(started) >= 2:
+                break
+            await asyncio.sleep(0.01)
+        assert started == ["slow", "fast"], f"慢 timer 挡住了后续规则: {started}"
+    finally:
+        release.set()
+        await engine._cancel_dispatch_tasks()
 
 
 @pytest.mark.asyncio

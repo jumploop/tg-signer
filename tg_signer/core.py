@@ -66,6 +66,8 @@ from .utils import (
     get_now,
     message_text,
     restrict_file_permissions,
+    write_json_atomic,
+    write_text_atomic,
 )
 
 logger = logging.getLogger("tg-signer")
@@ -162,8 +164,7 @@ def write_latest_chats(path: pathlib.Path, chats: list[dict]) -> None:
     字节。``default=Object.default`` 是 pyrogram 自带的枚举序列化，留这一份即可
     （``chat_to_dict`` 的其余字段都已是 JSON 原生类型）。
     """
-    with open(path, "w", encoding="utf-8") as fp:
-        json.dump(chats, fp, indent=4, default=Object.default, ensure_ascii=False)
+    write_json_atomic(path, chats, default=Object.default)
 
 
 def _folder_dynamic_rules(folder: Folder) -> list[str]:
@@ -641,8 +642,7 @@ class BaseUserWorker(Generic[ConfigT]):
         raise NotImplementedError
 
     def write_config(self, config: BaseJSONConfig):
-        with open(self.config_file, "w", encoding="utf-8") as fp:
-            json.dump(config.to_jsonable(), fp, ensure_ascii=False)
+        write_json_atomic(self.config_file, config.to_jsonable())
 
     def reconfig(self):
         config = self.ask_for_config()
@@ -703,10 +703,7 @@ class BaseUserWorker(Generic[ConfigT]):
 
     def set_me(self, user: User):
         self.user = user
-        with open(
-            self.get_user_dir(user).joinpath("me.json"), "w", encoding="utf-8"
-        ) as fp:
-            fp.write(str(user))
+        write_text_atomic(self.get_user_dir(user).joinpath("me.json"), str(user))
 
     async def _ensure_session_usable(self) -> None:
         """非交互式检查当前账号 session 是否可用。
@@ -959,8 +956,7 @@ class BaseUserWorker(Generic[ConfigT]):
         return data
 
     def import_(self, config_str: str):
-        with open(self.config_file, "w", encoding="utf-8") as fp:
-            fp.write(config_str)
+        write_text_atomic(self.config_file, config_str)
 
     def ensure_ai_cfg(self):
         cfg_manager = OpenAIConfigManager(self.workdir)
