@@ -86,7 +86,7 @@ class RuleStateStore:
                         data = json.load(fp)
                     self._validate_shape(data)
                     break
-                except OSError:
+                except (OSError, ValueError, TypeError):
                     continue
             else:
                 raise RuntimeError(

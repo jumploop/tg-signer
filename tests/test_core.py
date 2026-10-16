@@ -1640,7 +1640,7 @@ def test_load_config_error_mentions_field(signer_factory):
 
 @pytest.mark.asyncio
 async def test_save_session_string_restricts_permissions(tmp_path, monkeypatch):
-    """session_string 等同账号登录态,落盘后必须收紧到仅属主可读写。"""
+    """session_string 等同账号登录态,必须在替换前于临时文件上收紧权限。"""
     import tg_signer.core as core
 
     calls = []
@@ -1666,7 +1666,11 @@ async def test_save_session_string_restricts_permissions(tmp_path, monkeypatch):
     await core.Client.save_session_string(_FakeClient(session_file))
 
     assert session_file.read_text(encoding="utf-8") == "SESSION-STRING-SECRET"
-    assert calls == [(session_file, 0o600)]
+    assert len(calls) == 1
+    call_path, call_mode = calls[0]
+    assert call_path.parent == session_file.parent
+    assert call_path.suffix == ".tmp"
+    assert call_mode == 0o600
 
 
 def test_get_api_config_warns_once_about_shared_builtin_credentials(monkeypatch):

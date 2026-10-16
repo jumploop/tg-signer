@@ -94,7 +94,8 @@ def normalize_sign_at(value: str) -> str:
             return f"{parsed.minute} {parsed.hour} * * * {parsed.second}"
         return f"{parsed.minute} {parsed.hour} * * *"
     try:
-        croniter(text)
+        # 只构造 croniter 不够:"0 0 31 2 *" 语法合法但永远无下一次,晚一点才炸。
+        croniter(text).next()
     except CroniterError as exc:
         raise ValueError(f"不是合法的时间或 cron 表达式: {text}") from exc
     return text
@@ -464,7 +465,8 @@ class TimerTriggerParams(ChatRefsMixin):
 
     chat_id: Optional[Union[int, str]] = None
     cron: Optional[str] = None
-    interval_seconds: Optional[int] = None
+    # 负/零间隔在 engine 的 1 秒轮询下会变成持续触发。
+    interval_seconds: Optional[int] = Field(default=None, gt=0)
     # 同 SignConfigV3.random_seconds:负数会在 engine 里炸 randint。
     random_seconds: int = Field(default=0, ge=0)
 

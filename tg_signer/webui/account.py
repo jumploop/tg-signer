@@ -19,7 +19,7 @@ from tg_signer.core import (
     get_proxy,
     write_latest_chats,
 )
-from tg_signer.utils import resolve_under, write_json_atomic
+from tg_signer.utils import resolve_under, write_json_atomic, write_text_atomic
 
 # 每账号一个登录会话,会话内持有一个 daemon 线程 + 独立 event loop + 一个
 # Client。用户 send_code 之后中途放弃(关页面 / 不发验证码)时这些资源没人回收,
@@ -196,7 +196,7 @@ class _AccountLoginSession:
             me = await self.client.get_me()
             user_dir = self.workdir / "users" / str(me.id)
             user_dir.mkdir(parents=True, exist_ok=True)
-            (user_dir / "me.json").write_text(str(me), encoding="utf-8")
+            write_text_atomic(user_dir / "me.json", str(me))
             save_account_user(self.account, me.id, self.workdir)
             try:
                 await self.client.save_session_string()

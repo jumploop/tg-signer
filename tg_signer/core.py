@@ -361,10 +361,12 @@ class Client(SafeGetForumTopics, BaseClient):
         return self.workdir / (self.name + ".session_string")
 
     async def save_session_string(self):
-        with open(self.session_string_file, "w") as fp:
-            fp.write(await self.export_session_string())
-        # session_string 等同于账号登录态,落盘后收紧到仅属主可读写(POSIX)。
-        restrict_file_permissions(self.session_string_file)
+        # session_string 等同于账号登录态:先在临时文件上收紧权限,再原子替换。
+        write_text_atomic(
+            self.session_string_file,
+            await self.export_session_string(),
+            before_replace=restrict_file_permissions,
+        )
 
     def load_session_string(self):
         logger.info("Loading session_string from local file.")
@@ -1564,10 +1566,16 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
 
             if only_once:
                 break
-            cron_it = croniter(sign_at, now)
-            next_run: datetime = cron_it.next(datetime) + timedelta(
-                seconds=random.randint(0, int(config.random_seconds))
-            )
+            try:
+                cron_it = croniter(sign_at, now)
+                next_run: datetime = cron_it.next(datetime) + timedelta(
+                    seconds=random.randint(0, int(config.random_seconds))
+                )
+            except CroniterError as e:
+                # 配置层已校验,这里兜底防止手改的坏 cron 崩掉常驻任务。
+                logger.exception(e)
+                await asyncio.sleep(_ALL_FAILED_RETRY_SECONDS)
+                continue
             self.log(f"下次运行时间: {next_run}")
             await asyncio.sleep((next_run - now).total_seconds())
 

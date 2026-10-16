@@ -57,7 +57,9 @@ def test_normalize_sign_at_with_seconds_schedules_at_the_right_instant():
     )
 
 
-@pytest.mark.parametrize("value", ["", "   ", "不是 cron", "每晚六点", "60 6 * * *"])
+@pytest.mark.parametrize(
+    "value", ["", "   ", "不是 cron", "每晚六点", "60 6 * * *", "0 0 31 2 *"]
+)
 def test_normalize_sign_at_rejects_garbage(value):
     with pytest.raises(ValueError):
         normalize_sign_at(value)
@@ -285,6 +287,13 @@ def test_timer_trigger_rejects_negative_random_seconds():
             type="timer",
             params={"interval_seconds": 60, "random_seconds": -5},
         )
+
+
+@pytest.mark.parametrize("value", [-1, 0])
+def test_timer_trigger_rejects_non_positive_interval(value):
+    """负/零间隔会在 1 秒轮询下反复触发,必须在配置层挡住。"""
+    with pytest.raises(ValidationError):
+        TimerTriggerConfig(type="timer", params={"interval_seconds": value})
 
 
 def test_sign_config_v3_accepts_zero_and_positive_random_seconds():
