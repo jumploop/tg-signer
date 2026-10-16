@@ -902,9 +902,19 @@ class BaseUserWorker(Generic[ConfigT]):
         if admin:
             filter_ = ChatMembersFilter.ADMINISTRATORS
             query = ""
-        async for member in self.app.get_chat_members(
-            chat_id, query, limit=limit, filter=filter_
-        ):
+
+        async def collect_members():
+            return [
+                member
+                async for member in self.app.get_chat_members(
+                    chat_id, query, limit=limit, filter=filter_
+                )
+            ]
+
+        members = await self._call_telegram_api(
+            "messages.GetChatParticipants", collect_members
+        )
+        for member in members:
             yield member
 
     async def list_members(

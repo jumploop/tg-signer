@@ -223,6 +223,9 @@ function emptyDraft() {
 }
 
 function parseAction(action) {
+  if (action.type) {
+    return action
+  }
   switch (action.action) {
     case 1:
       return { type: 'send_text', text: action.text || '' }

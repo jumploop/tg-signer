@@ -159,7 +159,11 @@ class _AccountLoginSession:
 
     def run(self, coro, timeout: float):
         future = asyncio.run_coroutine_threadsafe(coro, self.loop)
-        return future.result(timeout=timeout)
+        try:
+            return future.result(timeout=timeout)
+        except TimeoutError:
+            future.cancel()
+            raise
 
     async def _send_code(self, phone: str) -> Tuple[str, str]:
         await self.client.connect()
@@ -423,7 +427,12 @@ async def fetch_dialogs(
                 await client.disconnect()
         except Exception:  # noqa: BLE001
             pass
-    name = me.first_name or me.username or me.id
+    name = (
+        getattr(me, "first_name", None)
+        or getattr(me, "username", None)
+        or getattr(me, "id", None)
+        or account
+    )
     return True, f"已获取最近 {len(chats)} 个对话: {name}", chats
 
 

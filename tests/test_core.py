@@ -34,6 +34,32 @@ class TestBaseUserWorker:
         assert worker.context == {}
         assert pathlib.Path(worker.app.key).name == "acct"
 
+    @pytest.mark.asyncio
+    async def test_search_members_uses_rate_limited_api_wrapper(
+        self, monkeypatch, signer_factory
+    ):
+        worker = signer_factory()
+        calls = []
+        member = SimpleNamespace(id=1)
+
+        class FakeApp:
+            key = "fake-key"
+
+            async def get_chat_members(self, *args, **kwargs):
+                yield member
+
+        worker.app = FakeApp()
+
+        async def fake_call(operation, call):
+            calls.append(operation)
+            return await call()
+
+        monkeypatch.setattr(worker, "_call_telegram_api", fake_call)
+        members = [item async for item in worker.search_members(-100, "q", limit=1)]
+
+        assert members == [member]
+        assert calls == ["messages.GetChatParticipants"]
+
 
 def collect_outputs(monkeypatch):
     outputs = []

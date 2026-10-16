@@ -167,6 +167,33 @@ async def test_schedule_next_writes_state(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_schedule_next_rejects_negative_delay(tmp_path):
+    """负数 delay/offset 不应把 next_run_at 写到过去。"""
+    state = RuleStateStore(tmp_path / "state.json", logging.getLogger("test"))
+    event = Event(
+        type="timer",
+        chat_id=None,
+        message=None,
+        now=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        trigger_id="t1",
+        rule_id="r1",
+    )
+    ctx = AutomationContext(
+        vars={},
+        state=state,
+        client=None,
+        logger=logging.getLogger("test"),
+        worker=DummyWorker(),
+        workdir=tmp_path,
+    )
+
+    with pytest.raises(ValueError):
+        await schedule_next(event, ctx, {"delay_seconds": -5})
+    with pytest.raises(ValueError):
+        await schedule_next(event, ctx, {"offset_seconds": -5})
+
+
+@pytest.mark.asyncio
 async def test_schedule_next_from_var_minutes(tmp_path):
     """schedule_next 支持 from_var 按分钟解释。"""
     state = RuleStateStore(tmp_path / "state.json", logging.getLogger("test"))
@@ -641,6 +668,9 @@ async def test_blacklist_filter_missing_source_vars_fails_closed(tmp_path):
         await blacklist_filter(
             event, ctx, {"source_vars": ["also_missing_a", "also_missing_b"]}
         )
+
+    with pytest.raises(ValueError):
+        await blacklist_filter(event, ctx, {"source_vars": ["real", "missing_var"]})
 
 
 @pytest.mark.asyncio

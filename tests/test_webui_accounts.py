@@ -111,6 +111,41 @@ async def test_fetch_dialogs_returns_live_dialogs_without_writing_cache(
     assert not (tmp_path / "users" / "123" / "latest_chats.json").exists()
 
 
+@pytest.mark.asyncio
+async def test_fetch_dialogs_handles_missing_profile(monkeypatch, tmp_path):
+    class FakeClient:
+        is_connected = True
+
+        async def connect(self):
+            return True
+
+        async def get_me(self):
+            return None
+
+        async def get_dialogs(self, limit):
+            yield SimpleNamespace(
+                chat=SimpleNamespace(
+                    id=-1002,
+                    title="无资料账号",
+                    type="channel",
+                    username=None,
+                    first_name=None,
+                    last_name=None,
+                )
+            )
+
+        async def disconnect(self):
+            self.is_connected = False
+
+    monkeypatch.setattr(account, "_new_client", lambda *_args: FakeClient())
+
+    ok, message, chats = await account.fetch_dialogs("acc", tmp_path)
+
+    assert ok
+    assert "已获取最近 1 个对话: acc" in message
+    assert len(chats) == 1
+
+
 def test_new_client_uses_in_memory_for_session_string_only(tmp_path):
     (tmp_path / "acc.session_string").write_text("dummy-string", encoding="utf-8")
     client = account._new_client("acc", tmp_path)

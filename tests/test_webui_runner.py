@@ -10,6 +10,44 @@ _RUNNER_PATH = Path(__file__).resolve().parents[1] / "tg_signer" / "webui" / "ru
 _spec = importlib.util.spec_from_file_location("tg_signer_webui_runner", _RUNNER_PATH)
 runner = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(runner)
+_REAL_POPEN = runner.subprocess.Popen
+
+
+class _TestChild:
+    pid = 4242
+
+    def __init__(self, exit_after: float | None = None):
+        self.started = time.monotonic()
+        self.exit_after = exit_after
+        self.returncode = None
+
+    def poll(self):
+        if self.returncode is None and self.exit_after is not None:
+            if time.monotonic() - self.started >= self.exit_after:
+                self.returncode = 1
+        return self.returncode
+
+    def terminate(self):
+        self.returncode = -15
+
+    def kill(self):
+        self.returncode = -9
+
+    def wait(self, timeout=None):
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        while self.poll() is None and deadline is not None:
+            if time.monotonic() >= deadline:
+                raise runner.subprocess.TimeoutExpired("child", timeout)
+            time.sleep(0.01)
+        return self.returncode
+
+
+@pytest.fixture(autouse=True)
+def _fast_startup_grace(monkeypatch):
+    monkeypatch.setattr(runner, "_STARTUP_GRACE_SECONDS", 0.0)
+    monkeypatch.setattr(
+        runner.subprocess, "Popen", lambda *args, **kwargs: _TestChild()
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -231,6 +269,7 @@ def test_running_task_names_cleared_after_stop(monkeypatch, tmp_path):
 
 
 def test_running_tasks_cleans_finished(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *a, **k: _TestChild(0.05))
     monkeypatch.setattr(
         runner,
         "build_command",
@@ -273,6 +312,7 @@ def test_status_tracks_process_lifecycle(monkeypatch, tmp_path):
     assert ok
     assert _wait_for_status("signer", "acc", tmp_path, False)
 
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *a, **k: _TestChild(0.05))
     monkeypatch.setattr(
         runner,
         "build_command",
@@ -363,6 +403,7 @@ def test_start_redirects_stdout_stderr_to_child_dir_not_main_log(monkeypatch, tm
     stdout_log = runner.child_stdout_log(tmp_path, "signer", "acc")
     marker = "RUNNER_REDIRECT_MARKER_42"
     # grace 调到 0.3s:子进程先 flush marker 再 sleep 60,grace 期内仍存活
+    monkeypatch.setattr(runner.subprocess, "Popen", _REAL_POPEN)
     monkeypatch.setattr(runner, "_STARTUP_GRACE_SECONDS", 0.3)
     # 子进程脚本:先 flush marker,再长睡,避免被 grace 早退检测捕获
     child_script = (
@@ -590,10 +631,11 @@ def test_start_after_child_exited_by_itself_releases_stale_lock(monkeypatch, tmp
     用户马上再点启动」必然失败，错误信息还是误导性的账号占用。
     """
     monkeypatch.setattr(runner, "_STARTUP_GRACE_SECONDS", 0.0)
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *a, **k: _TestChild(0.05))
     monkeypatch.setattr(
         runner,
         "build_command",
-        lambda *a, **k: [sys.executable, "-c", "import time; time.sleep(0.3)"],
+        lambda *a, **k: [sys.executable, "-c", "pass"],
     )
     ok, msg = runner.start("signer", "t_stale", tmp_path, "acc")
     assert ok, msg
@@ -603,6 +645,7 @@ def test_start_after_child_exited_by_itself_releases_stale_lock(monkeypatch, tmp
     assert runner._PROCESSES[key].poll() is not None
     assert key in runner._LOCKS
 
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *a, **k: _TestChild())
     monkeypatch.setattr(
         runner,
         "build_command",
@@ -621,7 +664,12 @@ def test_start_popen_value_error_releases_account_lock(tmp_path):
     锁一起冒泡，锁要到 traceback 被 GC 才释放（违反 test_account_lock.py 的
     「start 失败不得留锁」不变量）。
     """
-    ok, msg = runner.start("signer", "bad\x00task", tmp_path, "acc")
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(runner.subprocess, "Popen", _REAL_POPEN)
+    try:
+        ok, msg = runner.start("signer", "bad\x00task", tmp_path, "acc")
+    finally:
+        monkeypatch.undo()
     assert ok is False
     assert "启动失败" in msg
     assert runner.process_key("signer", "acc", tmp_path) not in runner._LOCKS

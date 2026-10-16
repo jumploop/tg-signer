@@ -292,12 +292,13 @@ def resolve_blacklist_text(
 
     source_vars = params.get("source_vars")
     if isinstance(source_vars, list):
-        present = [name for name in source_vars if ctx.vars.get(name)]
-        if source_vars and not present:
+        missing = [name for name in source_vars if name not in ctx.vars]
+        if source_vars and missing:
             raise ValueError(
-                f"blacklist_filter: source_vars={source_vars} 全都不存在，"
+                f"blacklist_filter: source_vars={missing} 不存在，"
                 f"无法判断内容，已中止该规则（可用变量: {sorted(ctx.vars)}）"
             )
+        present = [name for name in source_vars if ctx.vars.get(name)]
         values = [str(ctx.vars.get(name)) for name in present]
         return "\n".join(values)
 
@@ -726,6 +727,8 @@ async def schedule_next(
         offset_seconds = float(params.get("offset_seconds") or 0)
     except (TypeError, ValueError):
         offset_seconds = 0
+    if delay_seconds < 0 or offset_seconds < 0:
+        raise ValueError("schedule_next: delay_seconds 和 offset_seconds 不能为负数")
     try:
         total_seconds = float(delay_seconds) + float(offset_seconds)
     except (TypeError, ValueError):
