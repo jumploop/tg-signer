@@ -15,10 +15,8 @@ from tg_signer.sign_record_store import SignRecordStore
 class AliasedGroup(click.Group):
     _aliases = {"run_once": "run-once", "send_text": "send-text"}
 
-    def __init__(self, name, aliases: dict[str, str] = None, *args, **kwargs):
+    def __init__(self, name, *args, **kwargs):
         self.aliases = self._aliases.copy()
-        if aliases:
-            self.aliases.update(aliases)
         super().__init__(name, *args, **kwargs)
 
     def get_command(self, ctx, cmd_name):
@@ -125,6 +123,22 @@ def run_coroutines(loop, coroutines):
             task.cancel()
         loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
         raise click.ClickException(f"{type(exc).__name__}: {exc}") from exc
+
+
+def run_in_new_loop(build_coroutines):
+    """新建事件循环跑完 ``build_coroutines(loop)`` 返回的协程列表。
+
+    ``get_client`` / ``_call_telegram_api`` 依赖 ``asyncio.get_event_loop()``
+    拿到这个 loop，所以必须 ``set_event_loop`` 留着；但不 ``close()`` 的话
+    每次调用都泄漏一个 loop 及其内部 selector（Windows 上还占着一个
+    epoll/select 句柄）。
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        run_coroutines(loop, build_coroutines(loop))
+    finally:
+        loop.close()
 
 
 @click.group(name="tg-signer", help="使用<子命令> --help查看使用说明", cls=AliasedGroup)
@@ -324,19 +338,12 @@ def logout(obj):
 def run(obj, task_names, num_of_dialogs, folder):
     if len(task_names) < 1:
         raise click.UsageError("At least one task name is required")
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    coros = []
-    for task_name in task_names:
-        signer = get_signer(task_name, obj, loop=loop)
-        coros.append(signer.run(num_of_dialogs, folder=folder))
-    try:
-        run_coroutines(loop, coros)
-    finally:
-        # get_client/_call_telegram_api 依赖 asyncio.get_event_loop() 拿到这个
-        # loop，所以必须留着；但不 close() 的话每次调用都泄漏一个 loop 及其
-        # 内部 selector（Windows 上还占着一个 epoll/select 句柄）。
-        loop.close()
+    run_in_new_loop(
+        lambda loop: [
+            get_signer(task_name, obj, loop=loop).run(num_of_dialogs, folder=folder)
+            for task_name in task_names
+        ]
+    )
 
 
 @tg_signer.command(help="运行一次签到任务，即使该签到任务今日已执行过")
@@ -618,20 +625,17 @@ def list_schedule_messages(obj, chat_id):
 def multi_run(obj, accounts, task_name, num_of_dialogs, folder):
     logger = logging.getLogger("tg-signer")
     logger.info(f"开始使用一套配置({task_name})同时运行多个账号..")
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    coros = []
-    for account in accounts:
-        obj["account"] = account
-        signer = get_signer(task_name, obj, loop=loop)
-        coros.append(signer.run(num_of_dialogs, folder=folder))
-    try:
-        run_coroutines(loop, coros)
-    finally:
-        # get_client/_call_telegram_api 依赖 asyncio.get_event_loop() 拿到这个
-        # loop，所以必须留着；但不 close() 的话每次调用都泄漏一个 loop 及其
-        # 内部 selector（Windows 上还占着一个 epoll/select 句柄）。
-        loop.close()
+
+    def build(loop):
+        coros = []
+        for account in accounts:
+            obj["account"] = account
+            coros.append(
+                get_signer(task_name, obj, loop=loop).run(num_of_dialogs, folder=folder)
+            )
+        return coros
+
+    run_in_new_loop(build)
 
 
 @tg_signer.command(name="llm-config", help="配置大模型API")

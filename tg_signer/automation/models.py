@@ -172,8 +172,6 @@ class RuleStateStore:
             return value.isoformat()
         if isinstance(value, (set, frozenset, tuple)):
             return list(value)
-        if isinstance(value, Path):
-            return str(value)
         return str(value)
 
     def save(self, force: bool = False) -> None:

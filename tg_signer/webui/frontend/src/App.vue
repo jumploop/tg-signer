@@ -6,13 +6,6 @@
 #app {
   height: 100%;
 }
-.row {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  margin-bottom: 18px;
-  flex-wrap: wrap;
-}
 .hint {
   font-size: 13px;
   line-height: 1.6;
@@ -45,16 +38,6 @@
 @media (max-width: 720px) {
   .el-card__body {
     padding: 16px;
-  }
-
-  .row > .el-input,
-  .row > .el-select,
-  .row > .el-input-number {
-    width: 100% !important;
-  }
-
-  .row > .el-button {
-    flex: 1 1 auto;
   }
 
   .el-table {

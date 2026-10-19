@@ -40,26 +40,14 @@ def write_json_atomic(
     before_replace=None,
 ) -> None:
     """Write JSON through a same-directory temporary file and atomic replace."""
-    target = pathlib.Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=target.parent, prefix=f"{target.name}.", suffix=".tmp"
+    write_text_atomic(
+        path,
+        json.dumps(payload, ensure_ascii=False, indent=2, default=default),
+        fsync=fsync,
+        attempts=attempts,
+        delay=delay,
+        before_replace=before_replace,
     )
-    tmp = pathlib.Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fp:
-            json.dump(payload, fp, ensure_ascii=False, indent=2, default=default)
-            fp.flush()
-            if fsync:
-                os.fsync(fp.fileno())
-        if before_replace is not None:
-            before_replace(tmp)
-        if attempts > 1:
-            replace_with_retry(tmp, target, attempts=attempts, delay=delay)
-        else:
-            os.replace(tmp, target)
-    finally:
-        tmp.unlink(missing_ok=True)
 
 
 def write_text_atomic(

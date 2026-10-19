@@ -3,6 +3,27 @@
 ## 版本变动日志
 ### 未发布
 
+第四轮 ponytail 审计（全部代码），源码净删 71 行；以删除死代码、合并重复实现、去掉无人使用的形参为主，无用户可见的行为变更（前端 `static/` 已随源码重新构建）。
+
+**合并重复实现**
+- `utils.write_json_atomic` 收敛为 `write_text_atomic` 的转发：两个原子写函数此前逐行相同，仅序列化那一步不同；`json.dumps` 先在内存拼串，序列化失败发生在临时文件创建**之前**，原子性反而更强（同步把 `test_save_config_never_leaves_a_partial_file` 的补丁目标从 `json.dump` 改为 `json.dumps`，契约不变）
+- CLI 的「新建事件循环 → 跑协程 → 关闭」在 `run` / `multi_run` / `automation run` 三处逐字重复，收敛为 `cli.signer.run_in_new_loop()`；顺带修掉 `automation run` **漏掉 `finally: loop.close()`**（该路径每次调用泄漏一个事件循环及其 selector 句柄）
+- automation 引擎的两份「取后台任务异常」回调（`_log_task_failure` 与 `_on_dispatch_done`）合并为后者：startup/timer 任务失败的日志现在也会带账户/任务前缀与 traceback
+
+**删除死代码 / 无人使用的形参**
+- `cli/automation.py` 函数体后的游离注解 `tg_automation: Group` 及只为它存在的 `Group` import
+- `cli/signer.py::AliasedGroup.__init__` 的 `aliases` 形参：click 只以 `cls=AliasedGroup` 实例化，永不会传入
+- `config.py::format_validation_error` 的 `limit` 形参（三个调用方全部用默认值）；`SignAction.action` 基类字段（被 5 个子类全部 Literal 覆盖，从不生效）
+- `notification/server_chan.py::sc_send` 的 `options` 形参（全仓零传入）
+- `handlers.schedule_next` 里操作数必然为 float 的不可达 `try/except`；`RuleStateStore._json_default` 与兜底 `str()` 返回值完全相同的 `Path` 分支
+- 前端 `SignerWizard.vue`：从未被宿主接线的 `initial` prop 整套预填分支与 `saved` 事件（`Configs.vue` 只传 `v-model:visible`），以及 `onActionTypeChange` 两个「把 falsy 再赋成空串」的空操作分支
+- 前端 `App.vue`：无任何模板引用的 `.row` 全局样式及配套移动端规则
+
+**审计中保留未动（供后续决策）**
+- `ai_tools.save_config` 在原子写之后的第二次 `restrict_file_permissions`：效果上冗余（`os.replace` 保留临时文件权限），但 `test_save_config_restricts_file_permissions` 把「最终文件被收紧」显式断言为安全契约，删除等于改动安全测试来迁就简化，本轮不动
+- automation 规则 params 里一组从未文档化、全仓零引用的别名/开关：`ai_reply` 的 `output_var`、`forward` 的 `to_chat_id`/`from_chat_id`/`message_id`、`delay` 的 `delay_seconds`、`blacklist_filter` 的 `text` 覆盖、`resolve_ai_input` 的 `history_separator`、`server_chan` handler 的 `SERVER_CHAN_SEND_KEY` 环境变量回退——删除会让存量（虽未文档化）配置静默失效，涉及配置兼容面，留待维护者确认
+- 其余低优先级候选：`AutomationContext.workdir`（插件上下文字段，零读取方）、`RuleStateStore.save(force=)`（仅测试使用）、`PYROGRAM_LOG_ON` 环境开关、`RecentSignRecord.account`（仅测试读取）、`HttpCallback.method`（Literal 钉死且从不读取，但删除会把当前的校验报错变成静默忽略）、WebUI `RunStartBody.proxy`（对外请求字段，删除对直连 API 用户是 breaking）、`runner.status()`（生产零调用但承担生命周期测试的断言基点）
+
 ### 0.10.16
 三轮 over-engineering 审计（ponytail-audit），累计净删约 560 行。本轮以删除死代码、合并重复实现为主，无用户可见的行为变更。
 

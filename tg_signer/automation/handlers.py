@@ -729,10 +729,7 @@ async def schedule_next(
         offset_seconds = 0
     if delay_seconds < 0 or offset_seconds < 0:
         raise ValueError("schedule_next: delay_seconds 和 offset_seconds 不能为负数")
-    try:
-        total_seconds = float(delay_seconds) + float(offset_seconds)
-    except (TypeError, ValueError):
-        total_seconds = 0
+    total_seconds = delay_seconds + offset_seconds
     next_at = event.now + timedelta(seconds=total_seconds) if total_seconds else None
     if total_seconds and next_at:
         ctx.state.set_trigger_next_run(event.rule_id, target_trigger_id, next_at)

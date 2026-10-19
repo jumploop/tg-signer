@@ -101,16 +101,16 @@ def normalize_sign_at(value: str) -> str:
     return text
 
 
-def format_validation_error(exc: Exception, limit: int = 8) -> str:
+def format_validation_error(exc: Exception) -> str:
     """把校验异常压成 ``字段: 原因`` 列表，便于直接展示给用户。"""
     if not isinstance(exc, ValidationError):
         return str(exc)
     errors = exc.errors()
     parts = [
         f"{'.'.join(str(loc) for loc in err['loc']) or '<root>'}: {err['msg']}"
-        for err in errors[:limit]
+        for err in errors[:8]
     ]
-    if len(errors) > limit:
+    if len(errors) > 8:
         parts.append(f"等 {len(errors)} 项")
     return "; ".join(parts)
 
@@ -312,7 +312,8 @@ class SupportAction(int, Enum):
 
 
 class SignAction(BaseModel):
-    action: SupportAction
+    # 公共基类：五个子类各自用 Literal 钉住自己的 action 值与默认值。
+    pass
 
 
 class SendTextAction(SignAction):

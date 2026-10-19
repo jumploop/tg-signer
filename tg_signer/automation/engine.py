@@ -285,7 +285,7 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             # timer trigger 统一由轮询调度循环驱动。
             timer_task = asyncio.create_task(self.timer_loop())
             for task in (*startup_tasks, timer_task):
-                task.add_done_callback(self._log_task_failure)
+                task.add_done_callback(self._on_dispatch_done)
             self.log("开始自动化运行...")
             try:
                 await idle()
@@ -310,19 +310,6 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         for index, trigger in enumerate(rule.triggers):
             if trigger.type == trigger_type:
                 yield index, trigger
-
-    @staticmethod
-    def _log_task_failure(task: asyncio.Task) -> None:
-        """记录后台任务异常退出。
-
-        这些协程没有 await 点,不主动取异常的话只会以
-        "Task exception was never retrieved" 的形式被 GC 打印,故障会被静默吞掉。
-        """
-        if task.cancelled():
-            return
-        exc = task.exception()
-        if exc is not None:
-            logger.error("后台任务异常退出: %s", exc, exc_info=exc)
 
     async def run_startup(self, rule: RuleConfig) -> None:
         for index, trigger in self._iter_triggers(rule, STARTUP_TRIGGER_TYPE):
@@ -482,17 +469,18 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         task.add_done_callback(self._on_dispatch_done)
 
     def _on_dispatch_done(self, task: "asyncio.Task") -> None:
-        """脱离调度协程后，异常不再由 pyrogram 打印，必须自己取出并记录。
+        """记录后台任务异常退出（startup/timer/消息规则链共用）。
 
-        不取出的话 task 的异常要到 GC 才以 "Task exception was never retrieved"
-        冒出，而且不会进日志文件 —— 等于又变成静默失败。
+        这些 task 脱离了各自的调度协程，没人主动取异常的话，只会以
+        "Task exception was never retrieved" 的形式在 GC 时冒出来，既进不了
+        日志文件也抓不到 —— 等于故障被静默吞掉。
         """
         if task.cancelled():
             return
         exc = task.exception()
         if exc is not None:
-            self.log(f"规则链执行异常: {exc}", level="ERROR")
-            logger.exception("规则链执行异常", exc_info=exc)
+            self.log(f"后台任务异常退出: {exc}", level="ERROR")
+            logger.exception("后台任务异常退出", exc_info=exc)
 
     async def _cancel_dispatch_tasks(self) -> None:
         """退出时收掉仍在跑的规则链，避免 client 关闭后 handler 才发消息。"""

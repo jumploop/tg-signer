@@ -15,7 +15,7 @@ def _build_url(sendkey: str) -> str:
     return f"https://sctapi.ftqq.com/{sendkey}.send"
 
 
-async def sc_send(sendkey, title, desp="", options=None):
+async def sc_send(sendkey, title, desp=""):
     """发送 Server酱通知，失败时抛异常。
 
     原来直接 ``return response.json()``，把结果原样丢给调用方，而调用方
@@ -32,10 +32,8 @@ async def sc_send(sendkey, title, desp="", options=None):
     非 0 的数字 ``code``。引擎会把 handler 异常记成 ERROR 并中断后续 handler，
     失败因此在日志里可见。
     """
-    if options is None:
-        options = {}
     url = _build_url(sendkey)
-    params = {"title": title, "desp": desp, **options}
+    params = {"title": title, "desp": desp}
     headers = {"Content-Type": "application/json;charset=utf-8"}
     async with AsyncClient(headers=headers) as client:
         response = await client.post(url, json=params)

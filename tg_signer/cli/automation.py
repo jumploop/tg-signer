@@ -1,9 +1,7 @@
-import asyncio
 import logging
 from functools import partial
 
 import click
-from click import Group
 
 from tg_signer.automation import UserAutomation
 
@@ -15,7 +13,7 @@ from .signer import (
     import_config,
     import_file_option,
     make_worker,
-    run_coroutines,
+    run_in_new_loop,
     tg_signer,
 )
 
@@ -35,9 +33,6 @@ def tg_automation(ctx: click.Context):
         logger.info(f"Using account: {ctx.obj['account']}")
 
 
-tg_automation: Group
-
-
 @tg_automation.command(name="list", help="列出已有配置")
 @click.pass_obj
 def list_(obj):
@@ -55,13 +50,12 @@ def list_(obj):
 def run(obj, task_names, num_of_dialogs, folder):
     if not task_names:
         raise click.UsageError("At least one task name is required")
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    coros = [
-        get_automation(name, obj, loop=loop).run(num_of_dialogs, folder=folder)
-        for name in task_names
-    ]
-    run_coroutines(loop, coros)
+    run_in_new_loop(
+        lambda loop: [
+            get_automation(name, obj, loop=loop).run(num_of_dialogs, folder=folder)
+            for name in task_names
+        ]
+    )
 
 
 @tg_automation.command(help="初始化或重置配置")

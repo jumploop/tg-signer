@@ -1,4 +1,4 @@
-import { _ as _export_sfc, m as watch, o as onMounted, r as resolveComponent, N as resolveDirective, O as withDirectives, h as openBlock, n as createBlock, w as withCtx, b as createBaseVNode, d as createVNode, a as createElementBlock, P as Fragment, Q as renderList, f as createTextVNode, J as toDisplayString, q as api, R as asArray, g as ref, L as computed, S as ElMessageBox, E as ElMessage, j as errMsg, T as asObject, U as vShow, G as createCommentVNode, s as useRoute, u as useRouter } from './index-DegaMYUe.js';
+import { _ as _export_sfc, m as watch, o as onMounted, r as resolveComponent, N as resolveDirective, O as withDirectives, h as openBlock, n as createBlock, w as withCtx, b as createBaseVNode, d as createVNode, a as createElementBlock, P as Fragment, Q as renderList, f as createTextVNode, J as toDisplayString, q as api, R as asArray, g as ref, L as computed, S as ElMessageBox, E as ElMessage, j as errMsg, T as asObject, U as vShow, G as createCommentVNode, s as useRoute, u as useRouter } from './index-DlUtLx2h.js';
 
 const _hoisted_1$3 = { class: "editor-toolbar" };
 const _hoisted_2$3 = { class: "toolbar-fields" };
@@ -634,12 +634,11 @@ const _sfc_main$1 = {
   __name: 'SignerWizard',
   props: {
   visible: Boolean,
-  initial: { type: Object, default: null }, // { name, payload }
 },
-  emits: ['update:visible', 'saved'],
+  emits: ['update:visible'],
   setup(__props, { emit: __emit }) {
 
-const props = __props;
+
 const emit = __emit;
 
 const ACTION_OPTIONS = [
@@ -702,24 +701,10 @@ function parseAction(action) {
 
 function initFromProps() {
   step.value = 0;
-  const initial = props.initial;
-  if (initial && initial.payload && Array.isArray(initial.payload.chats)) {
-    taskName.value = initial.name || 'my_sign';
-    signAt.value = initial.payload.sign_at || '06:00:00';
-    randomSeconds.value = initial.payload.random_seconds || 0;
-    chats.value = initial.payload.chats.map((chat) => ({
-      chat_id: chat.chat_id,
-      message_thread_id: chat.message_thread_id || null,
-      name: chat.name || '',
-      delete_after: chat.delete_after || null,
-      actions: (chat.actions || []).map(parseAction),
-    }));
-  } else {
-    taskName.value = 'my_sign';
-    signAt.value = '06:00:00';
-    randomSeconds.value = 0;
-    chats.value = [];
-  }
+  taskName.value = 'my_sign';
+  signAt.value = '06:00:00';
+  randomSeconds.value = 0;
+  chats.value = [];
 }
 
 function actionSummary(actions) {
@@ -760,12 +745,6 @@ function removeAction(index) {
 function onActionTypeChange(act) {
   if (act.type === 'send_dice' && !act.dice) {
     act.dice = '🎲';
-  }
-  if (act.type === 'send_text' && !act.text) {
-    act.text = '';
-  }
-  if (act.type === 'click_keyboard' && !act.text) {
-    act.text = '';
   }
 }
 
@@ -876,7 +855,6 @@ async function saveAll() {
       payload
     );
     ElMessage.success(`配置 ${data.name} 保存成功`);
-    emit('saved', data.name);
     emit('update:visible', false);
   } catch (error) {
     ElMessage.error('保存失败: ' + errMsg(error));
@@ -1316,7 +1294,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const SignerWizard = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-9215ab88"]]);
+const SignerWizard = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-804e1a43"]]);
 
 const _hoisted_1 = { class: "configs-shell" };
 const _hoisted_2 = { class: "ts-intro" };

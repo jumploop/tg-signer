@@ -178,11 +178,10 @@ import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import api, { errMsg } from '../api'
 
-const props = defineProps({
+defineProps({
   visible: Boolean,
-  initial: { type: Object, default: null }, // { name, payload }
 })
-const emit = defineEmits(['update:visible', 'saved'])
+const emit = defineEmits(['update:visible'])
 
 const ACTION_OPTIONS = [
   { value: 'send_text', label: '发送普通文本' },
@@ -244,24 +243,10 @@ function parseAction(action) {
 
 function initFromProps() {
   step.value = 0
-  const initial = props.initial
-  if (initial && initial.payload && Array.isArray(initial.payload.chats)) {
-    taskName.value = initial.name || 'my_sign'
-    signAt.value = initial.payload.sign_at || '06:00:00'
-    randomSeconds.value = initial.payload.random_seconds || 0
-    chats.value = initial.payload.chats.map((chat) => ({
-      chat_id: chat.chat_id,
-      message_thread_id: chat.message_thread_id || null,
-      name: chat.name || '',
-      delete_after: chat.delete_after || null,
-      actions: (chat.actions || []).map(parseAction),
-    }))
-  } else {
-    taskName.value = 'my_sign'
-    signAt.value = '06:00:00'
-    randomSeconds.value = 0
-    chats.value = []
-  }
+  taskName.value = 'my_sign'
+  signAt.value = '06:00:00'
+  randomSeconds.value = 0
+  chats.value = []
 }
 
 function actionSummary(actions) {
@@ -302,12 +287,6 @@ function removeAction(index) {
 function onActionTypeChange(act) {
   if (act.type === 'send_dice' && !act.dice) {
     act.dice = '🎲'
-  }
-  if (act.type === 'send_text' && !act.text) {
-    act.text = ''
-  }
-  if (act.type === 'click_keyboard' && !act.text) {
-    act.text = ''
   }
 }
 
@@ -418,7 +397,6 @@ async function saveAll() {
       payload
     )
     ElMessage.success(`配置 ${data.name} 保存成功`)
-    emit('saved', data.name)
     emit('update:visible', false)
   } catch (error) {
     ElMessage.error('保存失败: ' + errMsg(error))
