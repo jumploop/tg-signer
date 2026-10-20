@@ -1,7 +1,8 @@
 # Changelog / 版本变动日志
 
 ## 版本变动日志
-### 未发布
+### 0.10.18
+第四至第六轮 ponytail 审计（源码累计净删 201 行，无用户可见行为变更），外加一处记录页显示修复。
 
 **fix: 记录页「最近签到」列显示的一直是最早一条**：两路数据源（SQLite `sign_date DESC`、JSON `reverse=True`）给前端的都是「最新在前」，`Records.vue` 却取 `records[records.length - 1]`——凡有两天以上记录的用户，该列展示的都是历史首签而非最近一次。改为取首元素，并新增 `test_load_sign_records_orders_records_newest_first` 把两路数据源的排序契约钉在测试里（`static/` 已重新构建）。
 
