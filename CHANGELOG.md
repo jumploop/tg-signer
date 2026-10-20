@@ -3,6 +3,26 @@
 ## 版本变动日志
 ### 未发布
 
+第五轮 ponytail 审计（全部代码），源码净删 90 行；以不可达防御分支、空包装、零传入形参为主，无用户可见的行为变更（前端 `static/` 已随源码重新构建）。
+
+**删除不可达 / 恒等的代码**
+- `core.py`：`in_memory_run`、`get_task_list` 两个单调用方的空包装，内联回 `run` / `list_`
+- `automation/engine.py`：两处 `except asyncio.CancelledError: raise`（CancelledError 自 3.8 起继承 BaseException，`except Exception` 本来就接不住）；`load_config` 的 YAML 分支与函数尾部重复的「赋值+日志+return」合并为一处；`startup_tasks`/`timer_task` 永远不会被读取的初始值；`_match_user` 对配置层已拒绝的 `None` 项的过滤
+- `automation/handlers.py`：`resolve_ai_input` 的 `recent_limit is None` 提前返回（与 `int()` 兜底路径结果完全相同）；`message_sender` 的 `None` 守卫（唯一调用源是 `get_chat_history` 的迭代产出）
+- `ai_tools.py`：`get_openai_client` 不可达的 `except OpenAIError: return None`（构造器仅在 api_key 为 None 时抛出，两个调用方都必传非空）；`test_openai_connection` 的 `client is None` 分支与 `getattr/hasattr` 双重 close 防御；`calculate_problem` 从未被传非默认值的 `sys_prompt` 形参与恒真条件
+- `config.py`：上一轮删掉 `SignAction.action` 后留下的空基类（5 个 action 直接继承 `BaseModel`）；`SignChatV2`/`SignChatV3` 从未被读取的 `version` ClassVar（版本分发只发生在根配置 `SignConfigV*` 上）
+- `cli/signer.py`：`AliasedGroup` 仅为「子类可覆盖」预留的 `_aliases → 实例拷贝` 间接层，收敛为类属性 `aliases`
+- `sign_record_store.py`：`upsert_record` / `import_json_file` 从未被传入的 `source` 形参（字面量内联，`source` 列与 SELECT 不变）
+- `_kurigram/patches.py`：对 `_parse` 是否协程的双向兼容——实测 `AnimatedChatPhoto` 存在的所有受支持版本（2.2.25/2.2.26）中它必为协程；`methods.py` 里 forum topics 的同款分支**仍需要**（2.2.19 是同步函数），未动
+- `webui/server.py`：`get_config`/`save_config`/`delete_config` 三处恒等的 `except HTTPException: raise`（HTTPException 不是后续任何 except 的子类，且自身本来就会原样冒泡）
+- `webui/data.py`：`tail_file` 无人能触达的 `limit <= 0` 守卫（唯一生产调用方 `Query(ge=1)`）；`generate_random_config_name` 种子链里无调用方会传的 `first_name` 回退
+- 前端 `SignerWizard.vue`：`validateTask` 对 `parseChatId` 的恒等错误包装；`parseAction` 对组件内不存在的「type 形态」入参的早退分支
+- 前端 `theme.css`：`.el-card__header` 规则（全部 `el-card` 均无 header，节点不会渲染）与零引用的 `--ts-navy-2` 变量
+
+**审计中保留未动（供后续决策，第四轮同见下）**
+- `ai_reply` 的 `input`、`extract_regex` 的 `text`/`ignore_case`/`group`：与第四轮那批同性质——未文档化、仓内零引用的 handler params，删除会让存量配置静默失效，留待维护者确认
+- `/api/llm-config` 的 `api_key_unchanged`、`GET /api/logs` 的 `path`：前端不读，但被测试当作断言基点（与第四轮保留的 records/users `path` 字段同族）
+
 第四轮 ponytail 审计（全部代码），源码净删 71 行；以删除死代码、合并重复实现、去掉无人使用的形参为主，无用户可见的行为变更（前端 `static/` 已随源码重新构建）。
 
 **合并重复实现**

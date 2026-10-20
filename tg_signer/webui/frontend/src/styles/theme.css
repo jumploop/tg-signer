@@ -1,7 +1,6 @@
 /* tg-signer WebUI -- design tokens and Element Plus theme overrides */
 :root {
   --ts-navy: #0D1B2A;
-  --ts-navy-2: #13283D;
   --ts-sky: #2569D0;
   --ts-sky-soft: rgba(37, 105, 208, 0.12);
   --ts-ink: #142033;
@@ -191,10 +190,6 @@ body {
   --el-card-border-color: var(--ts-line);
   --el-card-border-radius: var(--ts-radius);
   --el-card-bg-color: var(--ts-card);
-}
-
-.el-card__header {
-  border-bottom: 1px solid var(--ts-line);
 }
 
 .el-table {

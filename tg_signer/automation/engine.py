@@ -142,17 +142,12 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             config, from_old, err = cfg_cls.load_checked(payload)
             if config is None:
                 raise ValueError(f"无法解析配置: {config_path}（{err or '未知原因'}）")
-            if config_path.suffix in YAML_CONFIG_SUFFIXES:
-                self.config = config
-                self.log(
-                    f"配置加载完成: rules={len(config.rules)} (yaml)", level="INFO"
-                )
-                return config
             if config_path.suffix == ".json" and from_old:
                 self.write_config(config)
                 self.log("检测到旧版配置并已自动迁移为当前结构", level="INFO")
         self.config = config
-        self.log(f"配置加载完成: rules={len(config.rules)}", level="INFO")
+        suffix = " (yaml)" if config_path.suffix in YAML_CONFIG_SUFFIXES else ""
+        self.log(f"配置加载完成: rules={len(config.rules)}{suffix}", level="INFO")
         return config
 
     def export(self):  # type: ignore[override]
@@ -269,11 +264,9 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         # 首次 Telegram 调用会抛 "Client has not been started yet",该异常会被
         # `_run_rule` 吞掉并中断 handler 链,timer 的 next_run_at 还会被照常推进
         # —— 即本次到期的运行被静默消费。
-        startup_tasks: List[asyncio.Task] = []
-        timer_task: Optional[asyncio.Task] = None
         async with self.app:
             # startup trigger 每条规则只在进程启动后执行一次。
-            startup_tasks = [
+            startup_tasks: List[asyncio.Task] = [
                 asyncio.create_task(self.run_startup(rule))
                 for rule in cfg.rules
                 if rule.enabled
@@ -283,7 +276,7 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             ]
             self.log(f"startup 任务数: {len(startup_tasks)}", level="DEBUG")
             # timer trigger 统一由轮询调度循环驱动。
-            timer_task = asyncio.create_task(self.timer_loop())
+            timer_task: asyncio.Task = asyncio.create_task(self.timer_loop())
             for task in (*startup_tasks, timer_task):
                 task.add_done_callback(self._on_dispatch_done)
             self.log("开始自动化运行...")
@@ -340,8 +333,6 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         while True:
             try:
                 await self._tick_timers()
-            except asyncio.CancelledError:
-                raise
             except Exception:  # noqa: BLE001
                 logger.exception("timer 轮询异常，%ss 后继续", self._tick_seconds)
             await asyncio.sleep(self._tick_seconds)
@@ -421,8 +412,6 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         trigger_id = event.trigger_id
         try:
             await self._run_rule(rule, event)
-        except asyncio.CancelledError:
-            raise
         except Exception:  # noqa: BLE001
             self.log(
                 f"timer 规则执行异常，已跳过本轮: rule={rule.id}, trigger={trigger_id}",
@@ -634,9 +623,7 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         # 无发送者（频道帖、服务消息等）无法判定是否来自指定用户，不应放行。
         if not message.from_user:
             return False
-        normalized = {
-            self._normalize_user_id(item) for item in from_user_ids if item is not None
-        }
+        normalized = {self._normalize_user_id(item) for item in from_user_ids}
         user_id = message.from_user.id
         username = message.from_user.username
         if user_id in normalized:

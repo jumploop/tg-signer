@@ -186,7 +186,6 @@ class SignRecordStore:
         signed_at: str,
         *,
         account: str | None = None,
-        source: str = "runtime",
     ) -> None:
         with self._connection() as conn:
             self._upsert_records(
@@ -195,7 +194,7 @@ class SignRecordStore:
                 user_id,
                 [(sign_date, signed_at)],
                 account=account,
-                source=source,
+                source="runtime",
             )
             conn.commit()
 
@@ -304,7 +303,6 @@ class SignRecordStore:
         path: str | Path,
         *,
         account: str | None = None,
-        source: str = "json_migrated",
     ) -> int:
         records = self.load_json_records(path)
         if not records:
@@ -316,7 +314,7 @@ class SignRecordStore:
                 user_id,
                 records.items(),
                 account=account,
-                source=source,
+                source="json_migrated",
             )
             conn.commit()
         return count

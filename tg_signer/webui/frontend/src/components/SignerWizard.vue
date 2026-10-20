@@ -222,9 +222,6 @@ function emptyDraft() {
 }
 
 function parseAction(action) {
-  if (action.type) {
-    return action
-  }
   switch (action.action) {
     case 1:
       return { type: 'send_text', text: action.text || '' }
@@ -320,12 +317,7 @@ function toActionJSON(act) {
 }
 
 function validateTask() {
-  let chatId
-  try {
-    chatId = parseChatId(draft.value.chatId)
-  } catch (error) {
-    throw new Error(error.message)
-  }
+  const chatId = parseChatId(draft.value.chatId)
   if (!draft.value.actions.length) {
     throw new Error('至少需要配置一个动作')
   }

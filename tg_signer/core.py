@@ -667,16 +667,10 @@ class BaseUserWorker(Generic[ConfigT]):
         self.config = config
         return config
 
-    def get_task_list(self):
-        signs = []
+    def list_(self):
         for d in os.listdir(self.tasks_dir):
             if self.tasks_dir.joinpath(d).is_dir():
-                signs.append(d)
-        return signs
-
-    def list_(self):
-        for d in self.get_task_list():
-            print(d)
+                print(d)
 
     async def list_folders(self):
         self.log("开始获取对话 Folder...")
@@ -1269,33 +1263,21 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         folder: Optional[str] = None,
     ):
         if self.app.in_memory or self.app.session_string:
-            return await self.in_memory_run(
-                num_of_dialogs,
-                only_once=only_once,
-                force_rerun=force_rerun,
-                folder=folder,
-            )
+            # session_string/in_memory 模式下 client 生命周期由本次运行包住;
+            # normal_run 自己那轮 `async with self.app` 只是引用计数 +1/-1。
+            async with self.app:
+                return await self.normal_run(
+                    num_of_dialogs,
+                    only_once=only_once,
+                    force_rerun=force_rerun,
+                    folder=folder,
+                )
         return await self.normal_run(
             num_of_dialogs,
             only_once=only_once,
             force_rerun=force_rerun,
             folder=folder,
         )
-
-    async def in_memory_run(
-        self,
-        num_of_dialogs=20,
-        only_once: bool = False,
-        force_rerun: bool = False,
-        folder: Optional[str] = None,
-    ):
-        async with self.app:
-            return await self.normal_run(
-                num_of_dialogs,
-                only_once=only_once,
-                force_rerun=force_rerun,
-                folder=folder,
-            )
 
     def _ensure_message_handlers(self) -> None:
         """确保消息回调已挂在当前 client 上（幂等）。

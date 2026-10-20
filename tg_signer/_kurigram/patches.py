@@ -1,5 +1,3 @@
-import inspect
-
 from pyrogram import raw
 
 try:
@@ -32,10 +30,7 @@ def patch_animated_chat_photo_parser() -> None:
         ):
             return None
 
-        parsed_photo = original_parse(client, photo)
-        if inspect.isawaitable(parsed_photo):
-            parsed_photo = await parsed_photo
-        return parsed_photo
+        return await original_parse(client, photo)
 
     AnimatedChatPhoto._parse = staticmethod(safe_parse)
     _animated_chat_photo_parser_patched = True

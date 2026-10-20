@@ -237,7 +237,6 @@ class SignConfigV1(BaseJSONConfig):
 
 
 class SignChatV2(BaseJSONConfig):
-    version: ClassVar = 2
     chat_id: int
     delete_after: Optional[int] = None
     # 原本写作 Union[Literal[骰子 emoji...], str]，但 str 吸收 Literal 分支，
@@ -311,37 +310,32 @@ class SupportAction(int, Enum):
         }[self]
 
 
-class SignAction(BaseModel):
-    # 公共基类：五个子类各自用 Literal 钉住自己的 action 值与默认值。
-    pass
-
-
-class SendTextAction(SignAction):
+class SendTextAction(BaseModel):
     action: Literal[SupportAction.SEND_TEXT] = SupportAction.SEND_TEXT
     text: str
 
 
-class SendDiceAction(SignAction):
+class SendDiceAction(BaseModel):
     action: Literal[SupportAction.SEND_DICE] = SupportAction.SEND_DICE
     # 同 SignChatV2.sign_text：Union[..., str] 里的 Literal 会被 str 吸收，
     # 白名单是装饰性的。真实检查在 core.send_dice()。
     dice: str
 
 
-class ClickKeyboardByTextAction(SignAction):
+class ClickKeyboardByTextAction(BaseModel):
     action: Literal[SupportAction.CLICK_KEYBOARD_BY_TEXT] = (
         SupportAction.CLICK_KEYBOARD_BY_TEXT
     )
     text: str
 
 
-class ChooseOptionByImageAction(SignAction):
+class ChooseOptionByImageAction(BaseModel):
     action: Literal[SupportAction.CHOOSE_OPTION_BY_IMAGE] = (
         SupportAction.CHOOSE_OPTION_BY_IMAGE
     )
 
 
-class ReplyByCalculationProblemAction(SignAction):
+class ReplyByCalculationProblemAction(BaseModel):
     action: Literal[SupportAction.REPLY_BY_CALCULATION_PROBLEM] = (
         SupportAction.REPLY_BY_CALCULATION_PROBLEM
     )
@@ -357,7 +351,6 @@ ActionT: TypeAlias = Union[
 
 
 class SignChatV3(BaseJSONConfig):
-    version: ClassVar = 3
     chat_id: ChatId
     message_thread_id: Optional[int] = None
     name: Optional[str] = None

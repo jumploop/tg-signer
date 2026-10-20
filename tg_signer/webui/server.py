@@ -309,8 +309,6 @@ def get_config(kind: str, name: str) -> Dict[str, Any]:
             if not data_mod.uses_dir_layout(kind):
                 raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")
             entry = data_mod.load_config(kind, name, workdir=state.workdir)
-    except HTTPException:
-        raise
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except ValueError as exc:
@@ -333,8 +331,6 @@ def save_config(
                 raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")
             data_mod.save_config(kind, name, payload, workdir=state.workdir)
             entry = data_mod.load_config(kind, name, workdir=state.workdir)
-    except HTTPException:
-        raise
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=f"配置校验失败: {exc}")
     return _config_entry_payload(entry)
@@ -349,8 +345,6 @@ def delete_config(kind: str, name: str) -> Dict[str, bool]:
             if not data_mod.uses_dir_layout(kind):
                 raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")
             data_mod.delete_config(kind, name, workdir=state.workdir)
-    except HTTPException:
-        raise
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except OSError as exc:

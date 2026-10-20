@@ -1,4 +1,4 @@
-import { _ as _export_sfc, m as watch, o as onMounted, r as resolveComponent, N as resolveDirective, O as withDirectives, h as openBlock, n as createBlock, w as withCtx, b as createBaseVNode, d as createVNode, a as createElementBlock, P as Fragment, Q as renderList, f as createTextVNode, J as toDisplayString, q as api, R as asArray, g as ref, L as computed, S as ElMessageBox, E as ElMessage, j as errMsg, T as asObject, U as vShow, G as createCommentVNode, s as useRoute, u as useRouter } from './index-DlUtLx2h.js';
+import { _ as _export_sfc, m as watch, o as onMounted, r as resolveComponent, N as resolveDirective, O as withDirectives, h as openBlock, n as createBlock, w as withCtx, b as createBaseVNode, d as createVNode, a as createElementBlock, P as Fragment, Q as renderList, f as createTextVNode, J as toDisplayString, q as api, R as asArray, g as ref, L as computed, S as ElMessageBox, E as ElMessage, j as errMsg, T as asObject, U as vShow, G as createCommentVNode, s as useRoute, u as useRouter } from './index-Cap_f8FS.js';
 
 const _hoisted_1$3 = { class: "editor-toolbar" };
 const _hoisted_2$3 = { class: "toolbar-fields" };
@@ -680,9 +680,6 @@ function emptyDraft() {
 }
 
 function parseAction(action) {
-  if (action.type) {
-    return action
-  }
   switch (action.action) {
     case 1:
       return { type: 'send_text', text: action.text || '' }
@@ -778,12 +775,7 @@ function toActionJSON(act) {
 }
 
 function validateTask() {
-  let chatId;
-  try {
-    chatId = parseChatId(draft.value.chatId);
-  } catch (error) {
-    throw new Error(error.message)
-  }
+  const chatId = parseChatId(draft.value.chatId);
   if (!draft.value.actions.length) {
     throw new Error('至少需要配置一个动作')
   }
@@ -1294,7 +1286,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const SignerWizard = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-804e1a43"]]);
+const SignerWizard = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-ee6495a7"]]);
 
 const _hoisted_1 = { class: "configs-shell" };
 const _hoisted_2 = { class: "ts-intro" };

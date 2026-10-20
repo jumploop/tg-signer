@@ -398,7 +398,6 @@ def test_migration_does_not_overwrite_newer_runtime_record(tmp_path):
         "2026-03-17",
         "2026-03-17T06:00:31.482913+08:00",
         account="acct_b",
-        source="runtime",
     )
 
     store.migrate_all_json_records(legacy_user_id="123456")

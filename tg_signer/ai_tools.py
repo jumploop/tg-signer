@@ -100,13 +100,10 @@ class OpenAIConfigManager:
 def get_openai_client(
     api_key: str = None,
     base_url: str = None,
-) -> Optional["AsyncOpenAI"]:
-    from openai import AsyncOpenAI, OpenAIError
+) -> "AsyncOpenAI":
+    from openai import AsyncOpenAI
 
-    try:
-        return AsyncOpenAI(api_key=api_key, base_url=base_url)
-    except OpenAIError:
-        return None
+    return AsyncOpenAI(api_key=api_key, base_url=base_url)
 
 
 async def test_openai_connection(
@@ -116,8 +113,6 @@ async def test_openai_connection(
     if not api_key.strip():
         return False, "API Key 不能为空"
     client = get_openai_client(api_key=api_key.strip(), base_url=base_url)
-    if client is None:
-        return False, "无法创建 OpenAI 客户端，请检查 API 配置"
     try:
         await client.models.list()
         suffix = f"，模型：{model}" if model else ""
@@ -125,11 +120,7 @@ async def test_openai_connection(
     except Exception as exc:  # noqa: BLE001
         return False, f"连接失败：{exc}"
     finally:
-        close = getattr(client, "close", None)
-        if close is not None:
-            result = close()
-            if hasattr(result, "__await__"):
-                await result
+        await client.close()
 
 
 class AITools:
@@ -193,14 +184,14 @@ class AITools:
             logger.warning("图片识别返回缺少合法的 option 字段: %r", message.content)
             return -1
 
-    async def calculate_problem(
-        self,
-        query: str,
-        sys_prompt: str = """你是一个**答题助手**，可以根据用户的问题给出正确的回答，只需要回复答案，不要解释，不要输出任何其他内容。""",
-    ) -> str:
-        messages = []
-        if sys_prompt:
-            messages.append({"role": "system", "content": sys_prompt})
+    async def calculate_problem(self, query: str) -> str:
+        messages = [
+            {
+                "role": "system",
+                "content": "你是一个**答题助手**，可以根据用户的问题给出正确的回答，"
+                "只需要回复答案，不要解释，不要输出任何其他内容。",
+            }
+        ]
         text = f"问题是: {query}\n\n只需要给出答案，不要解释，不要输出任何其他内容。The answer is:"
         messages.append({"role": "user", "content": text})
         # noinspection PyTypeChecker

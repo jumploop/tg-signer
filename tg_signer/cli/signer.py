@@ -13,11 +13,7 @@ from tg_signer.sign_record_store import SignRecordStore
 
 
 class AliasedGroup(click.Group):
-    _aliases = {"run_once": "run-once", "send_text": "send-text"}
-
-    def __init__(self, name, *args, **kwargs):
-        self.aliases = self._aliases.copy()
-        super().__init__(name, *args, **kwargs)
+    aliases = {"run_once": "run-once", "send_text": "send-text"}
 
     def get_command(self, ctx, cmd_name):
         cmd = super().get_command(ctx, cmd_name)

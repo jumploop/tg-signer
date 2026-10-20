@@ -178,8 +178,6 @@ def as_bool(value: Any) -> bool:
 
 
 def message_sender(message: Message) -> str:
-    if message is None:
-        return "unknown"
     from_user = message.from_user
     if from_user is not None:
         username = from_user.username
@@ -209,8 +207,6 @@ async def resolve_ai_input(
         return str(render_template(input_text, event, ctx))
 
     recent_limit = params.get("recent_limit")
-    if recent_limit is None:
-        return message_text(event.message)
     try:
         recent_limit = int(recent_limit)
     except (TypeError, ValueError):

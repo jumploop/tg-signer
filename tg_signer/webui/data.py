@@ -278,13 +278,7 @@ def generate_random_config_name(
     prefix = CONFIG_KINDS[kind].name_prefix
     seed = ""
     if chat:
-        seed = str(
-            chat.get("title")
-            or chat.get("username")
-            or chat.get("first_name")
-            or chat.get("id")
-            or ""
-        )
+        seed = str(chat.get("title") or chat.get("username") or chat.get("id") or "")
     slug = re.sub(r"[^\w\u4e00-\u9fff]+", "_", seed).strip("_")[:24] or "chat"
     if kind == "automation":
         existing = set(list_automation_names(workdir))
@@ -474,8 +468,6 @@ def load_sign_records(workdir: Optional[Path | str] = None) -> List[SignRecord]:
 
 def tail_file(path: Path, limit: int = 200) -> List[str]:
     if not path.is_file():
-        return []
-    if limit <= 0:
         return []
     return path.read_text(encoding="utf-8", errors="ignore").splitlines()[-limit:]
 
