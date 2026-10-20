@@ -77,6 +77,26 @@ def import_file_option(command):
     )(command)
 
 
+def delete_after_option(command):
+    return click.option(
+        "--delete-after",
+        "delete_after",
+        type=int,
+        required=False,
+        help="秒, 发送消息后进行删除, 默认不删除, '0'表示立即删除.",
+    )(command)
+
+
+def message_thread_id_option(command):
+    return click.option(
+        "--message-thread-id",
+        "message_thread_id",
+        type=int,
+        required=False,
+        help="话题ID（message_thread_id）, 不填则发送到非话题会话",
+    )(command)
+
+
 def dialogs_option(command=None, *, default: int = 50):
     def wrap(cmd):
         return click.option(
@@ -359,25 +379,10 @@ def run_once(obj, task_name, num_of_dialogs, folder):
 
 
 @tg_signer.command(help='发送一次文本消息, 请确保当前会话已经"见过"该`chat_id`')
-@click.argument(
-    "chat_id",
-    type=str,
-)
+@click.argument("chat_id")
 @click.argument("text")
-@click.option(
-    "--delete-after",
-    "delete_after",
-    type=int,
-    required=False,
-    help="秒, 发送消息后进行删除, 默认不删除, '0'表示立即删除.",
-)
-@click.option(
-    "--message-thread-id",
-    "message_thread_id",
-    type=int,
-    required=False,
-    help="话题ID（message_thread_id）, 不填则发送到非话题会话",
-)
+@delete_after_option
+@message_thread_id_option
 @click.pass_obj
 def send_text(obj, chat_id, text, delete_after=None, message_thread_id=None):
     singer = get_signer(None, obj)
@@ -396,25 +401,10 @@ def send_text(obj, chat_id, text, delete_after=None, message_thread_id=None):
 @tg_signer.command(
     help="发送一次DICE消息, 请确保当前会话已经\"见过\"该`chat_id`。\n注意，`emoji`应该是'🎲', '🎯', '🏀', '⚽', '🎳'或'🎰'之一"
 )
-@click.argument(
-    "chat_id",
-    type=str,
-)
+@click.argument("chat_id")
 @click.argument("emoji")
-@click.option(
-    "--delete-after",
-    "delete_after",
-    type=int,
-    required=False,
-    help="秒, 发送消息后进行删除, 默认不删除, '0'表示立即删除.",
-)
-@click.option(
-    "--message-thread-id",
-    "message_thread_id",
-    type=int,
-    required=False,
-    help="话题ID（message_thread_id）, 不填则发送到非话题会话",
-)
+@delete_after_option
+@message_thread_id_option
 @click.pass_obj
 def send_dice(obj, chat_id, emoji, delete_after=None, message_thread_id=None):
     singer = get_signer(None, obj)
@@ -431,7 +421,7 @@ def send_dice(obj, chat_id, emoji, delete_after=None, message_thread_id=None):
 
 
 @tg_signer.command(help="重新配置")
-@click.argument("task_name", nargs=1, default="my_sign")
+@click.argument("task_name", default="my_sign")
 @click.pass_obj
 def reconfig(obj, task_name):
     signer = UserSigner(task_name=task_name, workdir=obj["workdir"])
@@ -456,7 +446,7 @@ def parse_chat_id(chat_id: str):
     help="整数id或字符串username, username须以@开头",
 )
 @click.option("--admin", "admin", default=False, is_flag=True, help="只列出管理员")
-@click.argument("query", nargs=1, default="")
+@click.argument("query", default="")
 @click.option(
     "--limit",
     "-l",
@@ -536,10 +526,7 @@ def import_(obj, task_name: str, file: str = None):
 
 
 @tg_signer.command(help="批量配置Telegram自带的定时发送消息功能")
-@click.argument(
-    "chat_id",
-    type=str,
-)
+@click.argument("chat_id")
 @click.argument("text")
 @click.option(
     "--crontab",
@@ -567,13 +554,7 @@ def import_(obj, task_name: str, file: str = None):
     show_default=True,
     help="加入随机秒数，会应用于每个定时消息",
 )
-@click.option(
-    "--message-thread-id",
-    "message_thread_id",
-    type=int,
-    required=False,
-    help="话题ID（message_thread_id）, 不填则发送到非话题会话",
-)
+@message_thread_id_option
 @click.pass_obj
 def schedule_messages(
     obj, chat_id, text, crontab, next_times, random_seconds, message_thread_id
@@ -593,7 +574,7 @@ def schedule_messages(
 
 
 @tg_signer.command(help="显示已配置的定时消息")
-@click.argument("chat_id", type=str)
+@click.argument("chat_id")
 @click.pass_obj
 def list_schedule_messages(obj, chat_id):
     # 要压的是 tg-signer 自己的 INFO 日志，不是 root：configure_logger 给该
@@ -606,7 +587,7 @@ def list_schedule_messages(obj, chat_id):
 
 
 @tg_signer.command(name="multi-run", help="使用一套配置同时运行多个账号")
-@click.argument("task_name", nargs=1, default="my_sign")
+@click.argument("task_name", default="my_sign")
 @click.option(
     "--account",
     "-a",

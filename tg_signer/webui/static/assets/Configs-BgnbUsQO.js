@@ -1,4 +1,4 @@
-import { _ as _export_sfc, m as watch, o as onMounted, r as resolveComponent, N as resolveDirective, O as withDirectives, h as openBlock, n as createBlock, w as withCtx, b as createBaseVNode, d as createVNode, a as createElementBlock, P as Fragment, Q as renderList, f as createTextVNode, J as toDisplayString, q as api, R as asArray, g as ref, L as computed, S as ElMessageBox, E as ElMessage, j as errMsg, T as asObject, U as vShow, G as createCommentVNode, s as useRoute, u as useRouter } from './index-Cap_f8FS.js';
+import { _ as _export_sfc, m as watch, o as onMounted, r as resolveComponent, N as resolveDirective, O as withDirectives, h as openBlock, n as createBlock, w as withCtx, b as createBaseVNode, d as createVNode, a as createElementBlock, P as Fragment, Q as renderList, f as createTextVNode, J as toDisplayString, q as api, R as asArray, g as ref, L as computed, S as ElMessageBox, E as ElMessage, j as errMsg, T as asObject, U as vShow, G as createCommentVNode, s as useRoute, u as useRouter } from './index-vbFgu0lp.js';
 
 const _hoisted_1$3 = { class: "editor-toolbar" };
 const _hoisted_2$3 = { class: "toolbar-fields" };
@@ -176,7 +176,6 @@ function fillChatId(payload, chat) {
     }
     return 'rules[0].triggers[0].params.chat_id'
   }
-  return null
 }
 
 // 数字 ID 必须写成 JSON 数字。automation 的 _match_chat 只对 int 做数字比较,
@@ -390,7 +389,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const ConfigEditor = /*#__PURE__*/_export_sfc(_sfc_main$3, [['__scopeId',"data-v-ef0fa1bb"]]);
+const ConfigEditor = /*#__PURE__*/_export_sfc(_sfc_main$3, [['__scopeId',"data-v-2b0078e1"]]);
 
 const _hoisted_1$2 = { class: "ts-intro" };
 const _hoisted_2$2 = { class: "hint" };

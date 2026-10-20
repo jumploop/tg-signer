@@ -386,7 +386,7 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
                     # 规则链放进独立 task：timer 里可能有 delay / 慢 AI / 慢 HTTP，
                     # 内联 await 会让后面所有 timer 规则一起排队等它结束。
                     task = asyncio.ensure_future(
-                        self._run_timer_rule(rule, event, timer_trigger, now)
+                        self._run_timer_rule(rule, event, timer_trigger)
                     )
                     self._dispatch_tasks.add(task)
                     task.add_done_callback(self._dispatch_tasks.discard)
@@ -401,7 +401,6 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         rule: RuleConfig,
         event: Event,
         timer_trigger: TimerTriggerConfig,
-        now: datetime,
     ) -> None:
         """执行一次 timer 规则，并在结束时推进 next_run_at。
 
@@ -420,9 +419,9 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             logger.exception("timer 规则执行异常: rule=%s", rule.id)
         finally:
             advanced = self.state.get_trigger_next_run(rule.id, trigger_id)
-            if not advanced or advanced <= now:
+            if not advanced or advanced <= event.now:
                 # 未被 schedule_next 覆盖时，按 trigger 默认策略推导下一次。
-                advanced = self._compute_next_run(timer_trigger, now)
+                advanced = self._compute_next_run(timer_trigger, event.now)
             self.state.set_trigger_next_run(rule.id, trigger_id, advanced)
             self.state.save()
             self.log(

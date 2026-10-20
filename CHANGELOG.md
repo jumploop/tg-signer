@@ -3,6 +3,28 @@
 ## 版本变动日志
 ### 未发布
 
+**fix: 记录页「最近签到」列显示的一直是最早一条**：两路数据源（SQLite `sign_date DESC`、JSON `reverse=True`）给前端的都是「最新在前」，`Records.vue` 却取 `records[records.length - 1]`——凡有两天以上记录的用户，该列展示的都是历史首签而非最近一次。改为取首元素，并新增 `test_load_sign_records_orders_records_newest_first` 把两路数据源的排序契约钉在测试里（`static/` 已重新构建）。
+
+第六轮 ponytail 审计（全部代码），源码净删 40 行；重点为跨文件重复、恒等默认值与单调用方包装，无用户可见的行为变更（前端 `static/` 已随源码重新构建）。
+
+**合并重复实现**
+- `cli/signer.py`：`--message-thread-id`（3 处）与 `--delete-after`（2 处）逐字重复的 option 声明，按同文件既有的 `dialogs_option`/`import_file_option` 形态收敛为 `message_thread_id_option` / `delete_after_option`，声明位置不变、help 输出不变
+- `webui/account.py`：单调用方的 `_account_login_lock` 内联回 `send_login_code`（先释放全局锁再取账号锁的顺序不变）
+
+**删除恒等默认值 / 冗余形参 / 重复提交**
+- `cli/`：`click.argument` 上恒等于 click 默认值的 `type=str`（4 处）与 `nargs=1`（6 处）
+- `sign_record_store.py`：与 `UNIQUE(task_name, user_id, sign_date)` 完全同列同序的重复索引（UNIQUE 约束自动生成 autoindex；存量库无需迁移，`SCHEMA_VERSION` 不动）；三处由 `_connection()` 的 `with conn` 退出即提交的显式 `conn.commit()`（迁移路径「先落库后删源文件」的顺序不变）
+- `automation/engine.py`：`_run_timer_rule` 与 `event.now` 为同一对象的冗余 `now` 形参；`handlers.py` 的 `schedule_next` 恒真的 `and next_at`
+- `utils.py`：`restrict_file_permissions` 从未被覆盖的 `mode` 形参；`UserInput` 的 `index`/`incr(n)` 形参与 `prompt=None` 会把 "None" 打进提示词的坏默认（改为必填）
+- `_kurigram/patches.py`：幂等标志 + `global`（唯一调用点在包 import 时，且双重包装本身语义幂等）；`AnimatedChatPhoto is None` 守卫保留——2.2.19 实测确实没有该类
+- `webui/data.py` / `server.py`：`UserInfo.latest_chats` 恒不生效的 `None` 默认与两处 `or []` 守卫（唯一构造点总是显式传列表）
+- 前端：`Login.vue` 对永不 reject 的 `checkAuth` 的 try/catch 与两处恒不触发的 `||` 兜底（`auth_login` 的 `ok:false` 必带 message）；`ConfigEditor.vue` 分支必返回后的尾部 `return null`；`Layout.vue` 同模块两行 import
+
+**审计中保留未动（供后续决策）**
+- `ai_tools.save_config` 的第二次 `restrict_file_permissions`：第四轮已裁定保留（安全测试锁定的契约），本轮代理再次提议，维持保留
+- `webui` `account_logout` 的 `_session_file_usable` 预检：第五轮已核查为既有设计（CHANGELOG 0.10.15「两处都先做本地 session 检查」+ 测试断言 `ok:False`），本轮代理再次提议，维持保留
+- `webui/__init__.py` 懒加载的 `app`/`require_auth`：仓内零引用但 `uvicorn tg_signer.webui:app` 是常见仓外用法，属兼容面
+
 第五轮 ponytail 审计（全部代码），源码净删 90 行；以不可达防御分支、空包装、零传入形参为主，无用户可见的行为变更（前端 `static/` 已随源码重新构建）。
 
 **删除不可达 / 恒等的代码**

@@ -1,4 +1,4 @@
-import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, R as asArray, E as ElMessage, j as errMsg, r as resolveComponent, g as ref, N as resolveDirective, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, J as toDisplayString, O as withDirectives, a as createElementBlock, P as Fragment, Q as renderList, L as computed } from './index-Cap_f8FS.js';
+import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, R as asArray, E as ElMessage, j as errMsg, r as resolveComponent, g as ref, N as resolveDirective, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, J as toDisplayString, O as withDirectives, a as createElementBlock, P as Fragment, Q as renderList, L as computed } from './index-vbFgu0lp.js';
 
 const _hoisted_1 = { class: "ts-intro" };
 const _hoisted_2 = { class: "record-metrics" };
@@ -127,7 +127,7 @@ return (_ctx, _cache) => {
             default: withCtx(({ row }) => [
               (row.records.length)
                 ? (openBlock(), createElementBlock(Fragment, { key: 0 }, [
-                    createTextVNode(toDisplayString(row.records[row.records.length - 1].sign_date) + " " + toDisplayString(row.records[row.records.length - 1].signed_at), 1)
+                    createTextVNode(toDisplayString(row.records[0].sign_date) + " " + toDisplayString(row.records[0].signed_at), 1)
                   ], 64))
                 : (openBlock(), createElementBlock("span", _hoisted_10, "-"))
             ]),
@@ -162,6 +162,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Records = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-3199ea2c"]]);
+const Records = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-00728bff"]]);
 
 export { Records as default };

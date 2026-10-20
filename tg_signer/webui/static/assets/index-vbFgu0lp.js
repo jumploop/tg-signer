@@ -1,4 +1,4 @@
-const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/Login-DLE8BqD3.js","assets/Login-DPGDmevv.css","assets/Layout-CSAfz1w2.js","assets/Layout-BaF4jYkR.css","assets/Configs-Bv4zWuLm.js","assets/Configs-Di5slqh8.css","assets/Run-QUSfhUGT.js","assets/Run-BAkgNhM6.css","assets/Accounts-DpmYdUQa.js","assets/Accounts-P8dakzR9.css","assets/Users-BK2Frfpf.js","assets/Users-BzZwweKn.css","assets/Records-Cw705hAr.js","assets/Records-CrjU7t7b.css","assets/Logs-CnjJkwLo.js","assets/Logs-Du0jOHbN.css","assets/Chats-Bf6LBunN.js","assets/Chats-BIYy7y_k.css","assets/Settings-D_ZQVUF8.js","assets/Settings-U1v_26P7.css"])))=>i.map(i=>d[i]);
+const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/Login-B3Ek93Zy.js","assets/Login-CdsXV74t.css","assets/Layout-C7IaO6SC.js","assets/Layout-DxBIitGB.css","assets/Configs-BgnbUsQO.js","assets/Configs-DOIndb9g.css","assets/Run-KVHUB_vP.js","assets/Run-BAkgNhM6.css","assets/Accounts-DU1RtsRD.js","assets/Accounts-P8dakzR9.css","assets/Users-BMe7QqMr.js","assets/Users-BzZwweKn.css","assets/Records-B0Vaouc-.js","assets/Records-B_kGfbCj.css","assets/Logs-CFz2DYWQ.js","assets/Logs-Du0jOHbN.css","assets/Chats-Dk_zRqFw.js","assets/Chats-BIYy7y_k.css","assets/Settings-BPMKmnEU.js","assets/Settings-U1v_26P7.css"])))=>i.map(i=>d[i]);
 true              &&(function polyfill() {
   const relList = document.createElement("link").relList;
   if (relList && relList.supports && relList.supports("modulepreload")) {
@@ -79793,20 +79793,20 @@ async function copyText(text) {
 }
 
 const routes = [
-  { path: '/login', name: 'login', component: () => __vitePreload(() => import('./Login-DLE8BqD3.js'),true              ?__vite__mapDeps([0,1]):void 0) },
+  { path: '/login', name: 'login', component: () => __vitePreload(() => import('./Login-B3Ek93Zy.js'),true              ?__vite__mapDeps([0,1]):void 0) },
   {
     path: '/',
-    component: () => __vitePreload(() => import('./Layout-CSAfz1w2.js'),true              ?__vite__mapDeps([2,3]):void 0),
+    component: () => __vitePreload(() => import('./Layout-C7IaO6SC.js'),true              ?__vite__mapDeps([2,3]):void 0),
     children: [
       { path: '', redirect: '/configs' },
-      { path: 'configs', name: 'configs', component: () => __vitePreload(() => import('./Configs-Bv4zWuLm.js'),true              ?__vite__mapDeps([4,5]):void 0) },
-      { path: 'run', name: 'run', component: () => __vitePreload(() => import('./Run-QUSfhUGT.js'),true              ?__vite__mapDeps([6,7]):void 0) },
-      { path: 'accounts', name: 'accounts', component: () => __vitePreload(() => import('./Accounts-DpmYdUQa.js'),true              ?__vite__mapDeps([8,9]):void 0) },
-      { path: 'users', name: 'users', component: () => __vitePreload(() => import('./Users-BK2Frfpf.js'),true              ?__vite__mapDeps([10,11]):void 0) },
-      { path: 'records', name: 'records', component: () => __vitePreload(() => import('./Records-Cw705hAr.js'),true              ?__vite__mapDeps([12,13]):void 0) },
-      { path: 'logs', name: 'logs', component: () => __vitePreload(() => import('./Logs-CnjJkwLo.js'),true              ?__vite__mapDeps([14,15]):void 0) },
-      { path: 'chats', name: 'chats', component: () => __vitePreload(() => import('./Chats-Bf6LBunN.js'),true              ?__vite__mapDeps([16,17]):void 0) },
-      { path: 'settings', name: 'settings', component: () => __vitePreload(() => import('./Settings-D_ZQVUF8.js'),true              ?__vite__mapDeps([18,19]):void 0) },
+      { path: 'configs', name: 'configs', component: () => __vitePreload(() => import('./Configs-BgnbUsQO.js'),true              ?__vite__mapDeps([4,5]):void 0) },
+      { path: 'run', name: 'run', component: () => __vitePreload(() => import('./Run-KVHUB_vP.js'),true              ?__vite__mapDeps([6,7]):void 0) },
+      { path: 'accounts', name: 'accounts', component: () => __vitePreload(() => import('./Accounts-DU1RtsRD.js'),true              ?__vite__mapDeps([8,9]):void 0) },
+      { path: 'users', name: 'users', component: () => __vitePreload(() => import('./Users-BMe7QqMr.js'),true              ?__vite__mapDeps([10,11]):void 0) },
+      { path: 'records', name: 'records', component: () => __vitePreload(() => import('./Records-B0Vaouc-.js'),true              ?__vite__mapDeps([12,13]):void 0) },
+      { path: 'logs', name: 'logs', component: () => __vitePreload(() => import('./Logs-CFz2DYWQ.js'),true              ?__vite__mapDeps([14,15]):void 0) },
+      { path: 'chats', name: 'chats', component: () => __vitePreload(() => import('./Chats-Dk_zRqFw.js'),true              ?__vite__mapDeps([16,17]):void 0) },
+      { path: 'settings', name: 'settings', component: () => __vitePreload(() => import('./Settings-BPMKmnEU.js'),true              ?__vite__mapDeps([18,19]):void 0) },
     ],
   },
 ];

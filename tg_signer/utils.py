@@ -160,7 +160,7 @@ def resolve_log_under(
     return resolved
 
 
-def restrict_file_permissions(path: str | os.PathLike[str], mode: int = 0o600) -> bool:
+def restrict_file_permissions(path: str | os.PathLike[str]) -> bool:
     """把凭据文件收紧为「仅属主可读写」,返回是否实际生效。
 
     ``*.session_string`` / ``.openai_config.json`` 默认按进程 umask 落盘(常见
@@ -170,7 +170,7 @@ def restrict_file_permissions(path: str | os.PathLike[str], mode: int = 0o600) -
     if os.name != "posix":
         return False
     try:
-        os.chmod(path, mode)
+        os.chmod(path, 0o600)
     except OSError:
         return False
     return True
@@ -436,18 +436,18 @@ def get_now():
 
 
 class UserInput:
-    def __init__(self, index: int = 1, numbering_lang: NumberingLangT = "arabic"):
-        self.index = index
+    def __init__(self, numbering_lang: NumberingLangT = "arabic"):
+        self.index = 1
         self.numbering_lang = numbering_lang
 
-    def incr(self, n: int = 1):
-        self.index += n
+    def incr(self):
+        self.index += 1
 
     @property
     def index_str(self):
         return f"{numbering(self.index, self.numbering_lang)}. "
 
-    def __call__(self, prompt: str = None):
+    def __call__(self, prompt: str):
         r = input(f"{self.index_str}{prompt}")
-        self.incr(1)
+        self.incr()
         return r

@@ -57,24 +57,21 @@ async function submit() {
       ElMessage.success('登录成功')
       router.push('/')
     } else {
-      ElMessage.error(data.message || '授权码错误')
+      ElMessage.error(data.message)
     }
   } catch (error) {
-    ElMessage.error(errMsg(error) || '登录失败')
+    ElMessage.error(errMsg(error))
   } finally {
     loading.value = false
   }
 }
 
 onMounted(async () => {
-  try {
-    const status = await checkAuth()
-    if (!status.required) {
-      ElMessage.info('本服务未启用授权码，无需登录')
-      router.push('/')
-    }
-  } catch (error) {
-    /* 忽略瞬时错误 */
+  // checkAuth 自带兜底、永不 reject
+  const status = await checkAuth()
+  if (!status.required) {
+    ElMessage.info('本服务未启用授权码，无需登录')
+    router.push('/')
   }
 })
 </script>

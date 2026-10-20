@@ -222,7 +222,6 @@ function fillChatId(payload, chat) {
     }
     return 'rules[0].triggers[0].params.chat_id'
   }
-  return null
 }
 
 // 数字 ID 必须写成 JSON 数字。automation 的 _match_chat 只对 int 做数字比较,

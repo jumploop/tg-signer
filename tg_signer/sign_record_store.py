@@ -118,9 +118,6 @@ class SignRecordStore:
                 source TEXT NOT NULL DEFAULT 'runtime',
                 UNIQUE(task_name, user_id, sign_date)
             );
-
-            CREATE INDEX IF NOT EXISTS idx_sign_records_task_user_date
-            ON sign_records(task_name, user_id, sign_date);
             """
         )
 
@@ -196,7 +193,6 @@ class SignRecordStore:
                 account=account,
                 source="runtime",
             )
-            conn.commit()
 
     def has_records(self, task_name: str, user_id: str) -> bool:
         with self._connection() as conn:
@@ -316,7 +312,6 @@ class SignRecordStore:
                 account=account,
                 source="json_migrated",
             )
-            conn.commit()
         return count
 
     def migrate_all_json_records(
@@ -370,8 +365,8 @@ class SignRecordStore:
                 summary.migrated_files += 1
                 summary.migrated_records += count
                 migrated_paths.append(path)
-            # 落库先于删除：只有 commit 成功，删除才是安全的。
-            conn.commit()
+            # _connection() 的 with 退出即提交，且先于下面的删除 —— 记录落库
+            # 成功，删除源文件才是安全的。
 
         # 删源文件失败不能让整个迁移「看起来失败」——记录已经安全落库了。
         # 这里如实报告，而不是抛异常让用户以为数据丢了。

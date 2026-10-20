@@ -59,7 +59,7 @@ def run(obj, task_names, num_of_dialogs, folder):
 
 
 @tg_automation.command(help="初始化或重置配置")
-@click.argument("task_name", nargs=1, default="my_automation")
+@click.argument("task_name", default="my_automation")
 @click.pass_obj
 def init(obj, task_name):
     automation = get_automation(task_name, obj)
@@ -69,7 +69,7 @@ def init(obj, task_name):
 
 
 @tg_automation.command(help="重新配置（使用模板覆盖）")
-@click.argument("task_name", nargs=1, default="my_automation")
+@click.argument("task_name", default="my_automation")
 @click.pass_obj
 def reconfig(obj, task_name):
     automation = get_automation(task_name, obj)
@@ -77,7 +77,7 @@ def reconfig(obj, task_name):
 
 
 @tg_automation.command(help="校验配置")
-@click.argument("task_name", nargs=1, default="my_automation")
+@click.argument("task_name", default="my_automation")
 @click.pass_obj
 def validate(obj, task_name):
     automation = get_automation(task_name, obj)

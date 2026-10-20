@@ -37,15 +37,6 @@ _ACCOUNT_USERS_LOCK = threading.Lock()
 _LOGIN_LOCKS: Dict[str, threading.Lock] = {}
 
 
-def _account_login_lock(account: str) -> threading.Lock:
-    with _LOGIN_SESSIONS_LOCK:
-        lock = _LOGIN_LOCKS.get(account)
-        if lock is None:
-            lock = threading.Lock()
-            _LOGIN_LOCKS[account] = lock
-        return lock
-
-
 def _account_path(account: str, workdir, suffix: str = "") -> pathlib.Path:
     """返回 ``<workdir>/<account><suffix>``,账号名越界时抛 ``ValueError``。
 
@@ -311,7 +302,12 @@ def send_login_code(account: str, phone: str, workdir) -> Tuple[str, str]:
     # 会各自建一个会话,后登记的直接覆盖先登记的 —— 先登记的那个既离开了
     # LOGIN_SESSIONS 又不会被 close(),线程 / event loop / Telegram 连接三重泄漏,
     # 而用户拿到的是第二个验证码,用第一个必然失败。
-    with _account_login_lock(account):
+    with _LOGIN_SESSIONS_LOCK:
+        lock = _LOGIN_LOCKS.get(account)
+        if lock is None:
+            lock = threading.Lock()
+            _LOGIN_LOCKS[account] = lock
+    with lock:
         with _LOGIN_SESSIONS_LOCK:
             existing = LOGIN_SESSIONS.pop(account, None)
         if existing is not None:

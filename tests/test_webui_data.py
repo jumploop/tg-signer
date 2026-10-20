@@ -869,6 +869,36 @@ def test_load_sign_records_keeps_distinct_user_rows(tmp_path):
     ]
 
 
+def test_load_sign_records_orders_records_newest_first(tmp_path):
+    """两路数据源都必须「最新在前」——记录页「最近签到」读的是 records[0]。
+
+    回归：Records.vue 该列原先读末元素，而 SQLite（sign_date DESC）与 JSON
+    （reverse=True）两条路径给的都是最新在前，于是展示的一直是最早一条。
+    """
+    from tg_signer.sign_record_store import SignRecordStore
+
+    store = SignRecordStore(tmp_path)
+    for sign_date in ("2024-01-01", "2024-01-03", "2024-01-02"):
+        store.upsert_record("daily", "1001", sign_date, f"{sign_date} 06:00:00")
+
+    json_dir = tmp_path / "signs" / "json_task" / "1001"
+    json_dir.mkdir(parents=True)
+    (json_dir / "sign_record.json").write_text(
+        json.dumps(
+            {
+                "2024-01-01": "2024-01-01 06:00:00",
+                "2024-01-03": "2024-01-03 06:00:00",
+                "2024-01-02": "2024-01-02 06:00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    by_task = {r.task: r for r in data.load_sign_records(tmp_path)}
+    assert by_task["daily"].records[0][0] == "2024-01-03"
+    assert by_task["json_task"].records[0][0] == "2024-01-03"
+
+
 def test_load_sign_records_survives_corrupt_sqlite_file(tmp_path):
     """data.sqlite3 损坏时退化成「只展示 JSON 记录」，不能把 /api/records 打成 500。"""
     (tmp_path / "data.sqlite3").write_bytes(b"not a sqlite database at all")

@@ -36,9 +36,10 @@
       </el-table-column>
       <el-table-column label="最近签到" width="200">
         <template #default="{ row }">
+          <!-- records 两路数据源（SQLite sign_date DESC / JSON reverse=True）均最新在前 -->
           <template v-if="row.records.length">
-            {{ row.records[row.records.length - 1].sign_date }}
-            {{ row.records[row.records.length - 1].signed_at }}
+            {{ row.records[0].sign_date }}
+            {{ row.records[0].signed_at }}
           </template>
           <span v-else>-</span>
         </template>

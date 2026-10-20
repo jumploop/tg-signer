@@ -1,4 +1,4 @@
-import { _ as _export_sfc, o as onMounted, c as checkAuth, E as ElMessage, a as createElementBlock, b as createBaseVNode, d as createVNode, w as withCtx, e as withKeys, f as createTextVNode, u as useRouter, r as resolveComponent, g as ref, h as openBlock, i as unref, p as promotion_default, l as login, j as errMsg } from './index-Cap_f8FS.js';
+import { _ as _export_sfc, o as onMounted, c as checkAuth, E as ElMessage, a as createElementBlock, b as createBaseVNode, d as createVNode, w as withCtx, e as withKeys, f as createTextVNode, u as useRouter, r as resolveComponent, g as ref, h as openBlock, i as unref, p as promotion_default, l as login, j as errMsg } from './index-vbFgu0lp.js';
 
 const _hoisted_1 = { class: "login-wrap" };
 const _hoisted_2 = { class: "login-panel" };
@@ -27,24 +27,21 @@ async function submit() {
       ElMessage.success('登录成功');
       router.push('/');
     } else {
-      ElMessage.error(data.message || '授权码错误');
+      ElMessage.error(data.message);
     }
   } catch (error) {
-    ElMessage.error(errMsg(error) || '登录失败');
+    ElMessage.error(errMsg(error));
   } finally {
     loading.value = false;
   }
 }
 
 onMounted(async () => {
-  try {
-    const status = await checkAuth();
-    if (!status.required) {
-      ElMessage.info('本服务未启用授权码，无需登录');
-      router.push('/');
-    }
-  } catch (error) {
-    /* 忽略瞬时错误 */
+  // checkAuth 自带兜底、永不 reject
+  const status = await checkAuth();
+  if (!status.required) {
+    ElMessage.info('本服务未启用授权码，无需登录');
+    router.push('/');
   }
 });
 
@@ -101,6 +98,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Login = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-bba596a4"]]);
+const Login = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-e090535b"]]);
 
 export { Login as default };

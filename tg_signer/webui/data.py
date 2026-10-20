@@ -70,7 +70,7 @@ class UserInfo:
     user_id: str
     data: Dict[str, Any]
     path: Path
-    latest_chats: List[Dict[str, Any]] = None
+    latest_chats: List[Dict[str, Any]]
 
 
 @dataclass
@@ -569,7 +569,7 @@ def load_group_chats(workdir: Optional[Path | str] = None) -> List[Dict[str, Any
         account = (
             info.data.get("first_name") or info.data.get("username") or info.user_id
         )
-        for chat in info.latest_chats or []:
+        for chat in info.latest_chats:
             if not isinstance(chat, dict):
                 continue
             chat_type = _normalize_chat_type(chat.get("type"))

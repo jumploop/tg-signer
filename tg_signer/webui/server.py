@@ -203,7 +203,7 @@ def _user_infos_payload(infos: List[data_mod.UserInfo]) -> List[Dict[str, Any]]:
             "user_id": info.user_id,
             "path": str(info.path),
             "data": info.data,
-            "latest_chats": info.latest_chats or [],
+            "latest_chats": info.latest_chats,
         }
         for info in infos
     ]

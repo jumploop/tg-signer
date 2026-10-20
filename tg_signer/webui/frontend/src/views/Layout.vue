@@ -115,8 +115,7 @@ import {
   Menu,
   Close,
 } from '@element-plus/icons-vue'
-import { logout } from '../api'
-import api from '../api'
+import api, { logout } from '../api'
 
 const route = useRoute()
 const router = useRouter()
