@@ -1,4 +1,5 @@
 import pytest
+from click.testing import CliRunner
 
 from tg_signer.core import UserSigner
 
@@ -42,3 +43,8 @@ def signer_factory(tmp_path):
         )
 
     return factory
+
+
+@pytest.fixture
+def runner():
+    return CliRunner()

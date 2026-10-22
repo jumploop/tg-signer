@@ -1,5 +1,5 @@
 <template>
-  <el-card v-loading="loading" shadow="never" class="llm-card">
+  <el-card v-loading="loading" shadow="never">
     <div class="ts-intro">
       <div>
         <span class="ts-section-label">大模型连接</span>
@@ -82,47 +82,38 @@ async function refresh() {
   }
 }
 
-async function save() {
+async function submitLlm(endpoint, busy, onSuccess) {
   const typed = apiKey.value.trim()
   if (!typed && !apiKeyConfigured.value) {
     ElMessage.warning('API Key 不能为空')
     return
   }
-  saving.value = true
+  busy.value = true
   try {
-    await api.post('/api/llm-config', {
+    const { data } = await api.post(endpoint, {
       api_key: typed,
       base_url: baseUrl.value,
       model: model.value,
     })
-    ElMessage.success('已保存')
-    refresh()
+    onSuccess(data)
   } catch (error) {
     ElMessage.error(errMsg(error))
   } finally {
-    saving.value = false
+    busy.value = false
   }
 }
 
+async function save() {
+  await submitLlm('/api/llm-config', saving, () => {
+    ElMessage.success('已保存')
+    refresh()
+  })
+}
+
 async function testConn() {
-  const typed = apiKey.value.trim()
-  if (!typed && !apiKeyConfigured.value) {
-    ElMessage.warning('API Key 不能为空')
-    return
-  }
-  testing.value = true
-  try {
-    const { data } = await api.post('/api/llm-config/test', {
-      api_key: typed,
-      base_url: baseUrl.value,
-      model: model.value,
-    })
-    ElMessage[data.ok ? 'success' : 'error'](data.message)
-  } catch (error) {
-    ElMessage.error(errMsg(error))
-  } finally {
-    testing.value = false
-  }
+  await submitLlm('/api/llm-config/test', testing, ({ ok, message }) => {
+    ElMessage[ok ? 'success' : 'error'](message)
+  })
 }
 
 onMounted(refresh)
@@ -143,22 +134,5 @@ onMounted(refresh)
   font-family: var(--el-font-family-mono);
   font-size: 12px;
   font-weight: 600;
-}
-
-@media (max-width: 600px) {
-  .llm-form :deep(.el-form-item) {
-    display: block;
-  }
-
-  .llm-form :deep(.el-form-item__label) {
-    display: block;
-    width: auto !important;
-    margin-bottom: 7px;
-    text-align: left;
-  }
-
-  .llm-form :deep(.el-form-item__content) {
-    margin-left: 0 !important;
-  }
 }
 </style>

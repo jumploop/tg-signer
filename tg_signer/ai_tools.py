@@ -110,9 +110,10 @@ async def test_openai_connection(
     api_key: str, base_url: str | None = None, model: str | None = None
 ) -> tuple[bool, str]:
     """调用模型列表接口测试 OpenAI 兼容 API 的连通性。"""
-    if not api_key.strip():
+    api_key = api_key.strip()
+    if not api_key:
         return False, "API Key 不能为空"
-    client = get_openai_client(api_key=api_key.strip(), base_url=base_url)
+    client = get_openai_client(api_key=api_key, base_url=base_url)
     try:
         await client.models.list()
         suffix = f"，模型：{model}" if model else ""

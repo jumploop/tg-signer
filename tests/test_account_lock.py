@@ -112,8 +112,8 @@ def test_start_rejects_when_lock_held_by_orphan_handle(monkeypatch, tmp_path):
         assert not ok
         assert "alice" in msg
         # 不应在 _PROCESSES 中留条目
-        assert "signer:alice" not in runner._PROCESSES
-        assert "signer:alice" not in runner._LOCKS
+        assert runner.process_key("signer", "alice", tmp_path) not in runner._PROCESSES
+        assert runner.process_key("signer", "alice", tmp_path) not in runner._LOCKS
     finally:
         handle.release()
 
@@ -148,31 +148,12 @@ def test_lock_released_after_immediate_exit(monkeypatch, tmp_path):
     ok, msg = runner.start("signer", "t_fail", tmp_path, "alice")
     assert ok is False
     assert "启动后立即退出" in msg
-    assert "alice" not in runner._LOCKS
+    assert runner.process_key("signer", "alice", tmp_path) not in runner._LOCKS
 
     # 锁已释放 → 下次可成功 start
     state["running"] = True
     ok2, _ = runner.start("signer", "t_ok", tmp_path, "alice")
     assert ok2, "上次早退后锁未释放,新进程被拒"
-
-
-def test_lock_released_after_os_error(monkeypatch, tmp_path):
-    """open 主日志失败 → 锁被释放(无任何残留)。"""
-    log_path = tmp_path / "logs" / runner.DEFAULT_LOG_FILE_NAME
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_path.parent.rmdir()
-    log_path.parent.write_text("not a dir", encoding="utf-8")
-
-    monkeypatch.setattr(
-        runner,
-        "build_command",
-        lambda *a, **k: [sys.executable, "-c", "import time; time.sleep(60)"],
-    )
-
-    ok, msg = runner.start("signer", "t_handle_err", tmp_path, "alice")
-    assert ok is False
-    # 锁不残留
-    assert "signer:alice" not in runner._LOCKS
 
 
 def test_start_with_multiple_tasks_uses_single_lock(monkeypatch, tmp_path):

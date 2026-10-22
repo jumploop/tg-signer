@@ -134,8 +134,9 @@ Folder 可以使用名称或 ID。`--from-folder` 表示从该 Folder 发现对�
 - `delay`: 延迟执行
 - `schedule_next`: 设置下次 timer 触发时间
 - `ai_reply`: 调用大模型生成回复
-- `blacklist_filter`: 黑名单拦截
+- `blacklist_filter`: 黑名单拦截（`keywords` 关键词、`regex` 正则；`source_var` 指向的变量不存在时抛错中止规则，即失败关闭）
 - `forward` / `external_forward`: 转发到 Telegram 或外部
+- `server_chan`: Server酱推送
 - `store_state` / `load_state`: 持久化变量。`store_state` 的 `keys`（数组，也接受单个字符串）非空时**只持久化列出的键**，否则持久化全部规则变量；规则链结束时引擎会按这个子集回写状态
 
 常见模板变量：

@@ -1,7 +1,6 @@
 import asyncio
 
 import pytest
-from click.testing import CliRunner
 
 import tg_signer.cli.signer as signer_cli
 
@@ -88,11 +87,6 @@ class DummySigner:
                 "folder": folder,
             }
         )
-
-
-@pytest.fixture
-def runner():
-    return CliRunner()
 
 
 @pytest.fixture

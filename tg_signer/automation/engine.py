@@ -85,16 +85,8 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
     @property
     def state(self) -> RuleStateStore:
         if self._state is None:
-            self._state = RuleStateStore(self.state_file, logger)
+            self._state = RuleStateStore(self.task_dir / "state.json", logger)
         return self._state
-
-    @property
-    def state_file(self) -> Path:
-        return self.task_dir / "state.json"
-
-    @property
-    def handlers_dir(self) -> Path:
-        return self.workdir / "handlers"
 
     @classmethod
     def list_task_names(cls, workdir: Union[str, Path]) -> List[str]:
@@ -128,10 +120,7 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             self.task_dir / AUTOMATION_CONFIG_FILE_NAMES[0]
         )
 
-    def load_config(
-        self, cfg_cls: Optional[type[AutomationConfig]] = None
-    ) -> AutomationConfig:  # type: ignore[override]
-        cfg_cls = cfg_cls or self.cfg_cls
+    def load_config(self) -> AutomationConfig:  # type: ignore[override]
         config_path = self._resolve_config_file()
         self.log(f"读取自动化配置: {config_path}", level="DEBUG")
         if not config_path.exists():
@@ -139,7 +128,7 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             config = self.reconfig()
         else:
             payload = read_automation_config_payload(config_path)
-            config, from_old, err = cfg_cls.load_checked(payload)
+            config, from_old, err = self.cfg_cls.load_checked(payload)
             if config is None:
                 raise ValueError(f"无法解析配置: {config_path}（{err or '未知原因'}）")
             if config_path.suffix == ".json" and from_old:
@@ -151,7 +140,9 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         return config
 
     def export(self):  # type: ignore[override]
-        config_path = self._resolve_config_file()
+        config_path = self.find_existing_config_file() or (
+            self.config_dir_path() / AUTOMATION_CONFIG_FILE_NAMES[0]
+        )
         if not config_path.exists():
             raise FileNotFoundError(f"配置不存在: {config_path}")
         with open(config_path, "r", encoding="utf-8") as fp:
@@ -250,12 +241,12 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         if self.user is None:
             await self.login(num_of_dialogs, print_chat=True, folder=folder)
 
-        cfg = self.load_config(self.cfg_cls)
+        cfg = self.load_config()
         if cfg.requires_ai:
             self.ensure_ai_cfg()
 
         register_builtin_handlers()
-        load_plugins(self.handlers_dir, logger)
+        load_plugins(self.workdir / "handlers", logger)
         self.log(f"已注册 handlers 数量: {len(list_handlers())}", level="INFO")
 
         self.app.add_handler(MessageHandler(self.on_message, filters.all))
@@ -550,21 +541,32 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         )
         return next_dt
 
+    def _match_refs(
+        self,
+        message: Message,
+        chat_id: Optional[Union[int, str]],
+        chat_ids: Optional[List[Union[int, str]]],
+        from_user_ids: Iterable[Union[int, str]],
+        ignore_case: bool,
+    ) -> bool:
+        if (chat_id or chat_ids) and not self._match_chat(
+            message, chat_id, chat_ids, ignore_case=ignore_case
+        ):
+            return False
+        return not from_user_ids or self._match_user(message, from_user_ids)
+
     def _match_message_trigger(
         self, trigger: MessageTriggerConfig, message: Message
     ) -> bool:
         trigger_params = trigger.params
-        if trigger_params.chat_id or trigger_params.chat_ids:
-            if not self._match_chat(
-                message,
-                trigger_params.chat_id,
-                trigger_params.chat_ids,
-                ignore_case=trigger_params.ignore_case,
-            ):
-                return False
-        if trigger_params.from_user_ids:
-            if not self._match_user(message, trigger_params.from_user_ids):
-                return False
+        if not self._match_refs(
+            message,
+            trigger_params.chat_id,
+            trigger_params.chat_ids,
+            trigger_params.from_user_ids,
+            trigger_params.ignore_case,
+        ):
+            return False
         if trigger_params.reply_to_me:
             if not message.reply_to_message:
                 return False
@@ -580,17 +582,14 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         return True
 
     def _match_filter(self, filter_cfg: FilterConfig, message: Message) -> bool:
-        if filter_cfg.chat_id or filter_cfg.chat_ids:
-            if not self._match_chat(
-                message,
-                filter_cfg.chat_id,
-                filter_cfg.chat_ids,
-                ignore_case=filter_cfg.ignore_case,
-            ):
-                return False
-        if filter_cfg.from_user_ids:
-            if not self._match_user(message, filter_cfg.from_user_ids):
-                return False
+        if not self._match_refs(
+            message,
+            filter_cfg.chat_id,
+            filter_cfg.chat_ids,
+            filter_cfg.from_user_ids,
+            filter_cfg.ignore_case,
+        ):
+            return False
         text = message.text or message.caption or ""
         rule = filter_cfg.text_rule
         value = filter_cfg.text_value or ""
@@ -705,7 +704,7 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
                         f"执行 handler: rule={rule.id}, handler={handler_cfg.handler}",
                         level="DEBUG",
                     )
-                    result = await handler(event, ctx, handler_cfg.params or {})
+                    result = await handler(event, ctx, handler_cfg.params)
                     self.log(
                         f"handler 结果: rule={rule.id}, handler={handler_cfg.handler}, result={result}",
                         level="DEBUG",

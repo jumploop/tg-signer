@@ -1,5 +1,5 @@
 <template>
-  <el-card shadow="never" class="accounts-card">
+  <el-card shadow="never">
     <div class="ts-intro">
       <div>
         <span class="ts-section-label">账号会话</span>
@@ -61,7 +61,6 @@
       v-model="loginVisible"
       title="登录 Telegram 账号"
       width="480px"
-      class="account-dialog"
       :close-on-click-modal="false"
     >
       <el-steps :active="loginStep" finish-status="success" simple style="margin-bottom: 16px">

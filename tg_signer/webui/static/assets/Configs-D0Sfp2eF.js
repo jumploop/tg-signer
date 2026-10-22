@@ -1,8 +1,8 @@
-import { _ as _export_sfc, m as watch, o as onMounted, r as resolveComponent, N as resolveDirective, O as withDirectives, h as openBlock, n as createBlock, w as withCtx, b as createBaseVNode, d as createVNode, a as createElementBlock, P as Fragment, Q as renderList, f as createTextVNode, J as toDisplayString, q as api, R as asArray, g as ref, L as computed, S as ElMessageBox, E as ElMessage, j as errMsg, T as asObject, U as vShow, G as createCommentVNode, s as useRoute, u as useRouter } from './index-vbFgu0lp.js';
+import { _ as _export_sfc, m as watch, o as onMounted, r as resolveComponent, N as resolveDirective, O as withDirectives, h as openBlock, n as createBlock, w as withCtx, b as createBaseVNode, d as createVNode, a as createElementBlock, P as Fragment, Q as renderList, f as createTextVNode, J as toDisplayString, q as api, R as asArray, g as ref, L as computed, S as ElMessageBox, E as ElMessage, j as errMsg, T as asObject, U as vShow, G as createCommentVNode, s as useRoute, u as useRouter } from './index-COQHa1_g.js';
 
 const _hoisted_1$3 = { class: "editor-toolbar" };
 const _hoisted_2$3 = { class: "toolbar-fields" };
-const _hoisted_3$2 = { class: "toolbar-actions" };
+const _hoisted_3$1 = { class: "toolbar-actions" };
 const _hoisted_4$1 = { class: "ts-intro editor-status" };
 const _hoisted_5$1 = { class: "ts-section-label" };
 const _hoisted_6$1 = { class: "hint" };
@@ -178,8 +178,8 @@ function fillChatId(payload, chat) {
   }
 }
 
-// 数字 ID 必须写成 JSON 数字。automation 的 _match_chat 只对 int 做数字比较,
-// 字符串 "-1001234567890" 会被当作 @username 分支,规则将永不命中。
+// 数字 ID 写成 JSON 数字,保持配置形状一致。engine 的 _match_chat 现在会对
+// 数字字符串做 normalize_chat_ref 归一化,即使保存成字符串也能命中。
 function toChatValue(raw) {
   const text = String(raw).trim();
   return /^-?\d+$/.test(text) ? Number(text) : text
@@ -319,7 +319,7 @@ return (_ctx, _cache) => {
             _: 1
           })
         ]),
-        createBaseVNode("div", _hoisted_3$2, [
+        createBaseVNode("div", _hoisted_3$1, [
           createVNode(_component_el_button, {
             type: "primary",
             loading: saving.value,
@@ -389,7 +389,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const ConfigEditor = /*#__PURE__*/_export_sfc(_sfc_main$3, [['__scopeId',"data-v-2b0078e1"]]);
+const ConfigEditor = /*#__PURE__*/_export_sfc(_sfc_main$3, [['__scopeId',"data-v-877538f4"]]);
 
 const _hoisted_1$2 = { class: "ts-intro" };
 const _hoisted_2$2 = { class: "hint" };
@@ -437,47 +437,38 @@ async function refresh() {
   }
 }
 
-async function save() {
+async function submitLlm(endpoint, busy, onSuccess) {
   const typed = apiKey.value.trim();
   if (!typed && !apiKeyConfigured.value) {
     ElMessage.warning('API Key 不能为空');
     return
   }
-  saving.value = true;
+  busy.value = true;
   try {
-    await api.post('/api/llm-config', {
+    const { data } = await api.post(endpoint, {
       api_key: typed,
       base_url: baseUrl.value,
       model: model.value,
     });
-    ElMessage.success('已保存');
-    refresh();
+    onSuccess(data);
   } catch (error) {
     ElMessage.error(errMsg(error));
   } finally {
-    saving.value = false;
+    busy.value = false;
   }
 }
 
+async function save() {
+  await submitLlm('/api/llm-config', saving, () => {
+    ElMessage.success('已保存');
+    refresh();
+  });
+}
+
 async function testConn() {
-  const typed = apiKey.value.trim();
-  if (!typed && !apiKeyConfigured.value) {
-    ElMessage.warning('API Key 不能为空');
-    return
-  }
-  testing.value = true;
-  try {
-    const { data } = await api.post('/api/llm-config/test', {
-      api_key: typed,
-      base_url: baseUrl.value,
-      model: model.value,
-    });
-    ElMessage[data.ok ? 'success' : 'error'](data.message);
-  } catch (error) {
-    ElMessage.error(errMsg(error));
-  } finally {
-    testing.value = false;
-  }
+  await submitLlm('/api/llm-config/test', testing, ({ ok, message }) => {
+    ElMessage[ok ? 'success' : 'error'](message);
+  });
 }
 
 onMounted(refresh);
@@ -492,10 +483,7 @@ return (_ctx, _cache) => {
   const _component_el_card = resolveComponent("el-card");
   const _directive_loading = resolveDirective("loading");
 
-  return withDirectives((openBlock(), createBlock(_component_el_card, {
-    shadow: "never",
-    class: "llm-card"
-  }, {
+  return withDirectives((openBlock(), createBlock(_component_el_card, { shadow: "never" }, {
     default: withCtx(() => [
       createBaseVNode("div", _hoisted_1$2, [
         _cache[4] || (_cache[4] = createBaseVNode("div", null, [
@@ -594,11 +582,11 @@ return (_ctx, _cache) => {
 }
 
 };
-const LlmConfig = /*#__PURE__*/_export_sfc(_sfc_main$2, [['__scopeId',"data-v-fa2e982f"]]);
+const LlmConfig = /*#__PURE__*/_export_sfc(_sfc_main$2, [['__scopeId',"data-v-fd14b9a6"]]);
 
 const _hoisted_1$1 = { class: "wizard-progress" };
 const _hoisted_2$1 = { class: "ts-section-label" };
-const _hoisted_3$1 = { class: "hint" };
+const _hoisted_3 = { class: "hint" };
 const _hoisted_4 = { class: "task-toolbar" };
 const _hoisted_5 = { class: "hint" };
 const _hoisted_6 = {
@@ -874,7 +862,6 @@ return (_ctx, _cache) => {
     "model-value": __props.visible,
     title: "交互式配置向导",
     width: "720px",
-    class: "wizard-dialog",
     "close-on-click-modal": false,
     "onUpdate:modelValue": _cache[14] || (_cache[14] = $event => (_ctx.$emit('update:visible', $event))),
     onOpen: initFromProps
@@ -944,7 +931,7 @@ return (_ctx, _cache) => {
       createBaseVNode("div", _hoisted_1$1, [
         createBaseVNode("div", null, [
           createBaseVNode("span", _hoisted_2$1, toDisplayString(step.value === 0 ? '基础设置' : '签到任务'), 1),
-          createBaseVNode("p", _hoisted_3$1, toDisplayString(step.value === 0 ? '先定义任务名称和执行时间。' : '为每个群组或频道配置要执行的动作。'), 1)
+          createBaseVNode("p", _hoisted_3, toDisplayString(step.value === 0 ? '先定义任务名称和执行时间。' : '为每个群组或频道配置要执行的动作。'), 1)
         ]),
         createVNode(_component_el_tag, {
           type: "info",
@@ -1089,7 +1076,6 @@ return (_ctx, _cache) => {
         "onUpdate:modelValue": _cache[13] || (_cache[13] = $event => ((taskDialogVisible).value = $event)),
         title: taskIndex.value === null ? '添加签到任务' : '编辑签到任务',
         width: "560px",
-        class: "task-dialog",
         "append-to-body": "",
         "close-on-click-modal": false
       }, {
@@ -1285,11 +1271,10 @@ return (_ctx, _cache) => {
 }
 
 };
-const SignerWizard = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-ee6495a7"]]);
+const SignerWizard = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-d43ccafe"]]);
 
-const _hoisted_1 = { class: "configs-shell" };
-const _hoisted_2 = { class: "ts-intro" };
-const _hoisted_3 = { class: "config-tab-intro" };
+const _hoisted_1 = { class: "ts-intro" };
+const _hoisted_2 = { class: "config-tab-intro" };
 
 
 const _sfc_main = {
@@ -1329,8 +1314,8 @@ return (_ctx, _cache) => {
   const _component_el_tabs = resolveComponent("el-tabs");
 
   return (openBlock(), createElementBlock(Fragment, null, [
-    createBaseVNode("div", _hoisted_1, [
-      createBaseVNode("div", _hoisted_2, [
+    createBaseVNode("div", null, [
+      createBaseVNode("div", _hoisted_1, [
         _cache[4] || (_cache[4] = createBaseVNode("div", null, [
           createBaseVNode("span", { class: "ts-section-label" }, "配置中心"),
           createBaseVNode("p", { class: "ts-section-caption" }, "选择配置类型，开始编辑 JSON、运行模板或维护模型连接。")
@@ -1357,7 +1342,7 @@ return (_ctx, _cache) => {
             name: "signer"
           }, {
             default: withCtx(() => [
-              createBaseVNode("div", _hoisted_3, [
+              createBaseVNode("div", _hoisted_2, [
                 createVNode(_component_el_button, {
                   type: "primary",
                   plain: "",
@@ -1418,6 +1403,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Configs = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-4211a675"]]);
+const Configs = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-0fcdb4cc"]]);
 
 export { Configs as default };

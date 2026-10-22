@@ -1,5 +1,5 @@
 <template>
-  <div class="configs-shell">
+  <div>
     <div class="ts-intro">
       <div>
         <span class="ts-section-label">配置中心</span>

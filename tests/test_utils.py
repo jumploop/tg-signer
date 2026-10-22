@@ -27,8 +27,6 @@ def get_test_tzfile_source() -> pathlib.Path:
 
 
 def test_get_timezone_prefers_tz_environment(monkeypatch):
-    import tg_signer.utils as utils
-
     expected = require_zoneinfo("America/New_York")
     monkeypatch.setenv("TZ", "America/New_York")
     monkeypatch.setattr(utils, "_get_local_timezone", lambda: timezone.utc)
@@ -39,8 +37,6 @@ def test_get_timezone_prefers_tz_environment(monkeypatch):
 
 
 def test_get_timezone_supports_posix_prefixed_tz_name(monkeypatch):
-    import tg_signer.utils as utils
-
     expected = require_zoneinfo("America/New_York")
     monkeypatch.setenv("TZ", ":America/New_York")
     monkeypatch.setattr(utils, "_get_local_timezone", lambda: timezone.utc)
@@ -51,8 +47,6 @@ def test_get_timezone_supports_posix_prefixed_tz_name(monkeypatch):
 
 
 def test_get_timezone_supports_tzfile_path_in_tz_environment(monkeypatch, tmp_path):
-    import tg_signer.utils as utils
-
     tzfile = tmp_path / "localtime"
     tzfile.write_bytes(get_test_tzfile_source().read_bytes())
     expected = utils._load_timezone_from_file(tzfile)
@@ -71,8 +65,6 @@ def test_get_timezone_supports_tzfile_path_in_tz_environment(monkeypatch, tmp_pa
 
 
 def test_get_timezone_uses_local_timezone_when_tz_missing(monkeypatch):
-    import tg_signer.utils as utils
-
     monkeypatch.delenv("TZ", raising=False)
     monkeypatch.setattr(utils, "_get_local_timezone", lambda: timezone.utc)
 
@@ -82,8 +74,6 @@ def test_get_timezone_uses_local_timezone_when_tz_missing(monkeypatch):
 
 
 def test_get_timezone_falls_back_to_local_timezone_when_tz_is_invalid(monkeypatch):
-    import tg_signer.utils as utils
-
     monkeypatch.setenv("TZ", "Invalid/Zone")
     monkeypatch.setattr(utils, "_get_local_timezone", lambda: timezone.utc)
 
@@ -98,15 +88,12 @@ def test_load_timezone_returns_none_for_value_error_keys():
     回归：原先只捕获 ZoneInfoNotFoundError，一个写错的 TZ 会让
     get_timezone() 抛穿，而它是在每个自动化 tick 上被调用的。
     """
-    import tg_signer.utils as utils
 
     assert utils._load_timezone("..") is None
     assert utils._load_timezone("C:\\Windows") is None
 
 
 def test_get_timezone_falls_back_to_asia_shanghai(monkeypatch):
-    import tg_signer.utils as utils
-
     monkeypatch.delenv("TZ", raising=False)
     monkeypatch.setattr(utils, "_get_local_timezone", lambda: None)
 
@@ -117,8 +104,6 @@ def test_get_timezone_falls_back_to_asia_shanghai(monkeypatch):
 
 
 def test_get_local_timezone_uses_python_local_timezone(monkeypatch):
-    import tg_signer.utils as utils
-
     expected = timezone.utc
 
     class FakeDateTime:

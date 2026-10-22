@@ -1,4 +1,4 @@
-import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, R as asArray, E as ElMessage, j as errMsg, r as resolveComponent, g as ref, N as resolveDirective, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, J as toDisplayString, O as withDirectives, a as createElementBlock, P as Fragment, Q as renderList, L as computed } from './index-vbFgu0lp.js';
+import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, R as asArray, E as ElMessage, j as errMsg, r as resolveComponent, g as ref, N as resolveDirective, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, J as toDisplayString, O as withDirectives, a as createElementBlock, P as Fragment, Q as renderList, L as computed } from './index-COQHa1_g.js';
 
 const _hoisted_1 = { class: "ts-intro" };
 const _hoisted_2 = { class: "record-metrics" };
@@ -49,10 +49,7 @@ return (_ctx, _cache) => {
   const _component_el_card = resolveComponent("el-card");
   const _directive_loading = resolveDirective("loading");
 
-  return (openBlock(), createBlock(_component_el_card, {
-    shadow: "never",
-    class: "records-card"
-  }, {
+  return (openBlock(), createBlock(_component_el_card, { shadow: "never" }, {
     default: withCtx(() => [
       createBaseVNode("div", _hoisted_1, [
         _cache[2] || (_cache[2] = createBaseVNode("div", null, [
@@ -91,10 +88,7 @@ return (_ctx, _cache) => {
         _cache[5] || (_cache[5] = createBaseVNode("span", null, "任务记录", -1)),
         createBaseVNode("span", _hoisted_9, "当前显示 " + toDisplayString(filtered.value.length) + " 个任务", 1)
       ]),
-      withDirectives((openBlock(), createBlock(_component_el_table, {
-        data: filtered.value,
-        class: "records-table"
-      }, {
+      withDirectives((openBlock(), createBlock(_component_el_table, { data: filtered.value }, {
         empty: withCtx(() => [
           createVNode(_component_el_empty, {
             description: "暂无签到记录，运行签到任务后在此查看",
@@ -162,6 +156,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Records = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-00728bff"]]);
+const Records = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-a2ca7eb3"]]);
 
 export { Records as default };

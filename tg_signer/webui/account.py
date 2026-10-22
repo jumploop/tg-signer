@@ -59,8 +59,7 @@ def list_accounts(workdir) -> List[Dict[str, Any]]:
             entry = accounts.setdefault(
                 name, {"account": name, "kind": [], "session_file": None}
             )
-            if kind not in entry["kind"]:
-                entry["kind"].append(kind)
+            entry["kind"].append(kind)
             if suffix == ".session":
                 entry["session_file"] = str(session_file)
     result = []
@@ -98,9 +97,8 @@ def _update_account_users(workdir: pathlib.Path, mutate) -> None:
     mapping_file = workdir / _ACCOUNT_USERS_FILE
     with _ACCOUNT_USERS_LOCK:
         data = load_account_users(workdir)
-        result = mutate(data)
+        mutate(data)
         write_json_atomic(mapping_file, data)
-        return result
 
 
 def save_account_user(account: str, user_id: Any, workdir) -> None:
@@ -120,7 +118,6 @@ def remove_account_user(account: str, workdir) -> None:
             user_dir = workdir / "users" / str(user_id)
             if user_dir.is_dir():
                 shutil.rmtree(user_dir, ignore_errors=True)
-        return user_id
 
     _update_account_users(workdir, _mutate)
 

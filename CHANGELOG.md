@@ -1,6 +1,33 @@
 # Changelog / 版本变动日志
 
 ## 版本变动日志
+### 未发布
+第八、九轮 ponytail 审计（源码/测试/文档净删约 156 行），无用户可见行为变更；另修复两处测试与文档失准。前端 `static/` 已随源码重新构建。
+
+**第八轮：跨文件重复、注释脱节、冗余声明**
+- `cli/signer.py`：27 处恒等 click 声明（与推导同名的 `name`、`default=None`、`required=False`、`type=str`、default 为 None 的 `show_default`）删除；`--chat_id` 两处收敛为 `chat_id_option`。逐命令 `--help` 输出逐字对比不变
+- `automation/engine.py`：`export()` 改用只读路径（不再为拼错的任务名创建空任务目录）；`load_config` 冗余形参、`state_file`/`handlers_dir` 单调用 property、`_match_*` 重复前奏、`params or {}` 死兜底删除/收敛
+- `sign_record_store.py`：schema 版本两个单调用包装、与 `connect(timeout)` 重复的 `PRAGMA busy_timeout`、`_ensure_schema` 显式 commit、失效 `ORDER BY`、显式默认 `source` 删除
+- `webui/`：`_record_dedup_key` 不可达 `except`、`list_accounts` 恒真判断、未使用返回值、过时注释修正
+- 前端：两段重复的移动端表单样式并入 `theme.css`，删除 13 个无样式引用的根类名
+- 测试：6 处重复 `_StopLoop`、局部 `DummyApp`、8 处函数内重复 import、3 处重复 `runner` fixture 收敛
+
+**第九轮：API 样板、错误处理模式、序列化边界**
+- `core.py`：5 处「派生路径 + mkdir + return」收敛为 `_ensure_dir`；4 处登录预检收敛为 `_ensure_logged_in`；`run()` 双分支重复实参收敛
+- `handlers.py`：12 处「WARNING 日志 + return "stop"」收敛为 `_stop`；`offset_seconds` 解析收敛为 `_as_float`
+- `webui/data.py`：me.json / latest_chats.json 两段同构 JSON 兜底收敛为 `_read_json_or_none`（保留「跳过条目 / 降级空列表」的差异语义）
+- `LlmConfig.vue`：`save` 与 `testConn` 的校验、请求体、catch/finally 收敛为 `submitLlm`
+
+**测试与文档修正**
+- `tests/test_account_lock.py`：4 处用字面量 `"signer:alice"` 查注册表的断言改为 `runner.process_key(...)` —— 真实 key 含 workdir 前缀，原断言永久为真，「启动失败不泄漏锁」此前是零覆盖
+- 删除 5 个被更强用例完全覆盖的重复测试（653 → 648 collected）
+- 文档：README/README_EN 的 `send_text` `search_regex` + `template`（参数不存在）改为 `extract_regex` + `send_text`；WebUI「大模型 API 配置」位置表述修正；`docs/automation_usage.md` 补 `server_chan` 与 `blacklist_filter` 的 `regex`/失败关闭语义
+
+**审计中保留未动**
+- `ai_tools.save_config` 第二次 `restrict_file_permissions`（安全测试契约）、`webui` 的 `_session_file_usable` 预检、`webui/__init__.py` 懒加载入口、`runner.status()`、`RunStartBody.proxy`
+- 未文档化的 handler params 别名、`BaseJSONConfig.load()`、`/api/chats` 的 `account`、`/api/auth/status` 的 `locked_until`（配置/对外 API 兼容面）
+- 待拍板的行为修复：`run_coroutines` 的 `ChatFolderError` 分支漏 cancel 兄弟任务；`--log-file`/`--log-dir` 默认值脱节
+
 ### 0.10.18
 第四至第六轮 ponytail 审计（源码累计净删 201 行，无用户可见行为变更），外加一处记录页显示修复。
 

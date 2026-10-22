@@ -1,4 +1,4 @@
-import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, R as asArray, E as ElMessage, j as errMsg, r as resolveComponent, g as ref, N as resolveDirective, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, i as unref, V as info_filled_default, J as toDisplayString, O as withDirectives, L as computed } from './index-vbFgu0lp.js';
+import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, R as asArray, E as ElMessage, j as errMsg, r as resolveComponent, g as ref, N as resolveDirective, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, i as unref, V as info_filled_default, J as toDisplayString, O as withDirectives, L as computed } from './index-COQHa1_g.js';
 
 const _hoisted_1 = { class: "ts-intro" };
 const _hoisted_2 = { class: "ts-callout users-note" };
@@ -53,10 +53,7 @@ return (_ctx, _cache) => {
   const _component_el_card = resolveComponent("el-card");
   const _directive_loading = resolveDirective("loading");
 
-  return (openBlock(), createBlock(_component_el_card, {
-    shadow: "never",
-    class: "users-card"
-  }, {
+  return (openBlock(), createBlock(_component_el_card, { shadow: "never" }, {
     default: withCtx(() => [
       createBaseVNode("div", _hoisted_1, [
         _cache[2] || (_cache[2] = createBaseVNode("div", null, [
@@ -158,8 +155,7 @@ return (_ctx, _cache) => {
         modelValue: dialogVisible.value,
         "onUpdate:modelValue": _cache[0] || (_cache[0] = $event => ((dialogVisible).value = $event)),
         title: '对话列表 - ' + (currentUser.value?.data.first_name || currentUser.value?.user_id),
-        width: "640px",
-        class: "user-dialog"
+        width: "640px"
       }, {
         default: withCtx(() => [
           createVNode(_component_el_table, {
@@ -198,6 +194,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Users = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-36637d39"]]);
+const Users = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-1405af9f"]]);
 
 export { Users as default };

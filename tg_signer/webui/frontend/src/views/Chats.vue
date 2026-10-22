@@ -1,5 +1,5 @@
 <template>
-  <el-card shadow="never" class="chats-card">
+  <el-card shadow="never">
     <div class="ts-intro">
       <div>
         <span class="ts-section-label">对话资源</span>

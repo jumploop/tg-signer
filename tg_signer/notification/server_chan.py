@@ -51,6 +51,6 @@ async def sc_send(sendkey, title, desp=""):
     # 只在 code 是数字时才判定，避免误伤其它形状的响应。
     code = result.get("code") if isinstance(result, dict) else None
     if isinstance(code, int) and not isinstance(code, bool) and code != 0:
-        message = result.get("message", "") if isinstance(result, dict) else ""
+        message = result.get("message", "")
         raise RuntimeError(f"Server酱返回错误 code={code}: {message or '无说明'}")
     return result

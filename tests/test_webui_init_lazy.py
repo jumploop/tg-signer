@@ -85,10 +85,9 @@ def test_webui_package_does_not_load_server_without_fastapi(fastapi_blocked):
 
 def test_eager_submodules_load_without_fastapi(fastapi_blocked):
     """The light-weight WebUI submodules are safe to import on their own."""
-    from tg_signer.webui import data, runner
-
-    assert data.LOG_FILE_NAME == "tg-signer.log"
-    assert runner.DEFAULT_LOG_FILE_NAME == "tg-signer.log"
+    # 常量一致性由 test_webui_data.py / test_webui_runner.py 覆盖，这里只验证可导入。
+    for mod_name in ("data", "runner"):
+        importlib.import_module(f"tg_signer.webui.{mod_name}")
     # All declared eager submodules should be importable from the package.
     webui_pkg = sys.modules["tg_signer.webui"]
     for mod_name in _EAGER_SUBMODULES:

@@ -1,5 +1,5 @@
 <template>
-  <el-card shadow="never" class="settings-card">
+  <el-card shadow="never">
     <div class="settings-intro">
       <span class="ts-section-label">工作区设置</span>
       <p class="ts-section-caption">调整 WebUI 使用的本地目录，配置和运行记录会跟随此目录读取。</p>
@@ -93,22 +93,5 @@ onMounted(refresh)
 .settings-form :deep(.el-form-item__label) {
   color: var(--ts-muted);
   font-weight: 600;
-}
-
-@media (max-width: 600px) {
-  .settings-form :deep(.el-form-item) {
-    display: block;
-  }
-
-  .settings-form :deep(.el-form-item__label) {
-    display: block;
-    width: auto !important;
-    margin-bottom: 7px;
-    text-align: left;
-  }
-
-  .settings-form :deep(.el-form-item__content) {
-    margin-left: 0 !important;
-  }
 }
 </style>

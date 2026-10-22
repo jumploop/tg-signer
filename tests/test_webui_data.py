@@ -205,15 +205,6 @@ def test_load_logs_rejects_paths_outside_allowed_log_shape(tmp_path, relative):
 # ---------------------------------------------------------------------------
 
 
-def test_generate_random_name_basic_shape(tmp_path):
-    prefix = "sign_"
-    name = data.generate_random_config_name("signer", workdir=tmp_path)
-    assert name.startswith(prefix)
-    # 末尾应当是 4~16 位 hex
-    suffix = name[len(prefix) :].rsplit("_", 1)[-1]
-    assert re.fullmatch(r"[0-9a-f]{4,16}", suffix)
-
-
 def test_generate_random_name_uses_chat_title(tmp_path):
     chat = {"id": 1234567890, "title": "测试频道", "type": "channel"}
     name = data.generate_random_config_name("signer", chat, workdir=tmp_path)

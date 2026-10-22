@@ -26,6 +26,10 @@ from tg_signer.core import (
 from tg_signer.sign_record_store import SignRecordStore
 
 
+class _StopLoop(Exception):
+    pass
+
+
 class TestBaseUserWorker:
     def test_initializes_defaults(self, signer_factory):
         worker = signer_factory(cls=BaseUserWorker, task_name=None)
@@ -1890,19 +1894,7 @@ async def test_sign_once_persists_the_current_cycle_time(signer_factory, monkeyp
     frozen = datetime(2026, 9, 29, 6, 0, tzinfo=timezone.utc)
     monkeypatch.setattr(core, "get_now", lambda: frozen)
 
-    class DummyApp:
-        key = "dummy-app"
-
-        def add_handler(self, *_args, **_kwargs):
-            return None
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
-            return None
-
-    signer.app = DummyApp()
+    signer.app = _DummyApp()
 
     await signer.normal_run(only_once=True)
 
@@ -1964,9 +1956,6 @@ async def test_normal_run_waits_until_today_scheduled_time(signer_factory, monke
 
     real_sleep = core.asyncio.sleep
     signed_at = []
-
-    class _StopLoop(Exception):
-        pass
 
     async def fake_sleep(seconds):
         seconds = seconds or 0
@@ -2067,9 +2056,6 @@ async def test_normal_run_retries_the_round_when_every_chat_fails(
     attempts = []
     retry_waits = []
 
-    class _StopLoop(Exception):
-        pass
-
     async def fake_sleep(seconds):
         seconds = seconds or 0
         if seconds >= core._ALL_FAILED_RETRY_SECONDS:
@@ -2115,9 +2101,6 @@ async def test_normal_run_non_daily_cron_only_signs_on_matching_weekday(
 
     real_sleep = core.asyncio.sleep
     signed = []
-
-    class _StopLoop(Exception):
-        pass
 
     async def fake_sleep(seconds):
         seconds = seconds or 0
@@ -2244,9 +2227,6 @@ async def test_normal_run_retries_only_failed_chats_then_records(
 
     real_sleep = core.asyncio.sleep
 
-    class _StopLoop(Exception):
-        pass
-
     async def fake_sleep(seconds):
         seconds = seconds or 0
         if seconds > 1000:
@@ -2304,9 +2284,6 @@ async def test_normal_run_gives_up_after_partial_retry_limit(
     monkeypatch.setattr(core, "_MAX_PARTIAL_RETRIES", 2)
 
     real_sleep = core.asyncio.sleep
-
-    class _StopLoop(Exception):
-        pass
 
     async def fake_sleep(seconds):
         if (seconds or 0) > 1000:
@@ -3134,9 +3111,6 @@ async def test_normal_run_reregisters_handlers_every_round(signer_factory, monke
     )
     app = _DispatcherApp()
     signer.app = app
-
-    class _StopLoop(Exception):
-        pass
 
     real_sleep = core.asyncio.sleep
     waits = {"count": 0}

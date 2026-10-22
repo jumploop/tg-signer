@@ -1,5 +1,5 @@
 <template>
-  <el-card shadow="never" class="users-card">
+  <el-card shadow="never">
     <div class="ts-intro">
       <div>
         <span class="ts-section-label">用户信息</span>
@@ -44,7 +44,6 @@
       v-model="dialogVisible"
       :title="'对话列表 - ' + (currentUser?.data.first_name || currentUser?.user_id)"
       width="640px"
-      class="user-dialog"
     >
       <el-table :data="currentChats" max-height="400">
         <el-table-column prop="id" label="ID" width="140" />

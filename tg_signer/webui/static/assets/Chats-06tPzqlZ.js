@@ -1,4 +1,4 @@
-import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, R as asArray, E as ElMessage, j as errMsg, r as resolveComponent, g as ref, u as useRouter, N as resolveDirective, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, J as toDisplayString, a as createElementBlock, P as Fragment, Q as renderList, t as normalizeClass, O as withDirectives, X as copyText } from './index-vbFgu0lp.js';
+import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, R as asArray, E as ElMessage, j as errMsg, r as resolveComponent, g as ref, u as useRouter, N as resolveDirective, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, J as toDisplayString, a as createElementBlock, P as Fragment, Q as renderList, t as normalizeClass, O as withDirectives, X as copyText } from './index-COQHa1_g.js';
 
 const _hoisted_1 = { class: "ts-intro" };
 const _hoisted_2 = { class: "chats-controls" };
@@ -118,10 +118,7 @@ return (_ctx, _cache) => {
   const _component_el_card = resolveComponent("el-card");
   const _directive_loading = resolveDirective("loading");
 
-  return (openBlock(), createBlock(_component_el_card, {
-    shadow: "never",
-    class: "chats-card"
-  }, {
+  return (openBlock(), createBlock(_component_el_card, { shadow: "never" }, {
     default: withCtx(() => [
       createBaseVNode("div", _hoisted_1, [
         _cache[1] || (_cache[1] = createBaseVNode("div", null, [
@@ -285,6 +282,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Chats = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-fb9954f3"]]);
+const Chats = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-24c5dc95"]]);
 
 export { Chats as default };

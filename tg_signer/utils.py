@@ -415,10 +415,7 @@ def _load_timezone(name: str | None):
 
 
 def _get_local_timezone():
-    local_tz = datetime.now().astimezone().tzinfo
-    if local_tz is not None:
-        return local_tz
-    return None
+    return datetime.now().astimezone().tzinfo
 
 
 def get_timezone():

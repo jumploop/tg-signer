@@ -1,5 +1,5 @@
 <template>
-  <el-card shadow="never" class="records-card">
+  <el-card shadow="never">
     <div class="ts-intro">
       <div>
         <span class="ts-section-label">签到历史</span>
@@ -28,7 +28,7 @@
       <span>任务记录</span>
       <span class="ts-table-heading__meta">当前显示 {{ filtered.length }} 个任务</span>
     </div>
-    <el-table v-loading="loading" :data="filtered" class="records-table">
+    <el-table v-loading="loading" :data="filtered">
       <el-table-column prop="task" label="任务" />
       <el-table-column prop="user_id" label="User ID" width="140" />
       <el-table-column label="记录数" width="100">

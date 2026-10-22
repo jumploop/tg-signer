@@ -1,4 +1,4 @@
-import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, E as ElMessage, j as errMsg, r as resolveComponent, g as ref, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode } from './index-vbFgu0lp.js';
+import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, E as ElMessage, j as errMsg, r as resolveComponent, g as ref, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode } from './index-COQHa1_g.js';
 
 const _sfc_main = {
   __name: 'Settings',
@@ -55,10 +55,7 @@ return (_ctx, _cache) => {
   const _component_el_form = resolveComponent("el-form");
   const _component_el_card = resolveComponent("el-card");
 
-  return (openBlock(), createBlock(_component_el_card, {
-    shadow: "never",
-    class: "settings-card"
-  }, {
+  return (openBlock(), createBlock(_component_el_card, { shadow: "never" }, {
     default: withCtx(() => [
       _cache[3] || (_cache[3] = createBaseVNode("div", { class: "settings-intro" }, [
         createBaseVNode("span", { class: "ts-section-label" }, "工作区设置"),
@@ -129,6 +126,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Settings = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-b24d0b9c"]]);
+const Settings = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-f0d24349"]]);
 
 export { Settings as default };

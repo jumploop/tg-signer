@@ -60,29 +60,22 @@ def from_folder_option(command):
     return click.option(
         "--from-folder",
         "folder",
-        default=None,
         help="从指定普通 Folder 加载手动添加的对话，可使用名称或 ID",
     )(command)
 
 
 def export_file_option(command):
-    return click.option(
-        "--file", "-O", "file", type=click.Path(), default=None, help="导出至该文件"
-    )(command)
+    return click.option("--file", "-O", type=click.Path(), help="导出至该文件")(command)
 
 
 def import_file_option(command):
-    return click.option(
-        "--file", "-I", "file", type=click.Path(), default=None, help="导入该文件"
-    )(command)
+    return click.option("--file", "-I", type=click.Path(), help="导入该文件")(command)
 
 
 def delete_after_option(command):
     return click.option(
         "--delete-after",
-        "delete_after",
         type=int,
-        required=False,
         help="秒, 发送消息后进行删除, 默认不删除, '0'表示立即删除.",
     )(command)
 
@@ -90,10 +83,16 @@ def delete_after_option(command):
 def message_thread_id_option(command):
     return click.option(
         "--message-thread-id",
-        "message_thread_id",
         type=int,
-        required=False,
         help="话题ID（message_thread_id）, 不填则发送到非话题会话",
+    )(command)
+
+
+def chat_id_option(command):
+    return click.option(
+        "--chat_id",
+        required=True,
+        help="整数id或字符串username, username须以@开头",
     )(command)
 
 
@@ -161,7 +160,6 @@ def run_in_new_loop(build_coroutines):
 @click.option(
     "--log-level",
     "-l",
-    "log_level",
     default="info",
     show_default=True,
     type=click.Choice(["debug", "info", "warn", "error"], case_sensitive=False),
@@ -169,7 +167,6 @@ def run_in_new_loop(build_coroutines):
 )
 @click.option(
     "--log-file",
-    "log_file",
     default="logs/tg-signer.log",
     show_default=True,
     type=click.Path(),
@@ -177,7 +174,6 @@ def run_in_new_loop(build_coroutines):
 )
 @click.option(
     "--log-dir",
-    "log_dir",
     default="logs",
     show_default=True,
     type=click.Path(),
@@ -186,16 +182,12 @@ def run_in_new_loop(build_coroutines):
 @click.option(
     "--proxy",
     "-p",
-    "proxy",
-    default=None,
-    show_default=True,
     show_envvar=True,
     envvar="TG_PROXY",
     help="代理地址, 例如: socks5://127.0.0.1:1080, 会覆盖环境变量`TG_PROXY`的值",
 )
 @click.option(
     "--session_dir",
-    "session_dir",
     default=".",
     show_default=True,
     type=click.Path(),
@@ -204,7 +196,6 @@ def run_in_new_loop(build_coroutines):
 @click.option(
     "--account",
     "-a",
-    "account",
     default="my_account",
     show_default=True,
     show_envvar=True,
@@ -214,7 +205,6 @@ def run_in_new_loop(build_coroutines):
 @click.option(
     "--workdir",
     "-w",
-    "workdir",
     default=".signer",
     show_default=True,
     type=click.Path(),
@@ -222,16 +212,12 @@ def run_in_new_loop(build_coroutines):
 )
 @click.option(
     "--session-string",
-    "session_string",
-    default=None,
-    show_default=True,
     show_envvar=True,
     envvar="TG_SESSION_STRING",
     help="Telegram Session String, 会覆盖环境变量`TG_SESSION_STRING`的值",
 )
 @click.option(
     "--in-memory",
-    "in_memory",
     default=False,
     is_flag=True,
     help="是否将session存储在内存中，默认为False，存储在文件",
@@ -309,8 +295,6 @@ def list_folders(obj):
 )
 @click.option(
     "--user-id",
-    "user_id",
-    default=None,
     help="按 user_id 过滤",
 )
 @click.pass_obj
@@ -439,18 +423,12 @@ def parse_chat_id(chat_id: str):
 
 
 @tg_signer.command(help="查询聊天（群或频道）的成员, 频道需要管理员权限")
-@click.option(
-    "--chat_id",
-    "chat_id",
-    required=True,
-    help="整数id或字符串username, username须以@开头",
-)
-@click.option("--admin", "admin", default=False, is_flag=True, help="只列出管理员")
+@chat_id_option
+@click.option("--admin", default=False, is_flag=True, help="只列出管理员")
 @click.argument("query", default="")
 @click.option(
     "--limit",
     "-l",
-    "limit",
     default=10,
     type=int,
 )
@@ -462,16 +440,10 @@ def list_members(obj, chat_id: str, query: str, admin, limit):
 
 
 @tg_signer.command(help="列出群组话题ID（message_thread_id）")
-@click.option(
-    "--chat_id",
-    "chat_id",
-    required=True,
-    help="整数id或字符串username, username须以@开头",
-)
+@chat_id_option
 @click.option(
     "--limit",
     "-l",
-    "limit",
     default=20,
     show_default=True,
     type=int,
@@ -531,15 +503,12 @@ def import_(obj, task_name: str, file: str = None):
 @click.option(
     "--crontab",
     "-C",
-    "crontab",
-    type=str,
     required=True,
     help=" `crontab`语法, 如'0 0 * * *'表示每天0点发送.",
 )
 @click.option(
     "--next-times",
     "-N",
-    "next_times",
     type=int,
     default=1,
     show_default=True,
@@ -548,7 +517,6 @@ def import_(obj, task_name: str, file: str = None):
 @click.option(
     "--random-seconds",
     "-RS",
-    "random_seconds",
     type=int,
     default=0,
     show_default=True,
@@ -630,13 +598,10 @@ def llm_config(obj):
 )
 @click.option(
     "--legacy-user-id",
-    "legacy_user_id",
-    default=None,
     help="为旧版 signs/<task>/sign_record.json 指定 user_id；未指定时会尝试自动推断",
 )
 @click.option(
     "--delete-json",
-    "delete_json",
     default=False,
     is_flag=True,
     help="迁移成功后删除原 sign_record.json 文件",
@@ -670,13 +635,10 @@ def migrate_sign_records(obj, legacy_user_id: str | None, delete_json: bool):
     name="webgui",
     help="启动一个WebGUI（需要通过`pip install tg-signer[gui]`安装相关依赖）",
 )
-@click.option("--host", "-H", "host", default="127.0.0.1", help="监听地址")
-@click.option("--port", "-P", "port", default=8080, help="监听端口")
+@click.option("--host", "-H", default="127.0.0.1", help="监听地址")
+@click.option("--port", "-P", default=8080, help="监听端口")
 @click.option(
     "--auth-code",
-    "auth_code",
-    default=None,
-    show_default=True,
     envvar="TG_SIGNER_GUI_AUTHCODE",
     help="授权码，也可通过环境变量`TG_SIGNER_GUI_AUTHCODE`设置。若存在则访问界面时需要正确输入。",
 )

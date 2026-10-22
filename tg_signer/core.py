@@ -554,28 +554,25 @@ class BaseUserWorker(Generic[ConfigT]):
         # 丢掉返回值就只能一律当成成功。
         return self.loop.run_until_complete(coroutine)
 
+    @staticmethod
+    def _ensure_dir(path) -> pathlib.Path:
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     @property
     def workdir(self) -> pathlib.Path:
-        workdir = pathlib.Path(self._workdir)
-        workdir.mkdir(parents=True, exist_ok=True)
-        return workdir
+        return self._ensure_dir(pathlib.Path(self._workdir))
 
     @property
     def tasks_dir(self):
-        tasks_dir = self.workdir / self._tasks_dir
-        tasks_dir.mkdir(parents=True, exist_ok=True)
-        return tasks_dir
+        return self._ensure_dir(self.workdir / self._tasks_dir)
 
     @property
     def task_dir(self):
-        task_dir = self.tasks_dir / self.task_name
-        task_dir.mkdir(parents=True, exist_ok=True)
-        return task_dir
+        return self._ensure_dir(self.tasks_dir / self.task_name)
 
     def get_user_dir(self, user: User):
-        user_dir = self.workdir / "users" / str(user.id)
-        user_dir.mkdir(parents=True, exist_ok=True)
-        return user_dir
+        return self._ensure_dir(self.workdir / "users" / str(user.id))
 
     @property
     def config_file(self):
@@ -940,9 +937,12 @@ class BaseUserWorker(Generic[ConfigT]):
 
         return await self._call_telegram_api("channels.GetForumTopics", _collect_topics)
 
-    async def list_topics(self, chat_id: Union[int, str], limit: int = 20):
+    async def _ensure_logged_in(self) -> None:
         if self.user is None:
             await self.login(print_chat=False)
+
+    async def list_topics(self, chat_id: Union[int, str], limit: int = 20):
+        await self._ensure_logged_in()
         async with self.app:
             try:
                 topics = await self.get_forum_topics(chat_id, limit=limit)
@@ -1048,9 +1048,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
 
     @property
     def sign_record_file(self):
-        sign_record_dir = self.task_dir / str(self.user.id)
-        sign_record_dir.mkdir(parents=True, exist_ok=True)
-        return sign_record_dir / "sign_record.json"
+        return self._ensure_dir(self.task_dir / str(self.user.id)) / "sign_record.json"
 
     @property
     def legacy_sign_record_file(self):
@@ -1069,8 +1067,6 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 print()
                 action_str = local_input_("输入对应的数字选择动作: ").strip()
                 action = SupportAction(int(action_str))
-                if action not in available_actions:
-                    raise ValueError(f"不支持的动作: {action}")
                 if len(actions) == 0 and action not in [
                     SupportAction.SEND_TEXT,
                     SupportAction.SEND_DICE,
@@ -1262,22 +1258,20 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         force_rerun: bool = False,
         folder: Optional[str] = None,
     ):
-        if self.app.in_memory or self.app.session_string:
+        async def _run_normal():
             # session_string/in_memory 模式下 client 生命周期由本次运行包住;
             # normal_run 自己那轮 `async with self.app` 只是引用计数 +1/-1。
+            return await self.normal_run(
+                num_of_dialogs,
+                only_once=only_once,
+                force_rerun=force_rerun,
+                folder=folder,
+            )
+
+        if self.app.in_memory or self.app.session_string:
             async with self.app:
-                return await self.normal_run(
-                    num_of_dialogs,
-                    only_once=only_once,
-                    force_rerun=force_rerun,
-                    folder=folder,
-                )
-        return await self.normal_run(
-            num_of_dialogs,
-            only_once=only_once,
-            force_rerun=force_rerun,
-            folder=folder,
-        )
+                return await _run_normal()
+        return await _run_normal()
 
     def _ensure_message_handlers(self) -> None:
         """确保消息回调已挂在当前 client 上（幂等）。
@@ -1608,8 +1602,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         )
 
     async def _run_cli_action(self, action):
-        if self.user is None:
-            await self.login(print_chat=False)
+        await self._ensure_logged_in()
         async with self.app:
             await action()
 
@@ -1864,8 +1857,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         # 负数会让 random.randint(0, random_seconds) 抛 ValueError(empty range)。
         random_seconds = max(int(random_seconds), 0)
         it = croniter(crontab, start_time=now)
-        if self.user is None:
-            await self.login(print_chat=False)
+        await self._ensure_logged_in()
         results = []
         async with self.app:
             for n in range(next_times):
@@ -1888,8 +1880,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         return results
 
     async def get_schedule_messages(self, chat_id: Union[int, str]):
-        if self.user is None:
-            await self.login(print_chat=False)
+        await self._ensure_logged_in()
         async with self.app:
             messages = await self._call_telegram_api(
                 "messages.GetScheduledHistory",

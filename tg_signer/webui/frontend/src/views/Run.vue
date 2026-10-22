@@ -1,5 +1,5 @@
 <template>
-  <el-card shadow="never" class="run-card">
+  <el-card shadow="never">
     <div class="ts-intro">
       <div>
         <span class="ts-section-label">启动控制</span>

@@ -36,7 +36,7 @@ pip install "tg-signer[gui]"
 
 ![webgui](./assets/webui.jpeg)
 
-The WebUI includes account management (login/logout), config management (Signer / Automation config editing, including LLM API config and the interactive config wizard), group selection, user info, sign records and log pages. The account page can log in to obtain a session and log out to delete session files; the group selection page lists cached groups/channels and can quickly fill them into signer or automation configs.
+The WebUI includes account management (login/logout), config management (Signer / Automation config editing and the interactive config wizard; LLM API config lives on the "LLM connection" page under the workdir), group selection, user info, sign records and log pages. The account page can log in to obtain a session and log out to delete session files; the group selection page lists cached groups/channels and can quickly fill them into signer or automation configs.
 The WebUI uses a front-end/back-end separated architecture: the backend is FastAPI (REST API + static file hosting) and the frontend is Vue 3 (source in `tg_signer/webui/frontend/`). You do not need to build the frontend yourself - the package installed via `pip install "tg-signer[gui]"` already contains the built assets. To modify the frontend, run `npm install && npm run build` inside `tg_signer/webui/frontend/`; the output goes to `tg_signer/webui/static/`.
 
 ### Docker
@@ -337,7 +337,7 @@ Migration map:
 | Monitor item `chat_id` + matching rule | `message` trigger + `filters` (`text_rule` / `text_value` / `from_user_ids`) |
 | Default reply text | `send_text` handler |
 | AI reply | `ai_reply` handler |
-| Regex extraction of reply text | `send_text` handler `search_regex` + `template` |
+| Regex extraction of reply text | `extract_regex` handler (extract to a variable) + `send_text` (send with the `{var}` template) |
 | Forward to a chat | `forward` handler |
 | Forward to an external target (UDP / HTTP) | `external_forward` handler |
 | ServerChan push | `server_chan` handler |

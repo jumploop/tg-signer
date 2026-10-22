@@ -1,4 +1,4 @@
-import { _ as _export_sfc, m as watch, o as onMounted, k as onUnmounted, n as createBlock, w as withCtx, q as api, r as resolveComponent, g as ref, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, J as toDisplayString, a as createElementBlock, P as Fragment, Q as renderList, i as unref, V as info_filled_default, L as computed, E as ElMessage, j as errMsg } from './index-vbFgu0lp.js';
+import { _ as _export_sfc, m as watch, o as onMounted, k as onUnmounted, n as createBlock, w as withCtx, q as api, r as resolveComponent, g as ref, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, J as toDisplayString, a as createElementBlock, P as Fragment, Q as renderList, i as unref, V as info_filled_default, L as computed, E as ElMessage, j as errMsg } from './index-COQHa1_g.js';
 
 const _hoisted_1 = { class: "ts-intro" };
 const _hoisted_2 = { class: "selection-count" };
@@ -180,10 +180,7 @@ return (_ctx, _cache) => {
   const _component_el_table = resolveComponent("el-table");
   const _component_el_card = resolveComponent("el-card");
 
-  return (openBlock(), createBlock(_component_el_card, {
-    shadow: "never",
-    class: "run-card"
-  }, {
+  return (openBlock(), createBlock(_component_el_card, { shadow: "never" }, {
     default: withCtx(() => [
       createBaseVNode("div", _hoisted_1, [
         _cache[3] || (_cache[3] = createBaseVNode("div", null, [
@@ -429,6 +426,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Run = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-8bc1b5c5"]]);
+const Run = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-e2a9a108"]]);
 
 export { Run as default };

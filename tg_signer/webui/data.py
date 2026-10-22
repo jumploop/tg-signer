@@ -339,6 +339,14 @@ def delete_config(
     return config_file
 
 
+def _read_json_or_none(path: Path):
+    with open(path, "r", encoding="utf-8") as fp:
+        try:
+            return json.load(fp)
+        except json.JSONDecodeError:
+            return None
+
+
 def load_user_infos(workdir: Optional[Path | str] = None) -> List[UserInfo]:
     base = get_workdir(workdir)
     users_dir = base / "users"
@@ -351,25 +359,15 @@ def load_user_infos(workdir: Optional[Path | str] = None) -> List[UserInfo]:
         me_file = user_dir / "me.json"
         if not me_file.is_file():
             continue
-        with open(me_file, "r", encoding="utf-8") as fp:
-            try:
-                data = json.load(fp)
-            except json.JSONDecodeError:
-                continue
+        data = _read_json_or_none(me_file)
         # me.json 里是合法 JSON 但不是对象时（手改成 null / []），下游按 dict
         # 取字段会 AttributeError / TypeError，把 /api/chats 打成 500。
         # 与 latest_chats.json 的非数组守卫同理：跳过该条目。
         if not isinstance(data, dict):
             continue
 
-        latest_chats = []
         chats_file = user_dir / "latest_chats.json"
-        if chats_file.is_file():
-            with open(chats_file, "r", encoding="utf-8") as fp:
-                try:
-                    latest_chats = json.load(fp)
-                except json.JSONDecodeError:
-                    pass
+        latest_chats = _read_json_or_none(chats_file) if chats_file.is_file() else []
         # 文件内容不保证是数组（手改过、或被截断成对象），下游按 list 迭代，
         # 直接透传会让 /api/chats 抛 TypeError 变 500。
         if not isinstance(latest_chats, list):
@@ -397,10 +395,7 @@ def _record_dedup_key(
     两边键不一致，同一个文件就会在 UI 里出现两次（「优先用已迁移的 SQLite 行」
     的去重注释因此形同虚设）。先问 store 要标准答案，拿不到再退回旧逻辑。
     """
-    try:
-        resolved = store.resolve_record_target(path)
-    except ValueError:
-        resolved = None
+    resolved = store.resolve_record_target(path)
     if resolved is not None:
         return resolved
     relative_parts = path.relative_to(signs_root).parts
@@ -594,7 +589,8 @@ class UIState:
         self, workdir: Optional[Path | str] = None, *, create: bool = True
     ) -> None:
         self.workdir: Path = get_workdir(workdir or DEFAULT_WORKDIR, create=create)
-        # 统一主日志:<workdir>/logs/<LOG_FILE_NAME>,与子进程共享同一份
+        # 统一主日志:<workdir>/logs/<LOG_FILE_NAME>;任务子进程的日志隔离在
+        # logs/<kind>-<account>/,不写这里。
         self.log_path: Path = self.workdir / "logs" / LOG_FILE_NAME
         self._initial_workdir = self.workdir.resolve()
 

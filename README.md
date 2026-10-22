@@ -40,7 +40,7 @@ pip install "tg-signer[gui]"
 
 ![webgui](./assets/webui.jpeg)
 
-WebUI 包含账号管理（登录/登出）、配置管理（Signer / Automation 配置编辑，含大模型 API 配置与交互式配置向导）、群组配置、用户信息、签到记录和日志页面；账号管理页可登录账号获取 session 并登出删除 session 文件，群组配置页可列出账号缓存的群组/频道并快速填入签到或自动化配置。
+WebUI 包含账号管理（登录/登出）、配置管理（Signer / Automation 配置编辑与交互式配置向导；大模型 API 配置在工作目录下的「大模型连接」页）、群组配置、用户信息、签到记录和日志页面；账号管理页可登录账号获取 session 并登出删除 session 文件，群组配置页可列出账号缓存的群组/频道并快速填入签到或自动化配置。
 前后端分离架构：后端为 FastAPI（提供 REST API 并托管前端静态产物），前端为 Vue 3（源码位于 `tg_signer/webui/frontend/`）。正常使用无需自行构建前端，`pip install "tg-signer[gui]"` 安装的包内已含构建产物；如需修改前端，在 `tg_signer/webui/frontend/` 下执行 `npm install && npm run build`，产物会输出到 `tg_signer/webui/static/`。
 
 ### Docker
@@ -316,7 +316,7 @@ tg-signer automation run my_auto
 | 监控项 `chat_id` + 匹配规则 | 触发器 `message` + `filters`（`text_rule` / `text_value` / `from_user_ids`） |
 | 默认发送文本 | handler `send_text` |
 | AI 回复 | handler `ai_reply` |
-| 正则提取发送文本 | handler `send_text` 的 `search_regex` + `template` |
+| 正则提取发送文本 | handler `extract_regex`（提取变量）+ `send_text`（`{变量}` 模板发送） |
 | 转发到聊天 | handler `forward` |
 | 转发到外部（UDP / Http） | handler `external_forward` |
 | Server酱推送 | handler `server_chan` |

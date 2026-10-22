@@ -29,6 +29,19 @@ HandlerFn = Callable[
     [Event, AutomationContext, Dict[str, Any]], Awaitable[HandlerResult]
 ]
 
+
+def _stop(ctx: AutomationContext, message: str) -> HandlerResult:
+    ctx.log(message, level="WARNING")
+    return "stop"
+
+
+def _as_float(value) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 _REGISTRY: Dict[str, HandlerFn] = {}
 
 
@@ -408,15 +421,12 @@ async def _send_text_message(
 ) -> HandlerResult:
     text = params.get("text") or ""
     if not text:
-        ctx.log(f"{handler_name}: 空文本", level="WARNING")
-        return "stop"
+        return _stop(ctx, f"{handler_name}: 空文本")
     chat_id = params.get("chat_id") or event.chat_id
     if chat_id is None:
-        ctx.log(f"{handler_name}: 缺少chat_id", level="WARNING")
-        return "stop"
+        return _stop(ctx, f"{handler_name}: 缺少chat_id")
     if require_reply and reply_to_message_id is None:
-        ctx.log(f"{handler_name}: 缺少reply_to_message_id", level="WARNING")
-        return "stop"
+        return _stop(ctx, f"{handler_name}: 缺少reply_to_message_id")
     text = render_template(text, event, ctx)
     delete_after = params.get("delete_after")
     ctx.log(
@@ -443,8 +453,7 @@ async def extract_regex(
 ) -> HandlerResult:
     pattern = params.get("pattern")
     if not pattern:
-        ctx.log("extract_regex: 缺少pattern", level="WARNING")
-        return "stop"
+        return _stop(ctx, "extract_regex: 缺少pattern")
     text = params.get("text")
     if text is None:
         text = message_text(event.message)
@@ -485,8 +494,7 @@ async def ai_reply(
 ) -> HandlerResult:
     prompt = params.get("prompt")
     if not prompt:
-        ctx.log("ai_reply: 缺少prompt", level="WARNING")
-        return "stop"
+        return _stop(ctx, "ai_reply: 缺少prompt")
     prompt = str(render_template(prompt, event, ctx))
     text = await resolve_ai_input(event, ctx, params)
     reply_to_message_id = params.get("reply_to_message_id")
@@ -505,8 +513,7 @@ async def ai_reply(
         return "continue"
     chat_id = params.get("chat_id") or event.chat_id
     if chat_id is None:
-        ctx.log("ai_reply: 缺少chat_id", level="WARNING")
-        return "stop"
+        return _stop(ctx, "ai_reply: 缺少chat_id")
     delete_after = params.get("delete_after")
     ctx.log(
         f"ai_reply: 发送回复 chat_id={chat_id}, reply_to={reply_to_message_id}",
@@ -603,12 +610,10 @@ async def forward(
     event: Event, ctx: AutomationContext, params: Dict[str, Any]
 ) -> HandlerResult:
     if not event.message:
-        ctx.log("forward: 缺少message", level="WARNING")
-        return "stop"
+        return _stop(ctx, "forward: 缺少message")
     to_chat_id = params.get("chat_id") or params.get("to_chat_id")
     if to_chat_id is None:
-        ctx.log("forward: 缺少chat_id", level="WARNING")
-        return "stop"
+        return _stop(ctx, "forward: 缺少chat_id")
     from_chat_id = params.get("from_chat_id") or event.chat_id
     message_id = params.get("message_id") or event.message.id
     ctx.log(
@@ -630,8 +635,7 @@ async def external_forward(
     event: Event, ctx: AutomationContext, params: Dict[str, Any]
 ) -> HandlerResult:
     if not event.message:
-        ctx.log("external_forward: 缺少message", level="WARNING")
-        return "stop"
+        return _stop(ctx, "external_forward: 缺少message")
     targets = params.get("targets") or []
     success_count = 0
     failure_count = 0
@@ -682,8 +686,7 @@ async def server_chan(
 ) -> HandlerResult:
     send_key = params.get("send_key") or os.environ.get("SERVER_CHAN_SEND_KEY")
     if not send_key:
-        ctx.log("server_chan: 未配置SendKey", level="WARNING")
-        return "stop"
+        return _stop(ctx, "server_chan: 未配置SendKey")
     title = params.get("title") or "Automation"
     body = params.get("body")
     if body is None:
@@ -719,10 +722,7 @@ async def schedule_next(
                 delay_seconds = value
         except (TypeError, ValueError):
             pass
-    try:
-        offset_seconds = float(params.get("offset_seconds") or 0)
-    except (TypeError, ValueError):
-        offset_seconds = 0
+    offset_seconds = _as_float(params.get("offset_seconds"))
     if delay_seconds < 0 or offset_seconds < 0:
         raise ValueError("schedule_next: delay_seconds 和 offset_seconds 不能为负数")
     total_seconds = delay_seconds + offset_seconds
@@ -820,8 +820,7 @@ async def random_pick(
             )
             return "stop"
     if not choices:
-        ctx.log("random_pick: 缺少choices", level="WARNING")
-        return "stop"
+        return _stop(ctx, "random_pick: 缺少choices")
     chosen = random.choice(choices)
     var = params.get("var")
     if var:
@@ -830,8 +829,7 @@ async def random_pick(
         return "continue"
     chat_id = params.get("chat_id") or event.chat_id
     if chat_id is None:
-        ctx.log("random_pick: 缺少chat_id", level="WARNING")
-        return "stop"
+        return _stop(ctx, "random_pick: 缺少chat_id")
     rendered = render_template(str(chosen), event, ctx)
     ctx.log(f"random_pick: 发送模式 chat_id={chat_id}, value={rendered}", level="DEBUG")
     await ctx.worker.send_message(chat_id, rendered)

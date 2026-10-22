@@ -52,7 +52,6 @@ class SignRecordStore:
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=self.BUSY_TIMEOUT_SECONDS)
         conn.row_factory = sqlite3.Row
-        conn.execute(f"PRAGMA busy_timeout={int(self.BUSY_TIMEOUT_SECONDS * 1000)}")
         self._enable_wal(conn)
         self._ensure_schema(conn)
         return conn
@@ -89,20 +88,11 @@ class SignRecordStore:
             pass
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:
-        version = self._get_schema_version(conn)
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
         if version >= self.SCHEMA_VERSION:
             return
         self._migrate_to_v1(conn)
-        self._set_schema_version(conn, self.SCHEMA_VERSION)
-        conn.commit()
-
-    @staticmethod
-    def _get_schema_version(conn: sqlite3.Connection) -> int:
-        return conn.execute("PRAGMA user_version").fetchone()[0]
-
-    @staticmethod
-    def _set_schema_version(conn: sqlite3.Connection, version: int) -> None:
-        conn.execute(f"PRAGMA user_version = {version}")
+        conn.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
 
     @staticmethod
     def _migrate_to_v1(conn: sqlite3.Connection) -> None:
@@ -142,8 +132,6 @@ class SignRecordStore:
             )
             for sign_date, signed_at in items
         ]
-        if not rows:
-            return 0
         before = conn.total_changes
         # ON CONFLICT 上加 WHERE 是有意为之：**只有更新的记录才覆盖旧值**。
         # 原来是无条件 DO UPDATE，于是 legacy JSON 永远压过运行期写入：把
@@ -191,7 +179,6 @@ class SignRecordStore:
                 user_id,
                 [(sign_date, signed_at)],
                 account=account,
-                source="runtime",
             )
 
     def has_records(self, task_name: str, user_id: str) -> bool:
@@ -214,7 +201,6 @@ class SignRecordStore:
                 SELECT sign_date, signed_at
                 FROM sign_records
                 WHERE task_name = ? AND user_id = ?
-                ORDER BY sign_date ASC
                 """,
                 (task_name, user_id),
             ).fetchall()

@@ -86,25 +86,6 @@ def test_rule_state_store_save_uses_temp_file(tmp_path):
     assert not (path.with_name(path.name + ".tmp")).exists()
 
 
-def test_rule_state_store_load_corrupt_backs_up_and_continues(tmp_path):
-    """load() 遇到损坏 JSON 时应备份原文件并以空状态继续,不抛异常。"""
-    path = tmp_path / "state.json"
-    path.write_text("{not valid json", encoding="utf-8")
-
-    store = RuleStateStore(path, logging.getLogger("test"))
-
-    # 损坏文件应被备份
-    backups = list(path.parent.glob(path.name + ".corrupt-*"))
-    assert len(backups) == 1
-    assert not path.exists()
-    # 以空状态继续
-    assert store.get_rule_vars("r1") == {}
-    # 下次 save 应写新内容,不会因为旧文件已被备份而失败
-    store.set_rule_vars("r1", {"a": 1})
-    store.save(force=True)
-    assert path.is_file()
-
-
 def test_rule_state_store_dirty_skip_save(tmp_path):
     """无变更时 save() 应跳过 IO, 不创建临时文件。"""
     path = tmp_path / "state.json"

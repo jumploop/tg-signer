@@ -2,7 +2,6 @@ import asyncio
 
 import click
 import pytest
-from click.testing import CliRunner
 
 import tg_signer.cli.automation as automation_cli
 import tg_signer.cli.signer as signer_cli
@@ -106,11 +105,6 @@ class DummyWorker:
                 "folder": folder,
             }
         )
-
-
-@pytest.fixture
-def runner():
-    return CliRunner()
 
 
 def test_list_folders_command(monkeypatch, runner):

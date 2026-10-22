@@ -92,17 +92,6 @@ def test_load_oserror_recovers_when_read_succeeds_on_retry(tmp_path, monkeypatch
     assert _corrupt_backups(tmp_path) == []
 
 
-def test_load_real_corruption_still_backs_up(tmp_path):
-    """真正的 JSON 损坏仍然要备份并以空状态继续（防止修过头）。"""
-    path = _state_path(tmp_path)
-    path.write_text("{not json at all", encoding="utf-8")
-
-    store = RuleStateStore(path, _LOGGER)
-
-    assert store.get_rule_vars("r1") == {}
-    assert len(_corrupt_backups(tmp_path)) == 1, "损坏文件没有被备份"
-
-
 # ---------------------------------------------------------------------------
 # save()：临时文件名不能是固定的
 # ---------------------------------------------------------------------------

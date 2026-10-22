@@ -5,16 +5,8 @@
 指定了工作目录，日志却在别处，页面自然什么都没有。
 """
 
-import pytest
-from click.testing import CliRunner
-
 import tg_signer.cli.signer as signer_cli
 import tg_signer.webui as webui_pkg
-
-
-@pytest.fixture
-def runner():
-    return CliRunner()
 
 
 def test_webgui_passes_workdir_to_main(runner, monkeypatch, tmp_path):

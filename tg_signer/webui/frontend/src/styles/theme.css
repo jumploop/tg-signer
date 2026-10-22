@@ -279,6 +279,24 @@ body {
 }
 
 @media (max-width: 600px) {
+  .llm-form .el-form-item,
+  .settings-form .el-form-item {
+    display: block;
+  }
+
+  .llm-form .el-form-item__label,
+  .settings-form .el-form-item__label {
+    display: block;
+    width: auto !important;
+    margin-bottom: 7px;
+    text-align: left;
+  }
+
+  .llm-form .el-form-item__content,
+  .settings-form .el-form-item__content {
+    margin-left: 0 !important;
+  }
+
   .el-dialog {
     width: calc(100vw - 24px) !important;
     margin: 12px auto;

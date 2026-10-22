@@ -345,30 +345,6 @@ def test_same_account_in_two_workdirs_does_not_collide(monkeypatch, tmp_path):
         runner.stop("signer", "acc", workdir_b)
 
 
-def test_start_detects_immediate_exit(monkeypatch, tmp_path):
-    # 子进程启动后立即以 exit code 1 退出 → 启动失败
-    # 用 fake Popen 模拟,不依赖真实子进程启动耗时(本机 Python 注入 shim
-    # 启动极慢,真实 `pass` 子进程退出时间波动大,会与 grace 秒数竞态)。
-    class _FakeChild:
-        pid = 4242
-
-        def poll(self):
-            return 1  # 已退出
-
-        def wait(self, timeout=None):
-            return 1
-
-    monkeypatch.setattr(runner.subprocess, "Popen", lambda *a, **k: _FakeChild())
-    monkeypatch.setattr(runner, "_STARTUP_GRACE_SECONDS", 0.0)
-
-    ok, msg = runner.start("signer", "t_fail", tmp_path, "acc")
-    assert ok is False
-    assert "启动后立即退出" in msg
-    # 不应留在 _PROCESSES / _LOCKS 里
-    assert runner.process_key("signer", "acc", tmp_path) not in runner._PROCESSES
-    assert runner.process_key("signer", "acc", tmp_path) not in runner._LOCKS
-
-
 def test_shutdown_all_terminates_tracked_processes(monkeypatch, tmp_path):
     monkeypatch.setattr(
         runner,

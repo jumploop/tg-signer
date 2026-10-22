@@ -270,7 +270,7 @@ def set_state(body: StateBody) -> Dict[str, str]:
 @protected.get("/api/configs/{kind}")
 def list_configs(kind: str) -> Dict[str, List[str]]:
     if kind == "automation":
-        # 只提供任务名列表供「任务运行」页选择;automation 配置编辑仍走 CLI。
+        # 只提供任务名列表供「任务运行」页选择。
         return {"names": data_mod.list_automation_names(state.workdir)}
     if not data_mod.uses_dir_layout(kind):
         raise HTTPException(status_code=400, detail=f"不支持的配置类型: {kind}")

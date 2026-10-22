@@ -3,7 +3,6 @@
     :model-value="visible"
     title="交互式配置向导"
     width="720px"
-    class="wizard-dialog"
     :close-on-click-modal="false"
     @update:model-value="$emit('update:visible', $event)"
     @open="initFromProps"
@@ -86,7 +85,6 @@
       v-model="taskDialogVisible"
       :title="taskIndex === null ? '添加签到任务' : '编辑签到任务'"
       width="560px"
-      class="task-dialog"
       append-to-body
       :close-on-click-modal="false"
     >

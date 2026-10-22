@@ -224,8 +224,8 @@ function fillChatId(payload, chat) {
   }
 }
 
-// 数字 ID 必须写成 JSON 数字。automation 的 _match_chat 只对 int 做数字比较,
-// 字符串 "-1001234567890" 会被当作 @username 分支,规则将永不命中。
+// 数字 ID 写成 JSON 数字,保持配置形状一致。engine 的 _match_chat 现在会对
+// 数字字符串做 normalize_chat_ref 归一化,即使保存成字符串也能命中。
 function toChatValue(raw) {
   const text = String(raw).trim()
   return /^-?\d+$/.test(text) ? Number(text) : text
