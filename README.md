@@ -66,8 +66,8 @@ Options:
   -l, --log-level [debug|info|warn|error]
                                   日志等级, `debug`, `info`, `warn`, `error`
                                   [default: info]
-  --log-file PATH                 日志文件路径, 可以是相对路径  [default: logs/tg-
-                                  signer.log]
+  --log-file PATH                 日志文件路径, 可以是相对路径（默认为
+                                  <log-dir>/tg-signer.log）
   --log-dir PATH                  日志文件目录, 可以是相对路径  [default: logs]
   -p, --proxy TEXT                代理地址, 例如: socks5://127.0.0.1:1080,
                                   会覆盖环境变量`TG_PROXY`的值  [env var: TG_PROXY]

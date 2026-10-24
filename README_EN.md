@@ -9,6 +9,7 @@
 - Use AI for image recognition and click the matching keyboard button
 - Monitor personal, group, and channel messages, then forward or auto-reply
 - Execute action flows based on configuration
+- Automation rule engine (message/timer/startup triggers + handler chains)
 
   **...**
 
@@ -24,6 +25,12 @@ Or install the performance extras:
 
 ```sh
 pip install "tg-signer[speedup]"
+```
+
+To enable YAML configuration support:
+
+```sh
+pip install "tg-signer[yaml]"
 ```
 
 #### WebUI
@@ -68,8 +75,8 @@ Options:
   -l, --log-level [debug|info|warn|error]
                                   Log level: `debug`, `info`, `warn`, `error`
                                   [default: info]
-  --log-file PATH                 Log file path, can be relative  [default: logs/tg-
-                                  signer.log]
+  --log-file PATH                 Log file path, can be relative (defaults to
+                                  `<log-dir>/tg-signer.log`)
   --log-dir PATH                  Log directory, can be relative  [default: logs]
   -p, --proxy TEXT                Proxy address, for example:
                                   socks5://127.0.0.1:1080. Overrides the
@@ -316,7 +323,7 @@ When the task actually runs:
 
 - On startup, if **today's** scheduled time has already passed, it signs once immediately (catch-up); if it has not arrived yet, it **waits for that time** instead of signing early (otherwise the same day would be signed twice).
 - A non-daily crontab (e.g. `0 6 * * 1`, Mondays only) only signs on matching days; on other days nothing is signed.
-- The day is recorded as done only when **every** chat has signed successfully. On a partial success nothing is recorded: the round is retried after 60 seconds, and only the **failed** chats are retried (chats that already succeeded are not messaged twice). After 10 consecutive retries the record is written anyway and an ERROR names exactly which chats did not sign, so the task does not spin until tomorrow. When every chat fails, the day is likewise not recorded and retries continue indefinitely.
+- The day is recorded as done only when **every** chat has signed successfully. On a partial success nothing is recorded: the round is retried after 60 seconds, and only the **failed** chats are retried (chats that already succeeded are not messaged twice). After 3 consecutive retries the record is written anyway and an ERROR names exactly which chats did not sign, so the task does not spin until tomorrow. When every chat fails, the day is likewise not recorded and the round is retried at most 3 times.
 - Use `tg-signer run-once <task>` to force an immediate run; on a partial failure it honestly reports failure (non-zero exit code) without retrying.
 
 ### Monitoring Has Been Removed
@@ -361,6 +368,10 @@ run `tree .signer`, you will see:
 │   └── 123456789
 │       ├── latest_chats.json  # Recently fetched chats
 │       └── me.json  # Personal profile
+├── automations  # Automation rules
+│   └── my_auto  # Automation task name
+│       ├── config.json  # Automation configuration
+│       └── state.json  # Runtime state
 └── signs  # Check-in tasks
     └── linuxdo  # Check-in task name
         ├── config.json  # Check-in configuration
@@ -368,7 +379,7 @@ run `tree .signer`, you will see:
         │   └── sign_record.json  # Legacy JSON check-in records (still supported for migration)
         └── sign_record.json  # Even older JSON path (still supported for migration)
 
-5 directories, 6 files
+8 directories, 9 files
 ```
 
 After migrating to SQLite, new check-in records are written only to

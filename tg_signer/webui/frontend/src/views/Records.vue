@@ -89,9 +89,6 @@ onMounted(refresh)
 </script>
 
 <style scoped>
-.ts-intro {
-  margin-bottom: 20px;
-}
 .record-metrics {
   display: grid;
   grid-template-columns: 150px 150px minmax(220px, 1fr);

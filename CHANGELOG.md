@@ -2,6 +2,33 @@
 
 ## 版本变动日志
 ### 未发布
+第十轮 ponytail 审计（异常/并发边界、CLI 与配置交界、前端样式重复），无用户可见行为变更（前端 `static/` 已随源码重新构建）。
+
+**行为修复（上轮留待拍板的两项）**
+- `cli/signer.py`：`run_coroutines` 的 `ChatFolderError` 分支此前漏掉兄弟任务 cancel/回收——`gather` 只抛第一个异常，其余协程会在事件循环被 `close()` 后静默丢弃或在半应用状态上继续执行。现与 `CancelledError`/`Exception` 分支同样收场，并补 `test_run_coroutines_cancels_sibling_tasks_on_chat_folder_error`
+- `cli/signer.py`：`--log-file` 默认值从写死的 `logs/tg-signer.log` 改为无默认值，由 `configure_logger` 按实际 `--log-dir` 拼出 `<log-dir>/tg-signer.log`——此前改 `--log-dir` 日志仍落回 `logs/`。新增 `tests/test_cli_log_dir_defaults.py`
+
+**第十轮：前端重复样式与无效类名**
+- `theme.css`：`.ts-intro` 补 `margin-bottom: 20px` 为全局默认值；`Accounts`/`Chats`/`Configs`/`Records` 四处同值覆盖删除（`LlmConfig` 18px、`Logs` 18px、`Run` 22px、`Users` 14px 保留）
+- `Run.vue`：`.kind-select` / `.account-select` / `.task-select` 三条等价 `width: 100%` 合并为一条
+- `Chats.vue` / `Users.vue`：删除 CSS 中不存在的 `chats-table` / `users-table` 类名
+
+**第十轮：文档与打包失准**
+- `README.md`/`README_EN.md`：`--log-file` 用法快照同步为无默认值（随本轮 CLI 改动）；README_EN 补齐「自动化规则引擎」功能条目与 `[yaml]` 安装段
+- `README_EN.md`：签到重试描述从「10 轮 / 全部失败无限重试」改为与代码一致的 3 轮；存储目录树补 `automations/` 子树并修正计数
+- `docker/CN.Dockerfile`：不存在的 extra `tgcrypto` 改为 `speedup`（此前 pip 静默略过）；同时与 `GHCR.Dockerfile` 统一为按仓库源码安装（`COPY pyproject.toml README.md tg_signer` → `pip install .`），不再从 PyPI 拉发布版——两条构建路径此前可能产出不同代码版本
+- `tests/test_automation_engine.py`：用例名/docstring 声称「数字字符串永不命中」，与 `normalize_chat_ref` 及同文件另一用例矛盾，改为如实描述
+- `.pre-commit-config.yaml`：ruff-pre-commit 由 `v0.15.4` 统一到 `pyproject.toml` 的 `0.14.6`，避免 pre-commit 与本地/CI lint 结果不一致
+- `.github/workflows/test.yml`：Lint 步骤补 `ruff format --check`，与 AGENTS.md 的提交前要求和 pre-commit 的 ruff-format 对齐
+- `cli/signer.py`：`import_config` 的 stdin 读取由已弃用的 `click.get_text_stream("stdin")` 改为 `click.open_file("-")`（Click 9.0 会移除前者），读取路径与文件导入收敛为同一实现
+
+**审计中保留未动**
+- `cli/automation.py` 的 `config.json` 字面量：与 `AUTOMATION_CONFIG_FILE_NAMES[0]` 同值，改常量为零收益且触及默认路径解析
+- `automation/engine.py` 三处「`self.log` ERROR + `logger.exception`」双日志：`self.log` 是带中文上下文的业务日志，`logger.exception` 是带栈的库日志，合并会改变日志内容
+- `config.py:474` 的 `SignConfigV3._check_sign_at` 二次校验、`chats` 空列表手写 validator：改为 pydantic `min_length` 会改写存量 `sign_at` 或报错文案
+- `handlers.py` `load_plugins` 的 `except (SystemExit, KeyboardInterrupt)`：代理曾报「不可达」，实测 `SystemExit` 不继承 `Exception`，该子句正常命中（误报）
+- `webui` `/api/auth/status` 的 `locked_until`：前端不读，属对外 API 兼容面（维持前几轮裁定）
+
 第八、九轮 ponytail 审计（源码/测试/文档净删约 156 行），无用户可见行为变更；另修复两处测试与文档失准。前端 `static/` 已随源码重新构建。
 
 **第八轮：跨文件重复、注释脱节、冗余声明**

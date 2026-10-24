@@ -270,12 +270,8 @@ def test_match_chat_ids_and_username(tmp_path):
     assert not worker._match_chat(msg, None, ["@other"])
 
 
-def test_numeric_chat_id_written_as_string_never_matches(tmp_path):
-    """WebUI 复制到配置必须把数字 ID 写成 JSON 数字而非字符串。
-
-    ``_match_chat`` 只对 ``int`` 做数字比较，字符串 "-1001234567890" 会落进
-    ``@username`` 分支，与任何数字群都对不上，规则会静默失效。
-    """
+def test_numeric_chat_id_as_json_number_matches(tmp_path):
+    """配置里的数字 chat_id 必须是 JSON 数字，规则才能按 int 命中。"""
     worker = make_worker(tmp_path)
     chat = DummyChat(id=-1001234567890, username="my_channel")
     msg = DummyMessage(text="ok", chat=chat)

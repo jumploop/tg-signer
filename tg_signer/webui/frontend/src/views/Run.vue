@@ -308,9 +308,7 @@ onUnmounted(() => clearInterval(timer))
   margin-right: 0;
 }
 .kind-select,
-.account-select {
-  width: 100%;
-}
+.account-select,
 .task-select {
   width: 100%;
 }

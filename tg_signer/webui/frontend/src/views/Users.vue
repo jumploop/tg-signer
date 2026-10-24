@@ -15,7 +15,7 @@
       <span>已缓存账户</span>
       <span class="ts-table-heading__meta">{{ users.length }} 个账户</span>
     </div>
-    <el-table v-loading="loading" :data="users" class="users-table">
+    <el-table v-loading="loading" :data="users">
       <el-table-column prop="user_id" label="User ID" width="140" />
       <el-table-column label="名称">
         <template #default="{ row }">

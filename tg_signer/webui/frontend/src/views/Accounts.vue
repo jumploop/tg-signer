@@ -259,9 +259,6 @@ onMounted(refresh)
 </script>
 
 <style scoped>
-.ts-intro {
-  margin-bottom: 20px;
-}
 .account-metrics {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

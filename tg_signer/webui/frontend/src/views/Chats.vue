@@ -29,7 +29,7 @@
       <span>群组 / 频道</span>
       <span class="ts-table-heading__meta">支持复制到 Signer 或 Automation</span>
     </div>
-    <el-table v-loading="loading || cacheLoading" :data="chats" max-height="560" class="chats-table">
+    <el-table v-loading="loading || cacheLoading" :data="chats" max-height="560">
       <el-table-column prop="id" label="ID" width="140" />
       <el-table-column prop="title" label="标题" />
       <el-table-column prop="type" label="类型" width="120" />
@@ -162,9 +162,6 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.ts-intro {
-  margin-bottom: 20px;
-}
 .chats-controls {
   display: flex;
   align-items: center;

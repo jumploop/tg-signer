@@ -1,4 +1,4 @@
-import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, R as asArray, E as ElMessage, j as errMsg, r as resolveComponent, g as ref, N as resolveDirective, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, i as unref, V as info_filled_default, J as toDisplayString, O as withDirectives, L as computed } from './index-COQHa1_g.js';
+import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, R as asArray, E as ElMessage, j as errMsg, r as resolveComponent, g as ref, N as resolveDirective, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, i as unref, V as info_filled_default, J as toDisplayString, O as withDirectives, L as computed } from './index-Ceed42FL.js';
 
 const _hoisted_1 = { class: "ts-intro" };
 const _hoisted_2 = { class: "ts-callout users-note" };
@@ -87,10 +87,7 @@ return (_ctx, _cache) => {
         _cache[4] || (_cache[4] = createBaseVNode("span", null, "已缓存账户", -1)),
         createBaseVNode("span", _hoisted_4, toDisplayString(users.value.length) + " 个账户", 1)
       ]),
-      withDirectives((openBlock(), createBlock(_component_el_table, {
-        data: users.value,
-        class: "users-table"
-      }, {
+      withDirectives((openBlock(), createBlock(_component_el_table, { data: users.value }, {
         empty: withCtx(() => [
           createVNode(_component_el_empty, {
             description: "暂无用户信息（读取 users/*/me.json）",
@@ -194,6 +191,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Users = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-1405af9f"]]);
+const Users = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-6f31b865"]]);
 
 export { Users as default };

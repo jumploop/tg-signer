@@ -67,6 +67,32 @@ def test_run_coroutines_propagates_cancellation_as_click_exception():
         loop.close()
 
 
+def test_run_coroutines_cancels_sibling_tasks_on_chat_folder_error():
+    """ChatFolderError 分支也必须收场兄弟协程，否则它们会在半应用状态上继续跑。"""
+    state = {"sibling_finished": False, "sibling_cancelled": False}
+
+    async def boom():
+        raise ChatFolderError("folder gone")
+
+    async def sibling():
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            state["sibling_cancelled"] = True
+            raise
+        state["sibling_finished"] = True  # pragma: no cover
+
+    loop = asyncio.new_event_loop()
+    try:
+        with pytest.raises(click.ClickException):
+            signer_cli.run_coroutines(loop, [boom(), sibling()])
+    finally:
+        loop.close()
+
+    assert state["sibling_cancelled"] is True
+    assert state["sibling_finished"] is False
+
+
 class DummyWorker:
     def __init__(self):
         self.calls = []

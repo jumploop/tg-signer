@@ -132,6 +132,10 @@ def run_coroutines(loop, coroutines):
         loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
         raise click.ClickException("任务已被取消") from exc
     except ChatFolderError as exc:
+        # 兄弟任务同样必须先 cancel 收场,理由同上面的 CancelledError 分支。
+        for task in tasks:
+            task.cancel()
+        loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
         raise click.ClickException(str(exc)) from exc
     except Exception as exc:
         for task in tasks:
@@ -167,10 +171,10 @@ def run_in_new_loop(build_coroutines):
 )
 @click.option(
     "--log-file",
-    default="logs/tg-signer.log",
-    show_default=True,
+    # 不给默认值: 让 configure_logger 用实际 --log-dir 拼出 <log_dir>/tg-signer.log,
+    # 否则改了 --log-dir 后日志仍被写进硬编码的 logs/。
     type=click.Path(),
-    help="日志文件路径, 可以是相对路径",
+    help="日志文件路径, 可以是相对路径（默认为 <log-dir>/tg-signer.log）",
 )
 @click.option(
     "--log-dir",
@@ -466,11 +470,10 @@ def export_config(config, file):
 
 
 def import_config(config, file):
-    if not file:
-        data = click.get_text_stream("stdin").read()
-    else:
-        with click.open_file(file, "r", encoding="utf-8") as fp:
-            data = fp.read()
+    # 未指定 --file 时从 stdin 读取。用 open_file("-") 而不是
+    # get_text_stream("stdin")：它在 Click 8.5 已弃用、9.0 会移除。
+    with click.open_file(file or "-", "r", encoding="utf-8") as fp:
+        data = fp.read()
     config.import_(data)
 
 

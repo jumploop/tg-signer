@@ -34,6 +34,7 @@ jobs:
       - name: Lint
         run: |
           ruff check
+          ruff format --check
 
       - name: Run tests
         run: |

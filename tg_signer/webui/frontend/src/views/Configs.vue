@@ -76,9 +76,6 @@ function clearPrefill() {
 </script>
 
 <style scoped>
-.ts-intro {
-  margin-bottom: 20px;
-}
 .config-tabs :deep(.el-tabs__header) {
   margin-bottom: 18px;
 }
