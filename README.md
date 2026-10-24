@@ -189,7 +189,7 @@ tg-signer login --from-folder Sign
 tg-signer login --from-folder 2
 ```
 
-`--from-folder` 表示“从 Folder 发现对话”，也适用于 `run`、`run-once`、`multi-run` 和 `automation run`。指定后会加载 Folder 中所有手动加入或置顶的对话，`--num-of-dialogs` 不再生效。当前不支持按联系人、非联系人、机器人、群组或频道等动态规则生成成员的 Folder；请使用只包含手动添加对话的普通 Folder。
+`--from-folder` 表示“从 Folder 发现对话”，也适用于 `run`、`run-once`、`multi-run` 和 `automation run`。指定后默认加载 Folder 中手动加入或置顶的**全部**对话；若显式传入 `--num-of-dialogs`，则按该上限截断（`0` 表示不限制）。当前不支持按联系人、非联系人、机器人、群组或频道等动态规则生成成员的 Folder；请使用只包含手动添加对话的普通 Folder。
 
 ### 时区
 

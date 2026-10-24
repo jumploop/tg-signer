@@ -1,4 +1,6 @@
 import axios from 'axios'
+import { ElMessage } from 'element-plus'
+import { ref } from 'vue'
 import router from './router'
 
 const TOKEN_KEY = 'tg_signer_auth_token'
@@ -39,6 +41,26 @@ export function errMsg(error) {
     (error.response && error.response.data && error.response.data.detail) ||
     error.message
   )
+}
+
+// 列表页统一的「拉取 → 校验结构 → 报错」三步式。
+export function useList(url, errorText) {
+  const list = ref([])
+  const loading = ref(false)
+
+  async function refresh() {
+    loading.value = true
+    try {
+      const { data } = await api.get(url)
+      list.value = asArray(data)
+    } catch (error) {
+      ElMessage.error(errorText + ': ' + errMsg(error))
+    } finally {
+      loading.value = false
+    }
+  }
+
+  return { list, loading, refresh }
 }
 
 export async function checkAuth() {

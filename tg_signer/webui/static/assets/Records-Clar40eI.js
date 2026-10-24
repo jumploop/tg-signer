@@ -1,4 +1,4 @@
-import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, R as asArray, E as ElMessage, j as errMsg, r as resolveComponent, g as ref, N as resolveDirective, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, J as toDisplayString, O as withDirectives, a as createElementBlock, P as Fragment, Q as renderList, L as computed } from './index-Ceed42FL.js';
+import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, W as useList, r as resolveComponent, N as resolveDirective, h as openBlock, b as createBaseVNode, d as createVNode, i as unref, f as createTextVNode, J as toDisplayString, O as withDirectives, a as createElementBlock, P as Fragment, Q as renderList, L as computed, g as ref } from './index-DAjis5_u.js';
 
 const _hoisted_1 = { class: "ts-intro" };
 const _hoisted_2 = { class: "record-metrics" };
@@ -16,27 +16,18 @@ const _sfc_main = {
   __name: 'Records',
   setup(__props) {
 
-const records = ref([]);
+const {
+  list: records,
+  loading,
+  refresh,
+} = useList('/api/records', '签到记录加载失败');
 const filterText = ref('');
-const loading = ref(false);
 const filtered = computed(() =>
   records.value.filter((record) => !filterText.value || record.task.includes(filterText.value))
 );
 const totalRecords = computed(() =>
   records.value.reduce((sum, record) => sum + record.records.length, 0)
 );
-
-async function refresh() {
-  loading.value = true;
-  try {
-    const { data } = await api.get('/api/records');
-    records.value = asArray(data);
-  } catch (error) {
-    ElMessage.error('签到记录加载失败: ' + errMsg(error));
-  } finally {
-    loading.value = false;
-  }
-}
 
 onMounted(refresh);
 
@@ -57,18 +48,18 @@ return (_ctx, _cache) => {
           createBaseVNode("p", { class: "ts-section-caption" }, "按任务查看签到日期、执行时间和历史记录数量。")
         ], -1)),
         createVNode(_component_el_button, {
-          loading: loading.value,
-          onClick: refresh
+          loading: unref(loading),
+          onClick: unref(refresh)
         }, {
           default: withCtx(() => [...(_cache[1] || (_cache[1] = [
             createTextVNode("刷新", -1)
           ]))]),
           _: 1
-        }, 8, ["loading"])
+        }, 8, ["loading", "onClick"])
       ]),
       createBaseVNode("div", _hoisted_2, [
         createBaseVNode("div", _hoisted_3, [
-          createBaseVNode("span", _hoisted_4, toDisplayString(records.value.length), 1),
+          createBaseVNode("span", _hoisted_4, toDisplayString(unref(records).length), 1),
           _cache[3] || (_cache[3] = createBaseVNode("span", { class: "ts-metric-label" }, "任务数", -1))
         ]),
         createBaseVNode("div", _hoisted_5, [
@@ -147,7 +138,7 @@ return (_ctx, _cache) => {
         ]),
         _: 1
       }, 8, ["data"])), [
-        [_directive_loading, loading.value]
+        [_directive_loading, unref(loading)]
       ])
     ]),
     _: 1
@@ -156,6 +147,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Records = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-a898f5b3"]]);
+const Records = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-c8500b3c"]]);
 
 export { Records as default };

@@ -46,7 +46,7 @@ tg-signer list-folders
 tg-signer automation run --from-folder Sign my_auto
 ```
 
-Folder 可以使用名称或 ID。`--from-folder` 表示从该 Folder 发现对话，指定后不会使用 `--num-of-dialogs`；不支持联系人、机器人、群组或频道等动态规则 Folder。
+Folder 可以使用名称或 ID。`--from-folder` 默认加载该 Folder 内的全部对话；显式传入 `--num-of-dialogs` 时按该上限截断（`0` 表示不限制）；不支持联系人、机器人、群组或频道等动态规则 Folder。
 
 ## 3. 先理解配置结构（心智模型）
 一个规则长这样：

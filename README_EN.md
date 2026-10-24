@@ -204,11 +204,12 @@ tg-signer login --from-folder 2
 ```
 
 `--from-folder` discovers chats from the folder and is also available on `run`,
-`run-once`, `multi-run`, and `automation run`. When specified,
-all manually included or pinned chats in the folder are loaded and
-`--num-of-dialogs` is ignored. Folders whose membership is generated from
-dynamic rules such as contacts, bots, groups, or channels are not supported;
-use a regular folder containing only manually added chats.
+`run-once`, `multi-run`, and `automation run`. By default all manually included
+or pinned chats in the folder are loaded; if `--num-of-dialogs` is given
+explicitly, the list is truncated to that limit (`0` means no limit). Folders
+whose membership is generated from dynamic rules such as contacts, bots,
+groups, or channels are not supported; use a regular folder containing only
+manually added chats.
 
 ### Time Zone
 

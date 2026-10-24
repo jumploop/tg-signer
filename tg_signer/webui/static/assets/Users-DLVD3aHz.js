@@ -1,4 +1,4 @@
-import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, R as asArray, E as ElMessage, j as errMsg, r as resolveComponent, g as ref, N as resolveDirective, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, i as unref, V as info_filled_default, J as toDisplayString, O as withDirectives, L as computed } from './index-Ceed42FL.js';
+import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, W as useList, r as resolveComponent, N as resolveDirective, h as openBlock, b as createBaseVNode, d as createVNode, i as unref, f as createTextVNode, V as info_filled_default, J as toDisplayString, O as withDirectives, g as ref, L as computed } from './index-DAjis5_u.js';
 
 const _hoisted_1 = { class: "ts-intro" };
 const _hoisted_2 = { class: "ts-callout users-note" };
@@ -12,23 +12,16 @@ const _sfc_main = {
   __name: 'Users',
   setup(__props) {
 
-const users = ref([]);
-const loading = ref(false);
+const {
+  list: users,
+  loading,
+  refresh,
+} = useList('/api/users', '用户信息加载失败');
 const dialogVisible = ref(false);
 const currentUser = ref(null);
 const currentChats = computed(() => currentUser.value?.latest_chats || []);
 
-async function refresh() {
-  loading.value = true;
-  try {
-    const { data } = await api.get('/api/users');
-    users.value = asArray(data);
-  } catch (error) {
-    ElMessage.error('用户信息加载失败: ' + errMsg(error));
-  } finally {
-    loading.value = false;
-  }
-}
+onMounted(refresh);
 
 function showChats(row) {
   currentUser.value = row;
@@ -39,8 +32,6 @@ function userInitial(row) {
   const name = row.data.first_name || row.data.username || String(row.user_id);
   return name.slice(0, 1).toUpperCase()
 }
-
-onMounted(refresh);
 
 return (_ctx, _cache) => {
   const _component_el_button = resolveComponent("el-button");
@@ -61,14 +52,14 @@ return (_ctx, _cache) => {
           createBaseVNode("p", { class: "ts-section-caption" }, "查看本地缓存的账户资料与最近对话，不触发 Telegram 网络请求。")
         ], -1)),
         createVNode(_component_el_button, {
-          loading: loading.value,
-          onClick: refresh
+          loading: unref(loading),
+          onClick: unref(refresh)
         }, {
           default: withCtx(() => [...(_cache[1] || (_cache[1] = [
             createTextVNode("刷新", -1)
           ]))]),
           _: 1
-        }, 8, ["loading"])
+        }, 8, ["loading", "onClick"])
       ]),
       createBaseVNode("div", _hoisted_2, [
         createVNode(_component_el_icon, null, {
@@ -85,9 +76,9 @@ return (_ctx, _cache) => {
       ]),
       createBaseVNode("div", _hoisted_3, [
         _cache[4] || (_cache[4] = createBaseVNode("span", null, "已缓存账户", -1)),
-        createBaseVNode("span", _hoisted_4, toDisplayString(users.value.length) + " 个账户", 1)
+        createBaseVNode("span", _hoisted_4, toDisplayString(unref(users).length) + " 个账户", 1)
       ]),
-      withDirectives((openBlock(), createBlock(_component_el_table, { data: users.value }, {
+      withDirectives((openBlock(), createBlock(_component_el_table, { data: unref(users) }, {
         empty: withCtx(() => [
           createVNode(_component_el_empty, {
             description: "暂无用户信息（读取 users/*/me.json）",
@@ -146,7 +137,7 @@ return (_ctx, _cache) => {
         ]),
         _: 1
       }, 8, ["data"])), [
-        [_directive_loading, loading.value]
+        [_directive_loading, unref(loading)]
       ]),
       createVNode(_component_el_dialog, {
         modelValue: dialogVisible.value,
@@ -191,6 +182,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Users = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-6f31b865"]]);
+const Users = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-763cb295"]]);
 
 export { Users as default };

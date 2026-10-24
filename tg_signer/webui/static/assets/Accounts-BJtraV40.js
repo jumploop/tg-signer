@@ -1,4 +1,4 @@
-import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, q as api, R as asArray, E as ElMessage, j as errMsg, r as resolveComponent, g as ref, N as resolveDirective, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, J as toDisplayString, O as withDirectives, a as createElementBlock, P as Fragment, Q as renderList, G as createCommentVNode, i as unref, V as info_filled_default, e as withKeys, L as computed, S as ElMessageBox, W as nextTick } from './index-Ceed42FL.js';
+import { _ as _export_sfc, o as onMounted, n as createBlock, w as withCtx, W as useList, r as resolveComponent, N as resolveDirective, h as openBlock, b as createBaseVNode, d as createVNode, f as createTextVNode, J as toDisplayString, i as unref, O as withDirectives, a as createElementBlock, P as Fragment, Q as renderList, G as createCommentVNode, V as info_filled_default, e as withKeys, L as computed, q as api, E as ElMessage, S as ElMessageBox, j as errMsg, g as ref, X as nextTick } from './index-DAjis5_u.js';
 
 const _hoisted_1 = { class: "ts-intro" };
 const _hoisted_2 = { class: "account-metrics" };
@@ -26,8 +26,11 @@ const _sfc_main = {
   __name: 'Accounts',
   setup(__props) {
 
-const accounts = ref([]);
-const loading = ref(false);
+const {
+  list: accounts,
+  loading,
+  refresh,
+} = useList('/api/accounts', '账号列表加载失败');
 const sessionCount = computed(() =>
   accounts.value.filter((account) => account.kind && account.kind.length).length
 );
@@ -42,18 +45,6 @@ const completing = ref(false);
 const codeSent = ref(false);
 const loginStep = ref(0);
 const codeInput = ref(null);
-
-async function refresh() {
-  loading.value = true;
-  try {
-    const { data } = await api.get('/api/accounts');
-    accounts.value = asArray(data);
-  } catch (error) {
-    ElMessage.error('账号列表加载失败: ' + errMsg(error));
-  } finally {
-    loading.value = false;
-  }
-}
 
 function openLogin() {
   loginAccount.value = '';
@@ -189,7 +180,7 @@ return (_ctx, _cache) => {
       ]),
       createBaseVNode("div", _hoisted_2, [
         createBaseVNode("div", _hoisted_3, [
-          createBaseVNode("span", _hoisted_4, toDisplayString(accounts.value.length), 1),
+          createBaseVNode("span", _hoisted_4, toDisplayString(unref(accounts).length), 1),
           _cache[7] || (_cache[7] = createBaseVNode("span", { class: "ts-metric-label" }, "已发现账号", -1))
         ]),
         createBaseVNode("div", _hoisted_5, [
@@ -201,7 +192,7 @@ return (_ctx, _cache) => {
           createBaseVNode("span", { class: "ts-metric-label" }, "凭据存储")
         ], -1))
       ]),
-      withDirectives((openBlock(), createBlock(_component_el_table, { data: accounts.value }, {
+      withDirectives((openBlock(), createBlock(_component_el_table, { data: unref(accounts) }, {
         empty: withCtx(() => [
           createVNode(_component_el_empty, {
             description: "暂无账号，点击「登录新账号」开始",
@@ -279,7 +270,7 @@ return (_ctx, _cache) => {
         ]),
         _: 1
       }, 8, ["data"])), [
-        [_directive_loading, loading.value]
+        [_directive_loading, unref(loading)]
       ]),
       createVNode(_component_el_dialog, {
         modelValue: loginVisible.value,
@@ -405,6 +396,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Accounts = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-389c198c"]]);
+const Accounts = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-d337544b"]]);
 
 export { Accounts as default };

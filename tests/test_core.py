@@ -486,6 +486,55 @@ async def test_login_bootstrap_is_shared_between_concurrent_workers(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("num_of_dialogs", "expected_ids"),
+    [
+        (1, [1001]),
+        (2, [1001, 1002]),
+        (10, [1001, 1002]),
+        (0, [1001, 1002]),
+        (None, [1001, 1002]),
+        (-1, []),
+    ],
+)
+async def test_login_truncates_folder_chats_by_num_of_dialogs(
+    monkeypatch, signer_factory, num_of_dialogs, expected_ids
+):
+    """Folder 模式按上限截断；None/0 表示不限制，负数取空。"""
+    import tg_signer.core as core
+
+    def make_chat(chat_id, title):
+        return SimpleNamespace(
+            id=chat_id,
+            title=title,
+            type="private",
+            username=title.lower(),
+            first_name=title,
+            last_name=None,
+        )
+
+    folder = Folder(
+        id=7,
+        name="Sign",
+        pinned_chats=[make_chat(1001, "A")],
+        included_chats=[make_chat(1002, "B")],
+        exclude_archived=True,
+    )
+
+    async def fake_get_folders(self):
+        return [folder]
+
+    patch_client_methods(monkeypatch, core, get_folders=fake_get_folders)
+    collect_outputs(monkeypatch)
+    signer = signer_factory()
+
+    await signer.login(num_of_dialogs=num_of_dialogs, folder="Sign", print_chat=False)
+
+    latest_chats_file = signer.get_user_dir(signer.user) / "latest_chats.json"
+    latest_chats = json.loads(latest_chats_file.read_text(encoding="utf-8"))
+    assert [chat["id"] for chat in latest_chats] == expected_ids
+
+
 @pytest.mark.parametrize("folder_selector", ["Sign", "7"])
 async def test_login_loads_explicit_folder_chats(
     monkeypatch, signer_factory, folder_selector

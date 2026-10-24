@@ -509,6 +509,26 @@ async def _delete_message_later(worker, message, delete_after, label: str) -> No
     worker.log(f"{label} deleted!")
 
 
+def _ask_non_negative_int(prompt: str) -> int:
+    """交互式读取非负整数，非法输入重新询问。
+
+    直接把 ``int(float(...))`` 的结果交给 pydantic 时，负数/``inf`` 会在
+    ``model_validate`` 里抛出未捕获的异常，整个 ``reconfig`` 以裸 traceback
+    退出。这里按 ``sign_at`` 的既有做法就地重问。
+    """
+    while True:
+        raw = input(prompt) or "0"
+        try:
+            value = int(float(raw))
+        except (ValueError, OverflowError):
+            print("请输入不小于 0 的数字")
+            continue
+        if value < 0:
+            print("请输入不小于 0 的数字")
+            continue
+        return value
+
+
 class BaseUserWorker(Generic[ConfigT]):
     _workdir = "."
     _tasks_dir = "tasks"
@@ -721,7 +741,7 @@ class BaseUserWorker(Generic[ConfigT]):
 
     async def login(
         self,
-        num_of_dialogs=20,
+        num_of_dialogs: Optional[int] = 50,
         print_chat=True,
         folder: Optional[str] = None,
         *,
@@ -755,6 +775,9 @@ class BaseUserWorker(Generic[ConfigT]):
                             folders = await app.get_folders()
                             selected_folder = _select_chat_folder(folders, folder)
                             chats = _explicit_folder_chats(selected_folder)
+                            # None = 未显式指定上限（加载全部）；0 同样表示不限制。
+                            if num_of_dialogs is not None and num_of_dialogs != 0:
+                                chats = chats[: max(0, num_of_dialogs)]
 
                         latest_chats = [chat_to_dict(chat) for chat in chats]
                         return chats, latest_chats, selected_folder
@@ -957,6 +980,8 @@ class BaseUserWorker(Generic[ConfigT]):
             return topics
 
     def export(self):
+        if not self.config_file.exists():
+            raise FileNotFoundError(f"配置不存在: {self.config_file}")
         with open(self.config_file, "r", encoding="utf-8") as fp:
             data = fp.read()
         return data
@@ -1155,8 +1180,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             print("请输入正确的时间格式")
             sign_at_str = input(sign_at_prompt) or "06:00:00"
 
-        random_seconds_str = input("签到时间误差随机秒数（默认为0）: ") or "0"
-        random_seconds = int(float(random_seconds_str))
+        random_seconds = _ask_non_negative_int("签到时间误差随机秒数（默认为0）: ")
         config = SignConfigV3.model_validate(
             {
                 "chats": chats,
@@ -1253,7 +1277,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
 
     async def run(
         self,
-        num_of_dialogs=20,
+        num_of_dialogs: Optional[int] = 50,
         only_once: bool = False,
         force_rerun: bool = False,
         folder: Optional[str] = None,
@@ -1299,7 +1323,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
 
     async def normal_run(
         self,
-        num_of_dialogs=20,
+        num_of_dialogs: Optional[int] = 50,
         only_once: bool = False,
         force_rerun: bool = False,
         folder: Optional[str] = None,

@@ -1,4 +1,4 @@
-const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/Login-CKEuQjjn.js","assets/Login-CdsXV74t.css","assets/Layout-CPVwcTkd.js","assets/Layout-DxBIitGB.css","assets/Configs-Csoh576R.js","assets/Configs-zbM9fK70.css","assets/Run-CthhVga-.js","assets/Run-CHVJw-2e.css","assets/Accounts-CD2ikgMW.js","assets/Accounts-DAQqzB8O.css","assets/Users-CrEcc3b1.js","assets/Users-ChnYZrNI.css","assets/Records-DUyEaUzh.js","assets/Records-DLvPJyzL.css","assets/Logs-0J8nL-LL.js","assets/Logs-Du0jOHbN.css","assets/Chats-dEOnKMJ2.js","assets/Chats-BfznNE1W.css","assets/Settings-B-cb04WL.js","assets/Settings-DGARHVhl.css"])))=>i.map(i=>d[i]);
+const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/Login-CftqK6J0.js","assets/Login-CdsXV74t.css","assets/Layout-BKXtFEsW.js","assets/Layout-DxBIitGB.css","assets/Configs-__su_Hs-.js","assets/Configs-zbM9fK70.css","assets/Run-ByhT5AwW.js","assets/Run-CHVJw-2e.css","assets/Accounts-BJtraV40.js","assets/Accounts-Civ6-F4U.css","assets/Users-DLVD3aHz.js","assets/Users-C_QZIFGV.css","assets/Records-Clar40eI.js","assets/Records-D_0VWdOC.css","assets/Logs-CVsSUphB.js","assets/Logs-Du0jOHbN.css","assets/Chats-Ztuf8suR.js","assets/Chats-BfznNE1W.css","assets/Settings-D_P_sO8t.js","assets/Settings-DGARHVhl.css"])))=>i.map(i=>d[i]);
 true              &&(function polyfill() {
   const relList = document.createElement("link").relList;
   if (relList && relList.supports && relList.supports("modulepreload")) {
@@ -79746,6 +79746,26 @@ function errMsg(error) {
   )
 }
 
+// 列表页统一的「拉取 → 校验结构 → 报错」三步式。
+function useList(url, errorText) {
+  const list = ref([]);
+  const loading = ref(false);
+
+  async function refresh() {
+    loading.value = true;
+    try {
+      const { data } = await api.get(url);
+      list.value = asArray(data);
+    } catch (error) {
+      ElMessage.error(errorText + ': ' + errMsg(error));
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  return { list, loading, refresh }
+}
+
 async function checkAuth() {
   try {
     const { data } = await api.get('/api/auth/status');
@@ -79793,20 +79813,20 @@ async function copyText(text) {
 }
 
 const routes = [
-  { path: '/login', name: 'login', component: () => __vitePreload(() => import('./Login-CKEuQjjn.js'),true              ?__vite__mapDeps([0,1]):void 0) },
+  { path: '/login', name: 'login', component: () => __vitePreload(() => import('./Login-CftqK6J0.js'),true              ?__vite__mapDeps([0,1]):void 0) },
   {
     path: '/',
-    component: () => __vitePreload(() => import('./Layout-CPVwcTkd.js'),true              ?__vite__mapDeps([2,3]):void 0),
+    component: () => __vitePreload(() => import('./Layout-BKXtFEsW.js'),true              ?__vite__mapDeps([2,3]):void 0),
     children: [
       { path: '', redirect: '/configs' },
-      { path: 'configs', name: 'configs', component: () => __vitePreload(() => import('./Configs-Csoh576R.js'),true              ?__vite__mapDeps([4,5]):void 0) },
-      { path: 'run', name: 'run', component: () => __vitePreload(() => import('./Run-CthhVga-.js'),true              ?__vite__mapDeps([6,7]):void 0) },
-      { path: 'accounts', name: 'accounts', component: () => __vitePreload(() => import('./Accounts-CD2ikgMW.js'),true              ?__vite__mapDeps([8,9]):void 0) },
-      { path: 'users', name: 'users', component: () => __vitePreload(() => import('./Users-CrEcc3b1.js'),true              ?__vite__mapDeps([10,11]):void 0) },
-      { path: 'records', name: 'records', component: () => __vitePreload(() => import('./Records-DUyEaUzh.js'),true              ?__vite__mapDeps([12,13]):void 0) },
-      { path: 'logs', name: 'logs', component: () => __vitePreload(() => import('./Logs-0J8nL-LL.js'),true              ?__vite__mapDeps([14,15]):void 0) },
-      { path: 'chats', name: 'chats', component: () => __vitePreload(() => import('./Chats-dEOnKMJ2.js'),true              ?__vite__mapDeps([16,17]):void 0) },
-      { path: 'settings', name: 'settings', component: () => __vitePreload(() => import('./Settings-B-cb04WL.js'),true              ?__vite__mapDeps([18,19]):void 0) },
+      { path: 'configs', name: 'configs', component: () => __vitePreload(() => import('./Configs-__su_Hs-.js'),true              ?__vite__mapDeps([4,5]):void 0) },
+      { path: 'run', name: 'run', component: () => __vitePreload(() => import('./Run-ByhT5AwW.js'),true              ?__vite__mapDeps([6,7]):void 0) },
+      { path: 'accounts', name: 'accounts', component: () => __vitePreload(() => import('./Accounts-BJtraV40.js'),true              ?__vite__mapDeps([8,9]):void 0) },
+      { path: 'users', name: 'users', component: () => __vitePreload(() => import('./Users-DLVD3aHz.js'),true              ?__vite__mapDeps([10,11]):void 0) },
+      { path: 'records', name: 'records', component: () => __vitePreload(() => import('./Records-Clar40eI.js'),true              ?__vite__mapDeps([12,13]):void 0) },
+      { path: 'logs', name: 'logs', component: () => __vitePreload(() => import('./Logs-CVsSUphB.js'),true              ?__vite__mapDeps([14,15]):void 0) },
+      { path: 'chats', name: 'chats', component: () => __vitePreload(() => import('./Chats-Ztuf8suR.js'),true              ?__vite__mapDeps([16,17]):void 0) },
+      { path: 'settings', name: 'settings', component: () => __vitePreload(() => import('./Settings-D_P_sO8t.js'),true              ?__vite__mapDeps([18,19]):void 0) },
     ],
   },
 ];
@@ -79830,4 +79850,4 @@ app.use(element_plus_default);
 app.use(router);
 app.mount('#app');
 
-export { chat_dot_round_default as A, avatar_default$1 as B, tickets_default as C, document_default as D, ElMessage as E, tools_default as F, createCommentVNode as G, switch_button_default as H, menu_default$2 as I, toDisplayString as J, folder_default as K, computed as L, logout as M, resolveDirective as N, withDirectives as O, Fragment as P, renderList as Q, asArray as R, ElMessageBox as S, asObject as T, vShow as U, info_filled_default as V, nextTick as W, copyText as X, _export_sfc as _, createElementBlock as a, createBaseVNode as b, checkAuth as c, createVNode as d, withKeys as e, createTextVNode as f, ref as g, openBlock as h, unref as i, errMsg as j, onUnmounted as k, login as l, watch as m, createBlock as n, onMounted as o, promotion_default as p, api as q, resolveComponent as r, useRoute as s, normalizeClass as t, useRouter as u, close_default as v, withCtx as w, setting_default as x, video_play_default as y, user_default as z };
+export { chat_dot_round_default as A, avatar_default$1 as B, tickets_default as C, document_default as D, ElMessage as E, tools_default as F, createCommentVNode as G, switch_button_default as H, menu_default$2 as I, toDisplayString as J, folder_default as K, computed as L, logout as M, resolveDirective as N, withDirectives as O, Fragment as P, renderList as Q, asArray as R, ElMessageBox as S, asObject as T, vShow as U, info_filled_default as V, useList as W, nextTick as X, copyText as Y, _export_sfc as _, createElementBlock as a, createBaseVNode as b, checkAuth as c, createVNode as d, withKeys as e, createTextVNode as f, ref as g, openBlock as h, unref as i, errMsg as j, onUnmounted as k, login as l, watch as m, createBlock as n, onMounted as o, promotion_default as p, api as q, resolveComponent as r, useRoute as s, normalizeClass as t, useRouter as u, close_default as v, withCtx as w, setting_default as x, video_play_default as y, user_default as z };

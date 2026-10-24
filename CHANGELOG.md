@@ -1,7 +1,43 @@
 # Changelog / 版本变动日志
 
 ## 版本变动日志
-### 未发布
+### 0.10.19
+第十、十一轮 ponytail 审计（异常/并发边界、CLI 与配置交界、前端样式重复；时间/数值边界、WebUI 路径与鉴权、CLI 退出码、文档示例），外加四处用户可见的行为修复与一处默认值统一（前端 `static/` 已随源码重新构建）。
+
+**fix: `export` / `automation export` 对不存在的任务不再裸 traceback**：改为一行 `Error: 配置不存在: <path>` 并以退出码 1 结束，与 `run`/`validate` 的失败呈现一致。
+
+**fix: 交互式配置输入负数随机秒数不再崩溃**：`ask_for_config` 对「签到时间误差随机秒数」的负数/非数字/`inf` 就地重问，不再以 pydantic `ValidationError` 裸 traceback 退出。
+
+**fix: `--from-folder` 下显式传入的 `--num-of-dialogs` 现在生效**：默认仍加载 Folder 全部对话；显式 `-n N` 时按上限截断（`0` 表示不限制、负数取空）。
+
+**第十一轮：前端列表刷新同构**
+- `api.js`：新增 `useList(url, errorText)`，收敛「loading → 请求 → 结构守卫 → toast → finally」三步式
+- `Accounts.vue` / `Users.vue` / `Records.vue`：三处逐字同构的 `refresh()` 改用 `useList`，共净删 7 行；`Users`/`Records` 不再直接依赖 `api`
+
+**第十一轮：导出失败不再裸 traceback（见上方 fix 段）**
+- `cli/signer.py`：`export_config` 把 `FileNotFoundError`/`OSError` 转成 `ClickException`
+- `core.py`：`BaseUserWorker.export` 在文件缺失时给出「配置不存在: <path>」
+- 新增 signer / automation 两条回归用例（修复前均以 traceback 退出）
+
+**第十一轮：统一 `--num-of-dialogs` 默认值**
+- `cli/automation.py`：`automation run` 不再显式覆盖为 20，与签到命令一样默认 50
+- 同步 `core.py` 的 `login`/`run`/`normal_run` 与 `automation/engine.py` 的 `run` 内部默认值 50，直接调用 worker 时不再与 CLI 分叉
+
+**第十一轮：`--from-folder` 时显式传入的 `--num-of-dialogs` 生效**
+- `cli/signer.py`：新增 `dialogs_limit()`，用 Click `ParameterSource` 区分「显式传参」与「默认值」；Folder 模式未传 `-n` 时下行 `None`，保持「加载 Folder 全部对话」的既有契约
+- `core.py`：Folder 模式按非 `None` 上限截断（`0` 不限制、负数取空），此前该参数在 Folder 模式下被完全忽略
+- 更新选项 help、README 两语种与 `docs/automation_usage.md`
+- `tests/test_core.py` + `tests/test_cli_folders.py` 覆盖：默认 50（无 folder）、Folder 未传 `-n` → `None`、显式 `-n 5` → 5、截断边界
+
+**第十一轮：交互式配置的随机秒数校验**
+- `core.py`：`ask_for_config` 的「签到时间误差随机秒数」改为就地重问非法输入，不再把负数/`inf`/非数字直接交给 `model_validate` 而在 `reconfig` 里抛出裸 traceback
+- 新增 `tests/test_reconfig_random_seconds.py`（负数、非数字、合法值首答通过）
+
+**第十一轮：审计中保留未动**
+- `models.py` 对 `fromisoformat` 一并捕获 `TypeError`：`_validate_shape` 只在 `load()` 时校验，运行期 `_data` 仍可能被写入非字符串（代理曾报可删，误报）
+- `webui/data.py` 的 `resolve_automation_config_file`：内联会在两个调用方重复同样的三行调用，不视为简化
+- `runner.py` 的两处显式 `mkdir`：净删 2 行，低于落地阈值
+
 第十轮 ponytail 审计（异常/并发边界、CLI 与配置交界、前端样式重复），无用户可见行为变更（前端 `static/` 已随源码重新构建）。
 
 **行为修复（上轮留待拍板的两项）**

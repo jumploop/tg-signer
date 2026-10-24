@@ -171,6 +171,54 @@ def test_signer_commands_forward_folder(monkeypatch, runner, args, method):
     assert result.exit_code == 0, result.output
     assert worker.calls[0]["method"] == method
     assert worker.calls[0]["folder"] == "Sign"
+    # 指定 --from-folder 且未显式传 -n 时，必须加载 Folder 内全部对话。
+    assert worker.calls[0]["num_of_dialogs"] is None
+
+
+@pytest.mark.parametrize(
+    ("args", "method"),
+    [
+        (["login", "--from-folder", "Sign", "-n", "5"], "login"),
+        (["run", "--from-folder", "Sign", "-n", "5", "task"], "run"),
+        (["run-once", "--from-folder", "Sign", "-n", "5", "task"], "run_once"),
+        (
+            [
+                "multi-run",
+                "--account",
+                "account-a",
+                "--from-folder",
+                "Sign",
+                "-n",
+                "5",
+                "task",
+            ],
+            "run",
+        ),
+    ],
+)
+def test_signer_commands_forward_explicit_dialogs_limit(
+    monkeypatch, runner, args, method
+):
+    """显式传 -n 时，Folder 模式必须按该上限截断。"""
+    worker = DummyWorker()
+    monkeypatch.setattr(signer_cli, "get_signer", lambda *_args, **_kwargs: worker)
+
+    result = runner.invoke(signer_cli.tg_signer, args)
+
+    assert result.exit_code == 0, result.output
+    assert worker.calls[0]["method"] == method
+    assert worker.calls[0]["num_of_dialogs"] == 5
+
+
+def test_login_without_folder_keeps_default_dialogs_limit(monkeypatch, runner):
+    """未指定 --from-folder 时，默认上限仍是 50。"""
+    worker = DummyWorker()
+    monkeypatch.setattr(signer_cli, "get_signer", lambda *_args, **_kwargs: worker)
+
+    result = runner.invoke(signer_cli.tg_signer, ["login"])
+
+    assert result.exit_code == 0, result.output
+    assert worker.calls[0]["num_of_dialogs"] == 50
 
 
 @pytest.mark.parametrize(
@@ -192,7 +240,20 @@ def test_subsystem_run_commands_forward_folder(
     result = runner.invoke(signer_cli.tg_signer, args)
 
     assert result.exit_code == 0, result.output
-    assert worker.calls == [{"method": "run", "num_of_dialogs": 20, "folder": "Sign"}]
+    assert worker.calls == [{"method": "run", "num_of_dialogs": None, "folder": "Sign"}]
+
+
+def test_automation_run_forwards_explicit_dialogs_limit(monkeypatch, runner):
+    worker = DummyWorker()
+    monkeypatch.setattr(automation_cli, "get_automation", lambda *_a, **_k: worker)
+
+    result = runner.invoke(
+        signer_cli.tg_signer,
+        ["automation", "run", "--from-folder", "Sign", "-n", "5", "task"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert worker.calls == [{"method": "run", "num_of_dialogs": 5, "folder": "Sign"}]
 
 
 def test_folder_errors_are_reported_as_click_errors(monkeypatch, runner):
@@ -275,6 +336,33 @@ def test_automation_validate_missing_config_does_not_create_one(runner, tmp_path
     assert not (workdir / "automations" / "typo_task" / "state.json").exists()
     # 连空任务目录都不能留下:否则 `automation list` 会把它当成真实任务列出来
     assert not (workdir / "automations" / "typo_task").exists()
+    assert not (workdir / "automations").exists()
+
+
+def test_export_missing_signer_task_reports_click_exception(runner, tmp_path):
+    """`export <typo>` 必须给出 Error，而不是 FileNotFoundError traceback。"""
+    workdir = tmp_path / "wd"
+
+    result = runner.invoke(
+        signer_cli.tg_signer, ["--workdir", str(workdir), "export", "typo_task"]
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "配置不存在" in result.output
+    assert "Traceback" not in (result.output + str(result.exception or ""))
+    assert isinstance(result.exception, SystemExit)
+
+
+def test_automation_export_missing_task_reports_click_exception(runner, tmp_path):
+    """`automation export <typo>` 同样不得以裸 traceback 退出。"""
+    workdir = tmp_path / "wd"
+
+    result = _invoke(runner, workdir, "export", "typo_task")
+
+    assert result.exit_code == 1, result.output
+    assert "配置不存在" in result.output
+    assert "Traceback" not in (result.output + str(result.exception or ""))
+    assert isinstance(result.exception, SystemExit)
     assert not (workdir / "automations").exists()
 
 

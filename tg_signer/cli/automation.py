@@ -6,6 +6,7 @@ import click
 from tg_signer.automation import UserAutomation
 
 from .signer import (
+    dialogs_limit,
     dialogs_option,
     export_config,
     export_file_option,
@@ -44,15 +45,17 @@ def list_(obj):
 
 @tg_automation.command(help="根据配置运行自动化(可指定多个任务共享同一 Client)")
 @click.argument("task_names", nargs=-1)
-@dialogs_option(default=20)
+@dialogs_option
 @from_folder_option
-@click.pass_obj
-def run(obj, task_names, num_of_dialogs, folder):
+@click.pass_context
+def run(ctx, task_names, num_of_dialogs, folder):
     if not task_names:
         raise click.UsageError("At least one task name is required")
+    limit = dialogs_limit(ctx, folder, num_of_dialogs)
+    obj = ctx.obj
     run_in_new_loop(
         lambda loop: [
-            get_automation(name, obj, loop=loop).run(num_of_dialogs, folder=folder)
+            get_automation(name, obj, loop=loop).run(limit, folder=folder)
             for name in task_names
         ]
     )

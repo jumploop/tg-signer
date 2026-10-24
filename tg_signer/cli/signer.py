@@ -104,10 +104,24 @@ def dialogs_option(command=None, *, default: int = 50):
             default=default,
             show_default=True,
             type=int,
-            help="未指定 --from-folder 时获取最近N个对话",
+            help="获取最近N个对话（默认50）；--from-folder 时仅在显式指定时截断，0 表示不限制",
         )(cmd)
 
     return wrap(command) if command is not None else wrap
+
+
+def dialogs_limit(ctx, folder, num_of_dialogs):
+    """Folder 模式下只有显式传入 --num-of-dialogs 才截断。
+
+    未传时返回 ``None``，由 worker 加载 Folder 内全部对话——保持
+    「--from-folder 加载全部」的既有契约；显式 ``0`` 同样表示不限制。
+    """
+    if not folder:
+        return num_of_dialogs
+    source = ctx.get_parameter_source("num_of_dialogs")
+    if source is None or source >= click.ParameterSource.DEFAULT_MAP:
+        return None
+    return None if num_of_dialogs == 0 else num_of_dialogs
 
 
 def run_worker(worker, coroutine):
@@ -321,10 +335,17 @@ def list_sign_records(obj, task_name: str | None, limit: int, user_id: str | Non
 @tg_signer.command(help="登录账号（用于获取session）")
 @dialogs_option
 @from_folder_option
-@click.pass_obj
-def login(obj, num_of_dialogs, folder):
-    signer = get_signer(None, obj)
-    run_worker(signer, signer.login(num_of_dialogs, folder=folder, interactive=True))
+@click.pass_context
+def login(ctx, num_of_dialogs, folder):
+    signer = get_signer(None, ctx.obj)
+    run_worker(
+        signer,
+        signer.login(
+            dialogs_limit(ctx, folder, num_of_dialogs),
+            folder=folder,
+            interactive=True,
+        ),
+    )
 
 
 @tg_signer.command(help="登出账号并删除session文件")
@@ -338,13 +359,15 @@ def logout(obj):
 @click.argument("task_names", nargs=-1)
 @dialogs_option
 @from_folder_option
-@click.pass_obj
-def run(obj, task_names, num_of_dialogs, folder):
+@click.pass_context
+def run(ctx, task_names, num_of_dialogs, folder):
     if len(task_names) < 1:
         raise click.UsageError("At least one task name is required")
+    limit = dialogs_limit(ctx, folder, num_of_dialogs)
+    obj = ctx.obj
     run_in_new_loop(
         lambda loop: [
-            get_signer(task_name, obj, loop=loop).run(num_of_dialogs, folder=folder)
+            get_signer(task_name, obj, loop=loop).run(limit, folder=folder)
             for task_name in task_names
         ]
     )
@@ -354,10 +377,13 @@ def run(obj, task_names, num_of_dialogs, folder):
 @click.argument("task_name", default="my_sign")
 @dialogs_option
 @from_folder_option
-@click.pass_obj
-def run_once(obj, task_name, num_of_dialogs, folder):
-    signer = get_signer(task_name, obj)
-    succeeded = run_worker(signer, signer.run_once(num_of_dialogs, folder=folder))
+@click.pass_context
+def run_once(ctx, task_name, num_of_dialogs, folder):
+    signer = get_signer(task_name, ctx.obj)
+    succeeded = run_worker(
+        signer,
+        signer.run_once(dialogs_limit(ctx, folder, num_of_dialogs), folder=folder),
+    )
     # 全部 chat 均失败时 normal_run 返回 False(且当天不会重试、也没写记录)。
     # 必须转成非 0 退出码,否则 cron 只会看到「成功」,漏签完全无声。
     if succeeded is False:
@@ -461,7 +487,11 @@ def list_topics(obj, chat_id: str, limit: int):
 
 
 def export_config(config, file):
-    data = config.export()
+    try:
+        data = config.export()
+    except (FileNotFoundError, OSError) as exc:
+        # 与 run/validate 的失败呈现保持一致: 一句 Error 而不是裸 traceback。
+        raise click.ClickException(str(exc)) from exc
     if not file:
         click.echo(data)
     else:
@@ -569,17 +599,19 @@ def list_schedule_messages(obj, chat_id):
 )
 @dialogs_option
 @from_folder_option
-@click.pass_obj
-def multi_run(obj, accounts, task_name, num_of_dialogs, folder):
+@click.pass_context
+def multi_run(ctx, accounts, task_name, num_of_dialogs, folder):
     logger = logging.getLogger("tg-signer")
     logger.info(f"开始使用一套配置({task_name})同时运行多个账号..")
+    limit = dialogs_limit(ctx, folder, num_of_dialogs)
+    obj = ctx.obj
 
     def build(loop):
         coros = []
         for account in accounts:
             obj["account"] = account
             coros.append(
-                get_signer(task_name, obj, loop=loop).run(num_of_dialogs, folder=folder)
+                get_signer(task_name, obj, loop=loop).run(limit, folder=folder)
             )
         return coros
 

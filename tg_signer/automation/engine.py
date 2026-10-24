@@ -235,7 +235,7 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
 
     async def run(
         self,
-        num_of_dialogs: int = 20,
+        num_of_dialogs: Optional[int] = 50,
         folder: Optional[str] = None,
     ):
         if self.user is None:

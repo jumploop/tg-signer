@@ -57,27 +57,19 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
 import { InfoFilled } from '@element-plus/icons-vue'
-import api, { asArray, errMsg } from '../api'
+import { useList } from '../api'
 
-const users = ref([])
-const loading = ref(false)
+const {
+  list: users,
+  loading,
+  refresh,
+} = useList('/api/users', '用户信息加载失败')
 const dialogVisible = ref(false)
 const currentUser = ref(null)
 const currentChats = computed(() => currentUser.value?.latest_chats || [])
 
-async function refresh() {
-  loading.value = true
-  try {
-    const { data } = await api.get('/api/users')
-    users.value = asArray(data)
-  } catch (error) {
-    ElMessage.error('用户信息加载失败: ' + errMsg(error))
-  } finally {
-    loading.value = false
-  }
-}
+onMounted(refresh)
 
 function showChats(row) {
   currentUser.value = row
@@ -88,8 +80,6 @@ function userInitial(row) {
   const name = row.data.first_name || row.data.username || String(row.user_id)
   return name.slice(0, 1).toUpperCase()
 }
-
-onMounted(refresh)
 </script>
 
 <style scoped>

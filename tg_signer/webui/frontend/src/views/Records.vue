@@ -60,30 +60,20 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
-import api, { asArray, errMsg } from '../api'
+import { useList } from '../api'
 
-const records = ref([])
+const {
+  list: records,
+  loading,
+  refresh,
+} = useList('/api/records', '签到记录加载失败')
 const filterText = ref('')
-const loading = ref(false)
 const filtered = computed(() =>
   records.value.filter((record) => !filterText.value || record.task.includes(filterText.value))
 )
 const totalRecords = computed(() =>
   records.value.reduce((sum, record) => sum + record.records.length, 0)
 )
-
-async function refresh() {
-  loading.value = true
-  try {
-    const { data } = await api.get('/api/records')
-    records.value = asArray(data)
-  } catch (error) {
-    ElMessage.error('签到记录加载失败: ' + errMsg(error))
-  } finally {
-    loading.value = false
-  }
-}
 
 onMounted(refresh)
 </script>

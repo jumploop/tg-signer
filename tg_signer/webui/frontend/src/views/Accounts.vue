@@ -127,10 +127,13 @@
 import { computed, ref, nextTick, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { InfoFilled } from '@element-plus/icons-vue'
-import api, { asArray, errMsg } from '../api'
+import api, { errMsg, useList } from '../api'
 
-const accounts = ref([])
-const loading = ref(false)
+const {
+  list: accounts,
+  loading,
+  refresh,
+} = useList('/api/accounts', '账号列表加载失败')
 const sessionCount = computed(() =>
   accounts.value.filter((account) => account.kind && account.kind.length).length
 )
@@ -145,18 +148,6 @@ const completing = ref(false)
 const codeSent = ref(false)
 const loginStep = ref(0)
 const codeInput = ref(null)
-
-async function refresh() {
-  loading.value = true
-  try {
-    const { data } = await api.get('/api/accounts')
-    accounts.value = asArray(data)
-  } catch (error) {
-    ElMessage.error('账号列表加载失败: ' + errMsg(error))
-  } finally {
-    loading.value = false
-  }
-}
 
 function openLogin() {
   loginAccount.value = ''
