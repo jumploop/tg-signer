@@ -187,6 +187,16 @@ Running tasks (`run` / `run-once` / `multi-run` / `automation run`) reuses an ex
 You only need to log in (via `tg-signer login` or the WebUI "Account" page) when
 the session is missing or invalid.
 
+For WebUI account login, enter the phone number with its country code (for
+example `+8613800138000`). Telegram may deliver the code through the Telegram
+service chat on an already logged-in device, by SMS, or by phone call; the page
+shows which channel was used, and "Resend" switches to the next channel if the
+code does not arrive. If it says the account name already has a valid session,
+no code is sent: use another account name or log out that account first. If the
+API ID is rejected, create your own credentials at
+[my.telegram.org](https://my.telegram.org) and set `TG_API_ID` /
+`TG_API_HASH` before restarting the WebUI.
+
 Signer `chat_id` also supports integer IDs and `@`-prefixed usernames such as
 `@neo`.
 

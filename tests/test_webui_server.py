@@ -517,12 +517,49 @@ def test_account_endpoints_reject_traversal(client, tmp_path, account):
         client.post(
             "/api/accounts/send-code", json={"account": account, "phone": "+1"}
         ),
+        client.post("/api/accounts/resend-code", json={"account": account}),
         client.post("/api/chats/fetch", json={"account": account}),
     ):
         assert resp.status_code == 400, f"{account!r} 未被拦截: {resp.json()}"
         assert "名称非法" in resp.json()["detail"]
 
     assert victim.is_file()
+
+
+def test_account_resend_without_login_session_returns_error(client):
+    resp = client.post("/api/accounts/resend-code", json={"account": "ghost"})
+    assert resp.status_code == 200
+    assert resp.json()["result"] == "error"
+    assert "登录会话不存在" in resp.json()["message"]
+
+
+def test_send_code_response_includes_delivery_metadata(client, monkeypatch):
+    monkeypatch.setattr(
+        server.account_mod,
+        "send_login_code",
+        lambda *_args: ("ok", "验证码已通过短信发送"),
+    )
+    monkeypatch.setattr(
+        server.account_mod,
+        "login_code_status",
+        lambda _account: {
+            "delivery": "SMS",
+            "delivery_label": "短信",
+            "resend_after": 30,
+            "can_resend": False,
+        },
+    )
+
+    resp = client.post(
+        "/api/accounts/send-code",
+        json={"account": "acc", "phone": "+10086"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["result"] == "ok"
+    assert body["delivery"] == "SMS"
+    assert body["resend_after"] == 30
 
 
 def test_run_start_rejects_traversal_and_creates_nothing_outside(client, tmp_path):

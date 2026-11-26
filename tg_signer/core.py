@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -73,6 +74,11 @@ from .utils import (
 logger = logging.getLogger("tg-signer")
 
 DICE_EMOJIS = ("🎲", "🎯", "🏀", "⚽", "🎳", "🎰")
+
+# Kurigram 2.2.27 移除了 ``Client(loop=...)`` 参数，改由 ``start()`` 记录当前
+# 运行中的 loop。这里按实际签名决定是否透传，避免在 2.2.19 ~ 2.2.26 上丢失
+# 调用方指定的 loop，也避免在 2.2.27+ 上直接 TypeError。
+_CLIENT_ACCEPTS_LOOP = "loop" in inspect.signature(BaseClient.__init__).parameters
 
 Session.START_TIMEOUT = 5  # 原始超时时间为2秒，但一些代理访问会超时，所以这里调大一点
 
@@ -299,7 +305,19 @@ def forget_client(key: str) -> None:
 class Client(SafeGetForumTopics, BaseClient):
     def __init__(self, name: str, *args, **kwargs):
         key = kwargs.pop("key", None)
+        loop = kwargs.pop("loop", None)
+        if loop is not None and _CLIENT_ACCEPTS_LOOP:
+            kwargs["loop"] = loop
         super().__init__(name, *args, **kwargs)
+        if loop is None:
+            loop = getattr(self, "loop", None)
+        if loop is None:
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+        self.loop = loop
         self.key = key or str(pathlib.Path(self.workdir).joinpath(self.name).resolve())
         if self.in_memory and not self.session_string:
             self.load_session_string()

@@ -177,6 +177,7 @@ tg-signer login
 
 根据提示输入手机号码和验证码进行登录并获取最近的聊天列表，确保你想要签到的聊天在列表内。
 运行任务（`run` / `run-once` / `multi-run` / `automation run`）时，若已存在有效 session 文件会直接复用，无需重复登录；仅当 session 缺失或失效时才需要先执行 `tg-signer login` 或到 WebUI「账号管理」页登录。
+WebUI 账号登录请填写带国家码的手机号（如 `+8613800138000`）。Telegram 可能把验证码发送到已登录设备的 Telegram 服务对话、短信或电话；页面会提示本次投递方式，未收到可点「重新发送」切换下一种方式。若提示「该账号名已有有效 session」，说明该账号名已登录过，不会重复发送验证码，请更换账号名或先登出该账号。若提示 API ID 被限制，请到 [my.telegram.org](https://my.telegram.org) 申请自己的应用凭据，并设置 `TG_API_ID` / `TG_API_HASH` 后重启 WebUI。
 签到任务里的`chat_id`同时支持整数ID和以`@`开头的username，例如`@neo`。
 对于论坛群组，登录输出中会额外打印每个话题的 `message_thread_id`，可直接用于 `--message-thread-id`。
 

@@ -469,6 +469,95 @@ def test_complete_login_without_session_reports_restart(clean_login_sessions):
     )
 
 
+def _fake_login_client(monkeypatch, tmp_path, *, me=None, sent=None, resent=None):
+    class FakeClient:
+        key = str(tmp_path / "fake")
+        is_connected = False
+
+        async def connect(self):
+            self.is_connected = True
+            return True
+
+        async def get_me(self):
+            return me
+
+        async def send_code(self, phone):
+            assert sent is not None, "已登录账号不应再发送验证码"
+            return sent
+
+        async def resend_code(self, phone, phone_code_hash):
+            assert resent is not None, "未预期调用 resend_code"
+            assert phone_code_hash == "hash-1"
+            return resent
+
+        async def stop(self):
+            self.is_connected = False
+
+    monkeypatch.setattr(account, "get_client", lambda *_args, **_kwargs: FakeClient())
+    return account._AccountLoginSession("acc", tmp_path)
+
+
+def test_login_session_does_not_send_code_when_already_authorized(
+    monkeypatch, tmp_path
+):
+    """账号名已有有效 session 时只返回 already，不能再让前端误以为验证码已发出。"""
+    session = _fake_login_client(
+        monkeypatch,
+        tmp_path,
+        me=SimpleNamespace(id=1, first_name="已登录账号", username=None),
+    )
+    try:
+        status, message = session.send_code("+10086")
+    finally:
+        session.close()
+
+    assert status == "already"
+    assert "未发送验证码" in message
+
+
+def test_login_session_reports_delivery_and_supports_resend(monkeypatch, tmp_path):
+    sent = SimpleNamespace(
+        type=SimpleNamespace(name="APP"),
+        next_type=SimpleNamespace(name="SMS"),
+        phone_code_hash="hash-1",
+        timeout=60,
+    )
+    resent = SimpleNamespace(
+        type=SimpleNamespace(name="SMS"),
+        next_type=None,
+        phone_code_hash="hash-2",
+        timeout=0,
+    )
+    session = _fake_login_client(monkeypatch, tmp_path, sent=sent, resent=resent)
+    try:
+        status, message = session.send_code("+10086")
+        assert status == "ok"
+        assert "Telegram App" in message
+
+        info = session.code_status()
+        assert info["delivery"] == "APP"
+        assert info["delivery_label"] == "Telegram App"
+        assert info["next_delivery"] == "SMS"
+        assert info["resend_after"] > 0
+        assert info["can_resend"] is False
+
+        status, message = session.resend_code()
+        assert status == "ok"
+        assert "短信" in message
+        assert session.phone_code_hash == "hash-2"
+        info = session.code_status()
+        assert info["delivery"] == "SMS"
+        assert info["can_resend"] is True
+    finally:
+        session.close()
+
+
+def test_login_error_message_points_to_own_api_credentials():
+    message = account._format_login_error(account.errors.ApiIdPublishedFlood())
+    assert "TG_API_ID" in message
+    assert "my.telegram.org" in message
+
+
 def test_login_session_close_is_idempotent_and_spares_newer_session(
     clean_login_sessions, tmp_path
 ):

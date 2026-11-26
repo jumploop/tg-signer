@@ -36,6 +36,75 @@ _ACCOUNT_USERS_LOCK = threading.Lock()
 # 线程，最多 5s），持有全局锁会连累所有其它账号的登录与 TTL 回收。
 _LOGIN_LOCKS: Dict[str, threading.Lock] = {}
 
+# Telegram 可能把验证码发到已登录设备的 Telegram 服务对话、短信或电话。
+# 不把这个信息透出来，用户只会看到「已发送」然后一直等短信。
+_CODE_DELIVERY_LABELS = {
+    "APP": "Telegram App",
+    "SMS": "短信",
+    "CALL": "电话语音",
+    "FLASH_CALL": "闪信电话",
+    "MISSED_CALL": "未接来电",
+    "FRAGMENT_SMS": "Fragment 短信",
+    "FIREBASE_SMS": "Firebase 短信",
+    "EMAIL_CODE": "邮箱",
+    "SMS_PHRASE": "短信",
+    "SMS_WORD": "短信",
+}
+
+_LOGIN_ERROR_MESSAGES = {
+    "API_ID_INVALID": (
+        "API ID/API HASH 无效。请到 https://my.telegram.org 申请自己的应用凭据，"
+        "并设置环境变量 TG_API_ID / TG_API_HASH 后重启 WebUI。"
+    ),
+    "API_ID_PUBLISHED_FLOOD": (
+        "当前使用的是公开的示例 API ID，已被 Telegram 限制发送验证码。"
+        "请到 https://my.telegram.org 申请自己的应用凭据，"
+        "并设置环境变量 TG_API_ID / TG_API_HASH 后重启 WebUI。"
+    ),
+    "PHONE_NUMBER_INVALID": (
+        "手机号格式不正确。请填写带国家码的完整号码，例如 +8613800138000。"
+    ),
+    "PHONE_NUMBER_BANNED": "该手机号已被 Telegram 封禁，无法登录。",
+    "PHONE_NUMBER_FLOOD": "该手机号尝试登录过于频繁，请稍后再试。",
+    "PHONE_CODE_EMPTY": "请填写验证码。",
+    "PHONE_CODE_INVALID": "验证码错误，请检查后重试。",
+    "PHONE_CODE_EXPIRED": "验证码已过期，请点「重新发送」获取新验证码。",
+    "PHONE_CODE_HASH_EMPTY": "登录会话已失效，请重新发送验证码。",
+    "PHONE_HASH_EXPIRED": "验证码已过期，请重新发送验证码。",
+    "CODE_HASH_INVALID": "登录会话已失效，请重新发送验证码。",
+    "SESSION_PASSWORD_NEEDED": "该账号启用了两步验证，请填写两步验证密码。",
+    "PASSWORD_HASH_INVALID": "两步验证密码错误，请检查后重试。",
+    "AUTH_KEY_UNREGISTERED": "本地 session 已失效，请重新登录。",
+    "AUTH_KEY_DUPLICATED": "该 session 已在其它设备使用，请重新登录。",
+}
+
+
+def _enum_name(value: Any) -> str:
+    """返回 Pyrogram 枚举的名字；已经是字符串时原样返回。"""
+    name = getattr(value, "name", None)
+    if isinstance(name, str) and name:
+        return name
+    return str(value or "")
+
+
+def _code_delivery_label(code_type: Any) -> str:
+    name = _enum_name(code_type)
+    return _CODE_DELIVERY_LABELS.get(name, name or "未知方式")
+
+
+def _format_login_error(exc: Exception) -> str:
+    if isinstance(exc, TimeoutError):
+        return "连接 Telegram 超时，请检查网络或代理后重试。"
+    if isinstance(exc, errors.FloodWait):
+        seconds = getattr(exc, "value", None)
+        wait = f"{seconds} 秒" if seconds else "一段时间"
+        return f"Telegram 请求过于频繁，请等待 {wait}后重试。"
+    error_id = getattr(exc, "ID", "") or ""
+    message = _LOGIN_ERROR_MESSAGES.get(error_id)
+    if message:
+        return message
+    return str(exc) or exc.__class__.__name__
+
 
 def _account_path(account: str, workdir, suffix: str = "") -> pathlib.Path:
     """返回 ``<workdir>/<account><suffix>``,账号名越界时抛 ``ValueError``。
@@ -131,6 +200,10 @@ class _AccountLoginSession:
         self.created_at = time.monotonic()
         self.phone = ""
         self.phone_code_hash: Optional[str] = None
+        self.sent_type: Optional[str] = None
+        self.next_type: Optional[str] = None
+        self.resend_at = 0.0
+        self._lock = threading.Lock()
         self.loop = asyncio.new_event_loop()
         # 线程排在 get_client 之后再启动：get_client() 可能抛（session 文件不可用、
         # 参数非法），而在它之前就 run_forever 的话，每次失败的登录尝试都会留下
@@ -157,21 +230,84 @@ class _AccountLoginSession:
         await self.client.connect()
         try:
             me = await self.client.get_me()
-        except Exception:  # noqa: BLE001
+        except errors.Unauthorized:
             me = None
         if me is not None:
             name = me.first_name or me.username or me.id
-            return "already", f"该账号已登录: {name}"
+            return (
+                "already",
+                f"该账号名已有有效 session（{name}），未发送验证码。"
+                "如需登录其它账号，请更换账号名或先登出该账号。",
+            )
         sent = await self.client.send_code(phone)
         self.phone = phone
         self.phone_code_hash = sent.phone_code_hash
-        return "ok", "验证码已发送，请查收 Telegram"
+        self._remember_sent_code(sent)
+        return "ok", self._sent_message(sent, phone)
+
+    def _remember_sent_code(self, sent) -> None:
+        self.sent_type = _enum_name(sent.type)
+        self.next_type = _enum_name(sent.next_type)
+        timeout = getattr(sent, "timeout", None) or 0
+        try:
+            timeout = max(0, int(timeout))
+        except (TypeError, ValueError):
+            timeout = 0
+        self.resend_at = time.monotonic() + timeout
+
+    def _sent_message(self, sent, phone: str) -> str:
+        code_type = _enum_name(sent.type)
+        label = _code_delivery_label(sent.type)
+        if code_type == "APP":
+            return (
+                "验证码已发送到 Telegram App。请打开已登录该账号的 Telegram，"
+                "查看「Telegram」官方服务对话；若没有其它已登录设备，"
+                "请点「重新发送」改用短信或电话。"
+            )
+        if code_type in {"SMS", "SMS_PHRASE", "SMS_WORD"}:
+            return f"验证码已通过短信发送到 {phone}，请检查短信和垃圾箱。"
+        if code_type in {"CALL", "FLASH_CALL", "MISSED_CALL"}:
+            return f"Telegram 将通过{label}发送验证码到 {phone}，请留意来电。"
+        return f"验证码已通过{label}发送，请查收。"
+
+    def code_status(self) -> Dict[str, Any]:
+        remaining = 0
+        if self.resend_at:
+            remaining = max(0, int(self.resend_at - time.monotonic() + 0.999))
+        return {
+            "delivery": self.sent_type,
+            "delivery_label": (
+                _code_delivery_label(self.sent_type) if self.sent_type else None
+            ),
+            "next_delivery": self.next_type,
+            "next_delivery_label": (
+                _code_delivery_label(self.next_type) if self.next_type else None
+            ),
+            "resend_after": remaining,
+            "can_resend": bool(self.phone_code_hash and remaining == 0),
+        }
 
     def send_code(self, phone: str, timeout: float = 90.0) -> Tuple[str, str]:
-        try:
-            return self.run(self._send_code(phone), timeout)
-        except Exception as exc:  # noqa: BLE001
-            return "error", str(exc)
+        with self._lock:
+            try:
+                return self.run(self._send_code(phone), timeout)
+            except Exception as exc:  # noqa: BLE001
+                return "error", _format_login_error(exc)
+
+    async def _resend_code(self) -> Tuple[str, str]:
+        if not self.phone or not self.phone_code_hash:
+            return "error", "登录会话不存在，请重新发送验证码"
+        sent = await self.client.resend_code(self.phone, self.phone_code_hash)
+        self.phone_code_hash = sent.phone_code_hash
+        self._remember_sent_code(sent)
+        return "ok", self._sent_message(sent, self.phone)
+
+    def resend_code(self) -> Tuple[str, str]:
+        with self._lock:
+            try:
+                return self.run(self._resend_code(), 90.0)
+            except Exception as exc:  # noqa: BLE001
+                return "error", _format_login_error(exc)
 
     async def _complete(self, code: str, password: Optional[str]) -> Tuple[str, str]:
         try:
@@ -182,7 +318,7 @@ class _AccountLoginSession:
                     return "password_needed", "需要两步验证密码"
                 await self.client.check_password(password)
         except Exception as exc:  # noqa: BLE001
-            return "error", str(exc)
+            return "error", _format_login_error(exc)
 
         try:
             me = await self.client.get_me()
@@ -206,10 +342,11 @@ class _AccountLoginSession:
         return "ok", f"登录成功: {me.first_name or me.username or me.id}"
 
     def complete(self, code: str, password: Optional[str]) -> Tuple[str, str]:
-        try:
-            return self.run(self._complete(code, password), 120.0)
-        except Exception as exc:  # noqa: BLE001
-            return "error", str(exc)
+        with self._lock:
+            try:
+                return self.run(self._complete(code, password), 120.0)
+            except Exception as exc:  # noqa: BLE001
+                return "error", _format_login_error(exc)
 
     def close(self) -> None:
         # 先从注册表摘掉自己(加锁),再做阻塞式的线程 / loop 收尾(不加锁:
@@ -291,6 +428,16 @@ def close_all_login_sessions() -> List[str]:
     return accounts
 
 
+def _login_lock(account: str) -> threading.Lock:
+    """返回账号级锁，保证同账号的发送 / 重发 / 完成登录不会交叉。"""
+    with _LOGIN_SESSIONS_LOCK:
+        lock = _LOGIN_LOCKS.get(account)
+        if lock is None:
+            lock = threading.Lock()
+            _LOGIN_LOCKS[account] = lock
+        return lock
+
+
 def send_login_code(account: str, phone: str, workdir) -> Tuple[str, str]:
     prune_login_sessions()
     # 整段「关旧会话 -> 建新会话 -> 登记」必须按账号串行。
@@ -299,12 +446,7 @@ def send_login_code(account: str, phone: str, workdir) -> Tuple[str, str]:
     # 会各自建一个会话,后登记的直接覆盖先登记的 —— 先登记的那个既离开了
     # LOGIN_SESSIONS 又不会被 close(),线程 / event loop / Telegram 连接三重泄漏,
     # 而用户拿到的是第二个验证码,用第一个必然失败。
-    with _LOGIN_SESSIONS_LOCK:
-        lock = _LOGIN_LOCKS.get(account)
-        if lock is None:
-            lock = threading.Lock()
-            _LOGIN_LOCKS[account] = lock
-    with lock:
+    with _login_lock(account):
         with _LOGIN_SESSIONS_LOCK:
             existing = LOGIN_SESSIONS.pop(account, None)
         if existing is not None:
@@ -320,18 +462,39 @@ def send_login_code(account: str, phone: str, workdir) -> Tuple[str, str]:
         return session.send_code(phone)
 
 
+def resend_login_code(account: str) -> Tuple[str, str]:
+    """用 Telegram 指定的下一种方式重发验证码。"""
+    # 不落盘，但仍要按账号名规则校验，避免 HTTP 层把穿越名当成普通 key。
+    _account_path(account, pathlib.Path("."))
+    prune_login_sessions()
+    with _login_lock(account):
+        with _LOGIN_SESSIONS_LOCK:
+            session = LOGIN_SESSIONS.get(account)
+        if session is None:
+            return "error", "登录会话不存在，请重新发送验证码"
+        return session.resend_code()
+
+
+def login_code_status(account: str) -> Dict[str, Any]:
+    """返回当前登录会话的验证码投递方式与可重发时间。"""
+    with _LOGIN_SESSIONS_LOCK:
+        session = LOGIN_SESSIONS.get(account)
+    return session.code_status() if session is not None else {}
+
+
 def complete_login(
     account: str, code: str, password: Optional[str] = None
 ) -> Tuple[str, str]:
     prune_login_sessions()
-    with _LOGIN_SESSIONS_LOCK:
-        session = LOGIN_SESSIONS.get(account)
-    if session is None:
-        return "error", "登录会话不存在，请重新发起登录"
-    status, message = session.complete(code, password)
-    if status == "ok":
-        session.close()
-    return status, message
+    with _login_lock(account):
+        with _LOGIN_SESSIONS_LOCK:
+            session = LOGIN_SESSIONS.get(account)
+        if session is None:
+            return "error", "登录会话不存在，请重新发起登录"
+        status, message = session.complete(code, password)
+        if status == "ok":
+            session.close()
+        return status, message
 
 
 def _new_client(account: str, workdir: pathlib.Path) -> Any:

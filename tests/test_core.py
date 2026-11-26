@@ -167,6 +167,19 @@ def test_get_client_isolated_by_workdir(tmp_path):
     assert client1.key != client2.key
 
 
+def test_get_client_accepts_loop_kwarg(tmp_path):
+    """Kurigram 2.2.27 移除了 Client(loop=...)，调用方仍应能传 loop。"""
+    import tg_signer.core as core
+
+    loop = asyncio.new_event_loop()
+    try:
+        client = get_client(name="loop-acct", workdir=tmp_path, loop=loop)
+        assert client.loop is loop
+        core.forget_client(client.key)
+    finally:
+        loop.close()
+
+
 @pytest.mark.parametrize(
     ("chat_type", "expected"),
     [

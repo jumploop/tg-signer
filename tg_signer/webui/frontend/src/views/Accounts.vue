@@ -69,7 +69,9 @@
       </el-steps>
       <div class="ts-callout dialog-callout">
         <el-icon><InfoFilled /></el-icon>
-        <span>验证码会发送到 Telegram 对话，请保持账号可接收消息。</span>
+        <span>
+          验证码可能发送到已登录设备的 Telegram、短信或电话；未收到可点「重新发送」。
+        </span>
       </div>
       <el-form label-width="90px">
         <el-form-item label="账号名">
@@ -88,7 +90,7 @@
         <el-form-item>
           <el-button :loading="sending" @click="sendCode">发送验证码</el-button>
           <span class="hint" style="margin-left: 8px">
-            {{ codeSent ? '验证码已发送，请查收 Telegram' : '发送成功后输入验证码并完成登录' }}
+            {{ codeSent ? '验证码已发送，请按提示查收' : '发送成功后输入验证码并完成登录' }}
           </span>
         </el-form-item>
         <el-form-item label="验证码">
@@ -99,6 +101,20 @@
             placeholder="Telegram 下发的登录验证码"
             @keyup.enter="complete"
           />
+        </el-form-item>
+        <el-form-item v-if="codeSent">
+          <el-button
+            text
+            type="primary"
+            :loading="resending"
+            :disabled="resendIn > 0"
+            @click="resendCode"
+          >
+            {{ resendIn > 0 ? `重新发送（${resendIn}s）` : '没收到？重新发送' }}
+          </el-button>
+          <span v-if="deliveryLabel" class="hint" style="margin-left: 8px">
+            本次通过{{ deliveryLabel }}发送
+          </span>
         </el-form-item>
         <el-form-item label="两步密码">
           <el-input
@@ -124,7 +140,7 @@
 </template>
 
 <script setup>
-import { computed, ref, nextTick, onMounted } from 'vue'
+import { computed, ref, nextTick, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { InfoFilled } from '@element-plus/icons-vue'
 import api, { errMsg, useList } from '../api'
@@ -144,10 +160,34 @@ const code = ref('')
 const password = ref('')
 const loginStatus = ref('')
 const sending = ref(false)
+const resending = ref(false)
 const completing = ref(false)
 const codeSent = ref(false)
 const loginStep = ref(0)
 const codeInput = ref(null)
+const resendIn = ref(0)
+const deliveryLabel = ref('')
+let resendTimer = null
+
+function stopResendTimer() {
+  if (resendTimer) {
+    clearInterval(resendTimer)
+    resendTimer = null
+  }
+}
+
+function startResendCountdown(seconds) {
+  stopResendTimer()
+  resendIn.value = Math.max(0, Number(seconds) || 0)
+  if (!resendIn.value) return
+  resendTimer = setInterval(() => {
+    resendIn.value -= 1
+    if (resendIn.value <= 0) {
+      resendIn.value = 0
+      stopResendTimer()
+    }
+  }, 1000)
+}
 
 function openLogin() {
   loginAccount.value = ''
@@ -157,6 +197,9 @@ function openLogin() {
   loginStatus.value = ''
   codeSent.value = false
   loginStep.value = 0
+  resendIn.value = 0
+  deliveryLabel.value = ''
+  stopResendTimer()
   loginVisible.value = true
 }
 
@@ -172,20 +215,54 @@ async function sendCode() {
       phone: phone.value.trim(),
     })
     loginStatus.value = data.message
-    if (data.result === 'error') {
-      ElMessage.error(data.message)
-    } else {
+    deliveryLabel.value = data.delivery_label || ''
+    if (data.result === 'ok') {
       ElMessage.success(data.message)
       codeSent.value = true
       loginStep.value = 1
+      startResendCountdown(data.resend_after)
       nextTick(() => {
         codeInput.value && codeInput.value.focus()
       })
+    } else if (data.result === 'already') {
+      codeSent.value = false
+      loginStep.value = 0
+      ElMessage.warning(data.message)
+    } else {
+      codeSent.value = false
+      loginStep.value = 0
+      ElMessage.error(data.message)
     }
   } catch (error) {
     ElMessage.error(errMsg(error))
   } finally {
     sending.value = false
+  }
+}
+
+async function resendCode() {
+  if (resending.value || resendIn.value > 0) return
+  resending.value = true
+  try {
+    const { data } = await api.post('/api/accounts/resend-code', {
+      account: loginAccount.value.trim(),
+    })
+    loginStatus.value = data.message
+    deliveryLabel.value = data.delivery_label || ''
+    startResendCountdown(data.resend_after)
+    if (data.result === 'ok') {
+      ElMessage.success(data.message)
+      codeSent.value = true
+      nextTick(() => {
+        codeInput.value && codeInput.value.focus()
+      })
+    } else {
+      ElMessage.error(data.message)
+    }
+  } catch (error) {
+    ElMessage.error(errMsg(error))
+  } finally {
+    resending.value = false
   }
 }
 
@@ -247,6 +324,7 @@ async function doLogout(accountName) {
 }
 
 onMounted(refresh)
+onUnmounted(stopResendTimer)
 </script>
 
 <style scoped>

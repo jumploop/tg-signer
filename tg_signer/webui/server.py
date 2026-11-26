@@ -503,7 +503,26 @@ async def account_send_code(body: LoginCodeBody) -> Dict[str, Any]:
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"result": result, "message": message}
+    return {
+        "result": result,
+        "message": message,
+        **account_mod.login_code_status(body.account),
+    }
+
+
+@protected.post("/api/accounts/resend-code")
+async def account_resend_code(body: AccountBody) -> Dict[str, Any]:
+    try:
+        result, message = await asyncio.to_thread(
+            account_mod.resend_login_code, body.account
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {
+        "result": result,
+        "message": message,
+        **account_mod.login_code_status(body.account),
+    }
 
 
 @protected.post("/api/accounts/complete-login")
