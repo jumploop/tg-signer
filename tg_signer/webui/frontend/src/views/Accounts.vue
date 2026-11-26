@@ -63,84 +63,150 @@
       width="480px"
       :close-on-click-modal="false"
     >
-      <el-steps :active="loginStep" finish-status="success" simple style="margin-bottom: 16px">
-        <el-step title="发送验证码" />
-        <el-step title="完成登录" />
-      </el-steps>
-      <div class="ts-callout dialog-callout">
-        <el-icon><InfoFilled /></el-icon>
-        <span>
-          验证码可能发送到已登录设备的 Telegram、短信或电话；未收到可点「重新发送」。
-        </span>
-      </div>
-      <el-form label-width="90px">
-        <el-form-item label="账号名">
-          <el-input
-            v-model="loginAccount"
-            placeholder="例如 my_account，对应 session 文件名"
-          />
-        </el-form-item>
-        <el-form-item label="手机号">
-          <el-input
-            v-model="phone"
-            placeholder="+8613800138000"
-            @keyup.enter="sendCode"
-          />
-        </el-form-item>
-        <el-form-item>
-          <el-button :loading="sending" @click="sendCode">发送验证码</el-button>
-          <span class="hint" style="margin-left: 8px">
-            {{ codeSent ? '验证码已发送，请按提示查收' : '发送成功后输入验证码并完成登录' }}
+      <el-radio-group v-model="loginMode" class="login-mode" @change="onModeChange">
+        <el-radio-button value="code">验证码登录</el-radio-button>
+        <el-radio-button value="qr">二维码登录</el-radio-button>
+      </el-radio-group>
+
+      <template v-if="loginMode === 'code'">
+        <el-steps
+          :active="loginStep"
+          finish-status="success"
+          simple
+          style="margin-bottom: 16px"
+        >
+          <el-step title="发送验证码" />
+          <el-step title="完成登录" />
+        </el-steps>
+        <div class="ts-callout dialog-callout">
+          <el-icon><InfoFilled /></el-icon>
+          <span>
+            验证码可能发送到已登录设备的 Telegram、短信或电话；未收到可点「重新发送」。
           </span>
-        </el-form-item>
-        <el-form-item label="验证码">
-          <el-input
-            ref="codeInput"
-            v-model="code"
-            :disabled="!codeSent"
-            placeholder="Telegram 下发的登录验证码"
-            @keyup.enter="complete"
-          />
-        </el-form-item>
-        <el-form-item v-if="codeSent">
-          <el-button
-            text
-            type="primary"
-            :loading="resending"
-            :disabled="resendIn > 0"
-            @click="resendCode"
-          >
-            {{ resendIn > 0 ? `重新发送（${resendIn}s）` : '没收到？重新发送' }}
-          </el-button>
-          <span v-if="deliveryLabel" class="hint" style="margin-left: 8px">
-            本次通过{{ deliveryLabel }}发送
+        </div>
+        <el-form label-width="90px">
+          <el-form-item label="账号名">
+            <el-input
+              v-model="loginAccount"
+              placeholder="例如 my_account，对应 session 文件名"
+            />
+          </el-form-item>
+          <el-form-item label="手机号">
+            <el-input
+              v-model="phone"
+              placeholder="+8613800138000"
+              @keyup.enter="sendCode"
+            />
+          </el-form-item>
+          <el-form-item>
+            <el-button :loading="sending" @click="sendCode">发送验证码</el-button>
+            <span class="hint" style="margin-left: 8px">
+              {{ codeSent ? '验证码已发送，请按提示查收' : '发送成功后输入验证码并完成登录' }}
+            </span>
+          </el-form-item>
+          <el-form-item label="验证码">
+            <el-input
+              ref="codeInput"
+              v-model="code"
+              :disabled="!codeSent"
+              placeholder="Telegram 下发的登录验证码"
+              @keyup.enter="complete"
+            />
+          </el-form-item>
+          <el-form-item v-if="codeSent">
+            <el-button
+              text
+              type="primary"
+              :loading="resending"
+              :disabled="resendIn > 0"
+              @click="resendCode"
+            >
+              {{ resendIn > 0 ? `重新发送（${resendIn}s）` : '没收到？重新发送' }}
+            </el-button>
+            <span v-if="deliveryLabel" class="hint" style="margin-left: 8px">
+              本次通过{{ deliveryLabel }}发送
+            </span>
+          </el-form-item>
+          <el-form-item label="两步密码">
+            <el-input
+              v-model="password"
+              type="password"
+              show-password
+              placeholder="如启用两步验证再填"
+              @keyup.enter="complete"
+            />
+          </el-form-item>
+          <el-form-item>
+            <el-button
+              type="primary"
+              :loading="completing"
+              :disabled="!codeSent"
+              @click="complete"
+            >完成登录</el-button>
+            <span class="hint" style="margin-left: 8px">{{ loginStatus }}</span>
+          </el-form-item>
+        </el-form>
+      </template>
+
+      <template v-else>
+        <div class="ts-callout dialog-callout">
+          <el-icon><InfoFilled /></el-icon>
+          <span>
+            用<strong>已登录该账号</strong>的 Telegram 扫码即可登录，不需要短信或验证码。
+            手机端路径：设置 → 隐私和安全 → 设备 → 扫描二维码。
           </span>
-        </el-form-item>
-        <el-form-item label="两步密码">
-          <el-input
-            v-model="password"
-            type="password"
-            show-password
-            placeholder="如启用两步验证再填"
-            @keyup.enter="complete"
-          />
-        </el-form-item>
-        <el-form-item>
-          <el-button
-            type="primary"
-            :loading="completing"
-            :disabled="!codeSent"
-            @click="complete"
-          >完成登录</el-button>
-          <span class="hint" style="margin-left: 8px">{{ loginStatus }}</span>
-        </el-form-item>
-      </el-form>
+        </div>
+        <el-form label-width="90px">
+          <el-form-item label="账号名">
+            <el-input
+              v-model="loginAccount"
+              placeholder="例如 my_account，对应 session 文件名"
+              @keyup.enter="startQr"
+            />
+          </el-form-item>
+          <el-form-item>
+            <el-button type="primary" :loading="qrStarting" @click="startQr">
+              生成二维码
+            </el-button>
+            <span class="hint" style="margin-left: 8px">{{ qrHint }}</span>
+          </el-form-item>
+        </el-form>
+        <div v-if="qrSvg" class="qr-box">
+          <div class="qr-image" v-html="qrSvg"></div>
+          <div class="qr-meta">
+            <p>{{ qrMessage }}</p>
+            <p class="hint">二维码 {{ qrExpires }} 秒后自动刷新，请尽快扫描</p>
+          </div>
+        </div>
+        <div v-else-if="qrUrl" class="hint qr-fallback">
+          二维码渲染不可用，可在 Telegram 内打开：
+          <code>{{ qrUrl }}</code>
+        </div>
+        <el-form v-if="qrState === 'password_needed'" label-width="90px">
+          <el-form-item label="两步密码">
+            <el-input
+              v-model="password"
+              type="password"
+              show-password
+              placeholder="该账号启用了两步验证"
+              @keyup.enter="submitQrPassword"
+            />
+          </el-form-item>
+          <el-form-item>
+            <el-button
+              type="primary"
+              :loading="qrSubmitting"
+              @click="submitQrPassword"
+            >完成登录</el-button>
+          </el-form-item>
+        </el-form>
+      </template>
     </el-dialog>
   </el-card>
 </template>
 
 <script setup>
-import { computed, ref, nextTick, onMounted, onUnmounted } from 'vue'
+import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { InfoFilled } from '@element-plus/icons-vue'
 import api, { errMsg, useList } from '../api'
@@ -154,6 +220,7 @@ const sessionCount = computed(() =>
   accounts.value.filter((account) => account.kind && account.kind.length).length
 )
 const loginVisible = ref(false)
+const loginMode = ref('code')
 const loginAccount = ref('')
 const phone = ref('')
 const code = ref('')
@@ -167,7 +234,16 @@ const loginStep = ref(0)
 const codeInput = ref(null)
 const resendIn = ref(0)
 const deliveryLabel = ref('')
+const qrStarting = ref(false)
+const qrSubmitting = ref(false)
+const qrState = ref('idle')
+const qrSvg = ref('')
+const qrUrl = ref('')
+const qrMessage = ref('')
+const qrExpires = ref(0)
+const qrHint = ref('生成后用手机 Telegram 扫码')
 let resendTimer = null
+let qrTimer = null
 
 function stopResendTimer() {
   if (resendTimer) {
@@ -199,8 +275,129 @@ function openLogin() {
   loginStep.value = 0
   resendIn.value = 0
   deliveryLabel.value = ''
+  loginMode.value = 'code'
+  resetQr()
   stopResendTimer()
   loginVisible.value = true
+}
+
+function resetQr() {
+  stopQrPoll()
+  qrState.value = 'idle'
+  qrSvg.value = ''
+  qrUrl.value = ''
+  qrMessage.value = ''
+  qrExpires.value = 0
+  qrHint.value = '生成后用手机 Telegram 扫码'
+}
+
+function stopQrPoll() {
+  if (qrTimer) {
+    clearInterval(qrTimer)
+    qrTimer = null
+  }
+}
+
+function startQrPoll() {
+  stopQrPoll()
+  qrTimer = setInterval(pollQr, 2000)
+}
+
+function applyQr(data) {
+  qrState.value = data.state || 'idle'
+  qrSvg.value = data.svg || ''
+  qrUrl.value = data.url || ''
+  qrMessage.value = data.message || ''
+  qrExpires.value = Number(data.expires_in) || 0
+  if (qrState.value === 'ok') {
+    stopQrPoll()
+    ElMessage.success(qrMessage.value || '登录成功')
+    loginVisible.value = false
+    refresh()
+  } else if (qrState.value === 'error') {
+    stopQrPoll()
+    qrHint.value = '生成失败'
+    ElMessage.error(qrMessage.value || '二维码登录失败')
+  } else if (qrState.value === 'idle') {
+    stopQrPoll()
+    qrHint.value = '登录会话已失效，请重新生成'
+  }
+}
+
+async function pollQr() {
+  const accountName = loginAccount.value.trim()
+  if (!accountName) {
+    stopQrPoll()
+    return
+  }
+  try {
+    const { data } = await api.get('/api/accounts/qr-status', {
+      params: { account: accountName },
+    })
+    applyQr(data)
+  } catch (error) {
+    stopQrPoll()
+    ElMessage.error(errMsg(error))
+  }
+}
+
+async function startQr() {
+  if (!loginAccount.value.trim()) {
+    ElMessage.warning('请填写账号名')
+    return
+  }
+  qrStarting.value = true
+  qrHint.value = '正在生成二维码…'
+  try {
+    const { data } = await api.post('/api/accounts/qr-start', {
+      account: loginAccount.value.trim(),
+    })
+    if (data.result === 'ok') {
+      qrHint.value = '等待扫码'
+      applyQr(data)
+      startQrPoll()
+    } else {
+      qrHint.value = '未生成二维码'
+      ElMessage.warning(data.message)
+    }
+  } catch (error) {
+    qrHint.value = '生成失败'
+    ElMessage.error(errMsg(error))
+  } finally {
+    qrStarting.value = false
+  }
+}
+
+async function submitQrPassword() {
+  if (!password.value.trim()) {
+    ElMessage.warning('请填写两步验证密码')
+    return
+  }
+  qrSubmitting.value = true
+  try {
+    const { data } = await api.post('/api/accounts/qr-password', {
+      account: loginAccount.value.trim(),
+      password: password.value.trim(),
+    })
+    if (data.result === 'ok') {
+      stopQrPoll()
+      ElMessage.success(data.message || '登录成功')
+      loginVisible.value = false
+      refresh()
+    } else {
+      ElMessage.error(data.message)
+    }
+  } catch (error) {
+    ElMessage.error(errMsg(error))
+  } finally {
+    qrSubmitting.value = false
+  }
+}
+
+function onModeChange() {
+  if (loginMode.value !== 'qr') {
+    resetQr()
+  }
 }
 
 async function sendCode() {
@@ -323,11 +520,24 @@ async function doLogout(accountName) {
   }
 }
 
+watch(loginVisible, (visible) => {
+  if (!visible) {
+    stopResendTimer()
+    stopQrPoll()
+  }
+})
+
 onMounted(refresh)
-onUnmounted(stopResendTimer)
+onUnmounted(() => {
+  stopResendTimer()
+  stopQrPoll()
+})
 </script>
 
 <style scoped>
+.login-mode {
+  margin-bottom: 16px;
+}
 .account-metrics {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -351,6 +561,36 @@ onUnmounted(stopResendTimer)
 .dialog-callout {
   margin: -2px 0 18px;
 }
+.qr-box {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  padding: 14px;
+  margin-bottom: 16px;
+  border: 1px solid var(--ts-line);
+  border-radius: 12px;
+  background: #FAFCFF;
+}
+.qr-image {
+  flex: none;
+  line-height: 0;
+}
+.qr-image :deep(svg) {
+  width: 180px;
+  height: 180px;
+}
+.qr-meta {
+  min-width: 0;
+}
+.qr-meta p {
+  margin: 0 0 8px;
+  line-height: 1.5;
+}
+.qr-fallback {
+  display: block;
+  margin-bottom: 16px;
+  word-break: break-all;
+}
 .kind-tag {
   margin-right: 4px;
 }
@@ -358,6 +598,10 @@ onUnmounted(stopResendTimer)
 @media (max-width: 600px) {
   .account-metrics {
     grid-template-columns: 1fr;
+  }
+  .qr-box {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }
 </style>

@@ -1,6 +1,20 @@
 # Changelog / 版本变动日志
 
 ## 版本变动日志
+### 0.10.21
+WebUI 账号登录新增「二维码登录」，用于 Telegram 拒绝下发验证码的场景。
+
+**feat: 扫码登录（无需短信/验证码）**
+- 后端新增 `POST /api/accounts/qr-start`、`GET /api/accounts/qr-status`、`POST /api/accounts/qr-password`
+- 基于 Kurigram 的 `QRLogin`：生成 `tg://login?token=...`，令牌约 30 秒过期后自动重建，前端每 2 秒轮询
+- 扫码成功后复用验证码登录的落盘逻辑（`me.json`、账号映射、`session_string`、最近对话）
+- 账号启用两步验证时进入「输入两步密码」分支，提交后完成登录
+- 后端用 `qrcode` 直接渲染内联 SVG，前端无需新增依赖；未安装 `qrcode` 时退化为展示 `tg://` 链接
+
+**fix: 验证码投递提示更准确**
+- `type=APP` 且无短信/电话备选时，明确提示「App 内也收不到就改用二维码登录或等待 24 小时」
+- 新增 `SEND_CODE_UNAVAILABLE` 的中文错误说明（通道已用尽）
+
 ### 0.10.20
 发布 WebUI 账号登录验证码修复，并同步上游 `amchii/tg-signer` 最新代码。
 

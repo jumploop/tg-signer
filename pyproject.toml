@@ -51,6 +51,9 @@ dev = [
     "pytest-asyncio>=1.3.0",
     "fastapi",
     "uvicorn",
+    # WebUI 账号登录支持「扫码登录」：后端把 tg://login?token=... 渲染成内联
+    # SVG，避免再引入前端二维码依赖，也让静态产物保持零额外体积。
+    "qrcode",
     # 与 fastapi/uvicorn 同理:测试要覆盖可选能力的真实路径(YAML 配置的
     # 读取/导出/导入往返),不能只测到 importorskip 的跳过分支。
     "pyyaml",
@@ -63,6 +66,8 @@ speedup = [
 gui = [
     "fastapi",
     "uvicorn",
+    # 二维码登录需要把 tg://login?token=... 渲染成 SVG。
+    "qrcode",
 ]
 yaml = [
     "pyyaml"

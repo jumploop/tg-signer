@@ -103,6 +103,11 @@ class LoginCompleteBody(BaseModel):
     password: Optional[str] = None
 
 
+class QrPasswordBody(BaseModel):
+    account: str
+    password: str
+
+
 class RunStartBody(BaseModel):
     kind: str
     tasks: List[str]
@@ -529,6 +534,32 @@ async def account_resend_code(body: AccountBody) -> Dict[str, Any]:
 async def account_complete_login(body: LoginCompleteBody) -> Dict[str, Any]:
     result, message = await asyncio.to_thread(
         account_mod.complete_login, body.account, body.code, body.password
+    )
+    return {"result": result, "message": message}
+
+
+@protected.post("/api/accounts/qr-start")
+async def account_qr_start(body: AccountBody) -> Dict[str, Any]:
+    try:
+        return await asyncio.to_thread(
+            account_mod.start_qr_login, body.account, state.workdir
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@protected.get("/api/accounts/qr-status")
+async def account_qr_status(account: str = Query(...)) -> Dict[str, Any]:
+    try:
+        return await asyncio.to_thread(account_mod.qr_login_status, account)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@protected.post("/api/accounts/qr-password")
+async def account_qr_password(body: QrPasswordBody) -> Dict[str, Any]:
+    result, message = await asyncio.to_thread(
+        account_mod.submit_qr_password, body.account, body.password
     )
     return {"result": result, "message": message}
 

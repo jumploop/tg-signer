@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import threading
 import time
@@ -415,6 +416,9 @@ def test_concurrent_send_login_code_leaves_no_orphan_session(
 
         def close(self):
             self.close_calls += 1
+            with account._LOGIN_SESSIONS_LOCK:
+                if account.LOGIN_SESSIONS.get(self.account) is self:
+                    account.LOGIN_SESSIONS.pop(self.account, None)
 
         def send_code(self, phone):
             return "ok", "sent"
@@ -469,7 +473,9 @@ def test_complete_login_without_session_reports_restart(clean_login_sessions):
     )
 
 
-def _fake_login_client(monkeypatch, tmp_path, *, me=None, sent=None, resent=None):
+def _fake_login_client(
+    monkeypatch, tmp_path, *, me=None, sent=None, resent=None, password_user=None
+):
     class FakeClient:
         key = str(tmp_path / "fake")
         is_connected = False
@@ -489,6 +495,11 @@ def _fake_login_client(monkeypatch, tmp_path, *, me=None, sent=None, resent=None
             assert resent is not None, "未预期调用 resend_code"
             assert phone_code_hash == "hash-1"
             return resent
+
+        async def check_password(self, password):
+            assert password_user is not None, "未预期调用 check_password"
+            assert password == "pw"
+            return password_user
 
         async def stop(self):
             self.is_connected = False
@@ -583,3 +594,155 @@ def test_login_session_close_is_idempotent_and_spares_newer_session(
     finally:
         with account._LOGIN_SESSIONS_LOCK:
             account.LOGIN_SESSIONS.pop("acc", None)
+
+
+# ---------------------------------------------------------------------------
+# 二维码登录
+#
+# Telegram 拒绝下发短信/电话验证码时（公开 api_id 被限流、号码通道用尽），
+# 唯一还能走通的路径是用已登录设备扫码。后端负责「生成令牌 -> 等待扫码 ->
+# 过期重建」，前端只轮询状态。
+# ---------------------------------------------------------------------------
+
+
+def test_render_qr_svg_inlines_svg_without_xml_declaration():
+    svg = account._render_qr_svg("tg://login?token=abc")
+    assert svg.startswith("<svg")
+    assert "<?xml" not in svg
+
+
+def test_render_qr_svg_handles_empty_url():
+    assert account._render_qr_svg("") == ""
+
+
+class _FakeQr:
+    """最小 QRLogin 替身：令牌不自动过期，wait() 由用例显式放行。"""
+
+    def __init__(self, client=None, except_ids=None):
+        self.client = client
+        self.r = SimpleNamespace(expires=time.time() + 30)
+        self.url = "tg://login?token=fake"
+        self.recreated = 0
+        self.release = asyncio.Event()
+        self.user = SimpleNamespace(id=9, first_name="扫码用户", username=None)
+
+    async def recreate(self):
+        self.recreated += 1
+        self.r = SimpleNamespace(expires=time.time() + 30)
+
+    async def wait(self, timeout=None):
+        await self.release.wait()
+        return self.user
+
+
+def test_login_session_qr_start_returns_scannable_payload(monkeypatch, tmp_path):
+    session = _fake_login_client(monkeypatch, tmp_path)
+    fake_qr = _FakeQr()
+    monkeypatch.setattr(account, "QRLogin", lambda *_args: fake_qr)
+    try:
+        result = session.start_qr()
+
+        assert result["result"] == "ok"
+        assert result["state"] == "pending"
+        assert result["url"] == "tg://login?token=fake"
+        assert "<svg" in result["svg"]
+        assert result["expires_in"] > 0
+        assert fake_qr.recreated == 1
+    finally:
+        session.close()
+
+
+def test_login_session_qr_scan_persists_login(monkeypatch, tmp_path):
+    session = _fake_login_client(monkeypatch, tmp_path)
+    fake_qr = _FakeQr()
+    monkeypatch.setattr(account, "QRLogin", lambda *_args: fake_qr)
+    try:
+        assert session.start_qr()["state"] == "pending"
+
+        session.loop.call_soon_threadsafe(fake_qr.release.set)
+        deadline = time.monotonic() + 5
+        while session.qr_state != "ok" and time.monotonic() < deadline:
+            time.sleep(0.02)
+
+        assert session.qr_state == "ok"
+        assert "登录成功" in session.qr_message
+        assert (tmp_path / "users" / "9" / "me.json").is_file()
+        assert account.load_account_users(tmp_path) == {"acc": "9"}
+    finally:
+        session.close()
+
+
+def test_login_session_qr_password_completes_login(monkeypatch, tmp_path):
+    """扫码后要求 2FA 时，提交密码要复用同一段落盘逻辑。"""
+    user = SimpleNamespace(id=10, first_name="两步验证账号", username=None)
+    session = _fake_login_client(monkeypatch, tmp_path, password_user=user)
+    try:
+        session.qr_state = "password_needed"
+
+        status, message = session.submit_qr_password("pw")
+
+        assert status == "ok"
+        assert "登录成功" in message
+        assert session.qr_state == "ok"
+        assert (tmp_path / "users" / "10" / "me.json").is_file()
+    finally:
+        session.close()
+
+
+def test_start_qr_login_closes_session_when_already_authorized(
+    clean_login_sessions, monkeypatch, tmp_path
+):
+    """账号名已有有效 session 时不能生成二维码，也不能留下会话。"""
+
+    class _FakeSession:
+        def __init__(self, name, workdir):
+            self.account = name
+            self.created_at = time.monotonic()
+            self.close_calls = 0
+
+        def start_qr(self):
+            return {"result": "already", "message": "已有 session"}
+
+        def close(self):
+            self.close_calls += 1
+            with account._LOGIN_SESSIONS_LOCK:
+                if account.LOGIN_SESSIONS.get(self.account) is self:
+                    account.LOGIN_SESSIONS.pop(self.account, None)
+
+    monkeypatch.setattr(account, "_AccountLoginSession", _FakeSession)
+
+    result = account.start_qr_login("acc", tmp_path)
+
+    assert result["result"] == "already"
+    with account._LOGIN_SESSIONS_LOCK:
+        assert account.LOGIN_SESSIONS == {}
+
+
+def test_qr_login_status_without_session_reports_restart():
+    status = account.qr_login_status("missing")
+    assert status["state"] == "idle"
+    assert "重新生成" in status["message"]
+
+
+def test_send_code_message_points_to_qr_when_no_fallback(monkeypatch, tmp_path):
+    """APP 投递且没有短信/电话备选时，提示里必须给出二维码这条出路。"""
+    sent = SimpleNamespace(
+        type=SimpleNamespace(name="APP"),
+        next_type=None,
+        phone_code_hash="hash-1",
+        timeout=0,
+    )
+    session = _fake_login_client(monkeypatch, tmp_path, sent=sent)
+    try:
+        status, message = session.send_code("+10086")
+    finally:
+        session.close()
+
+    assert status == "ok"
+    assert "二维码登录" in message
+    assert session.code_status()["next_delivery"] == ""
+
+
+def test_send_code_unavailable_error_explains_qr_fallback():
+    message = account._format_login_error(SimpleNamespace(ID="SEND_CODE_UNAVAILABLE"))
+    assert "二维码登录" in message
