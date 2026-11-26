@@ -1,14 +1,9 @@
-import inspect
-
 from pyrogram import raw
 
 try:
     from pyrogram.types import AnimatedChatPhoto
 except ImportError:  # Kurigram versions before AnimatedChatPhoto was introduced.
     AnimatedChatPhoto = None
-
-
-_animated_chat_photo_parser_patched = False
 
 
 def patch_animated_chat_photo_parser() -> None:
@@ -18,9 +13,7 @@ def patch_animated_chat_photo_parser() -> None:
     calls ``max()`` after filtering the list to ``VideoSize`` instances. A
     photo containing only markup entries therefore raises ``ValueError``.
     """
-    global _animated_chat_photo_parser_patched
-
-    if AnimatedChatPhoto is None or _animated_chat_photo_parser_patched:
+    if AnimatedChatPhoto is None:
         return
 
     original_parse = AnimatedChatPhoto._parse
@@ -32,10 +25,6 @@ def patch_animated_chat_photo_parser() -> None:
         ):
             return None
 
-        parsed_photo = original_parse(client, photo)
-        if inspect.isawaitable(parsed_photo):
-            parsed_photo = await parsed_photo
-        return parsed_photo
+        return await original_parse(client, photo)
 
     AnimatedChatPhoto._parse = staticmethod(safe_parse)
-    _animated_chat_photo_parser_patched = True

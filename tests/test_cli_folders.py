@@ -1,12 +1,96 @@
 import asyncio
 
+import click
 import pytest
-from click.testing import CliRunner
 
 import tg_signer.cli.automation as automation_cli
-import tg_signer.cli.monitor as monitor_cli
 import tg_signer.cli.signer as signer_cli
 from tg_signer.core import ChatFolderError, UserSigner
+
+# ---------------------------------------------------------------------------
+# run_coroutines：异常必须转成 ClickException，且兄弟协程要一起收场
+# ---------------------------------------------------------------------------
+
+
+def test_run_coroutines_converts_arbitrary_error_to_click_exception():
+    """非 ChatFolderError 异常不得以裸 traceback 打穿 CLI。"""
+
+    async def boom():
+        raise RuntimeError("disk on fire")
+
+    loop = asyncio.new_event_loop()
+    try:
+        with pytest.raises(click.ClickException) as exc:
+            signer_cli.run_coroutines(loop, [boom()])
+    finally:
+        loop.close()
+    assert "disk on fire" in str(exc.value)
+
+
+def test_run_coroutines_cancels_sibling_tasks_on_failure():
+    """一个协程失败时，兄弟协程必须被取消并回收，不能留在后台继续发消息。"""
+    state = {"sibling_finished": False, "sibling_cancelled": False}
+
+    async def boom():
+        raise RuntimeError("boom")
+
+    async def sibling():
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            state["sibling_cancelled"] = True
+            raise
+        state["sibling_finished"] = True  # pragma: no cover
+
+    loop = asyncio.new_event_loop()
+    try:
+        with pytest.raises(click.ClickException):
+            signer_cli.run_coroutines(loop, [boom(), sibling()])
+    finally:
+        loop.close()
+
+    assert state["sibling_cancelled"] is True
+    assert state["sibling_finished"] is False
+
+
+def test_run_coroutines_propagates_cancellation_as_click_exception():
+    """CancelledError 不属于 ChatFolderError，必须被转成错误而不是裸抛。"""
+
+    async def boom():
+        raise asyncio.CancelledError
+
+    loop = asyncio.new_event_loop()
+    try:
+        with pytest.raises(click.ClickException):
+            signer_cli.run_coroutines(loop, [boom()])
+    finally:
+        loop.close()
+
+
+def test_run_coroutines_cancels_sibling_tasks_on_chat_folder_error():
+    """ChatFolderError 分支也必须收场兄弟协程，否则它们会在半应用状态上继续跑。"""
+    state = {"sibling_finished": False, "sibling_cancelled": False}
+
+    async def boom():
+        raise ChatFolderError("folder gone")
+
+    async def sibling():
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            state["sibling_cancelled"] = True
+            raise
+        state["sibling_finished"] = True  # pragma: no cover
+
+    loop = asyncio.new_event_loop()
+    try:
+        with pytest.raises(click.ClickException):
+            signer_cli.run_coroutines(loop, [boom(), sibling()])
+    finally:
+        loop.close()
+
+    assert state["sibling_cancelled"] is True
+    assert state["sibling_finished"] is False
 
 
 class DummyWorker:
@@ -19,12 +103,13 @@ class DummyWorker:
     async def list_folders(self):
         self.calls.append({"method": "list_folders"})
 
-    async def login(self, num_of_dialogs, folder=None):
+    async def login(self, num_of_dialogs, folder=None, interactive: bool = False):
         self.calls.append(
             {
                 "method": "login",
                 "num_of_dialogs": num_of_dialogs,
                 "folder": folder,
+                "interactive": interactive,
             }
         )
 
@@ -47,14 +132,9 @@ class DummyWorker:
         )
 
 
-@pytest.fixture
-def runner():
-    return CliRunner()
-
-
 @pytest.mark.parametrize(
     "factory",
-    [signer_cli.get_signer, monitor_cli.get_monitor, automation_cli.get_automation],
+    [signer_cli.get_signer, automation_cli.get_automation],
 )
 def test_worker_factories_accept_explicit_loop(factory, tmp_path):
     loop = asyncio.new_event_loop()
@@ -114,6 +194,54 @@ def test_signer_commands_forward_folder(monkeypatch, runner, args, method):
     assert result.exit_code == 0, result.output
     assert worker.calls[0]["method"] == method
     assert worker.calls[0]["folder"] == "Sign"
+    # 指定 --from-folder 且未显式传 -n 时，必须加载 Folder 内全部对话。
+    assert worker.calls[0]["num_of_dialogs"] is None
+
+
+@pytest.mark.parametrize(
+    ("args", "method"),
+    [
+        (["login", "--from-folder", "Sign", "-n", "5"], "login"),
+        (["run", "--from-folder", "Sign", "-n", "5", "task"], "run"),
+        (["run-once", "--from-folder", "Sign", "-n", "5", "task"], "run_once"),
+        (
+            [
+                "multi-run",
+                "--account",
+                "account-a",
+                "--from-folder",
+                "Sign",
+                "-n",
+                "5",
+                "task",
+            ],
+            "run",
+        ),
+    ],
+)
+def test_signer_commands_forward_explicit_dialogs_limit(
+    monkeypatch, runner, args, method
+):
+    """显式传 -n 时，Folder 模式必须按该上限截断。"""
+    worker = DummyWorker()
+    monkeypatch.setattr(signer_cli, "get_signer", lambda *_args, **_kwargs: worker)
+
+    result = runner.invoke(signer_cli.tg_signer, args)
+
+    assert result.exit_code == 0, result.output
+    assert worker.calls[0]["method"] == method
+    assert worker.calls[0]["num_of_dialogs"] == 5
+
+
+def test_login_without_folder_keeps_default_dialogs_limit(monkeypatch, runner):
+    """未指定 --from-folder 时，默认上限仍是 50。"""
+    worker = DummyWorker()
+    monkeypatch.setattr(signer_cli, "get_signer", lambda *_args, **_kwargs: worker)
+
+    result = runner.invoke(signer_cli.tg_signer, ["login"])
+
+    assert result.exit_code == 0, result.output
+    assert worker.calls[0]["num_of_dialogs"] == 50
 
 
 @pytest.mark.parametrize(
@@ -128,7 +256,7 @@ def test_signer_commands_forward_folder(monkeypatch, runner, args, method):
 def test_login_runs_with_kurigram_client(monkeypatch, runner, tmp_path, proxy, port):
     loops = []
 
-    async def login(self, num_of_dialogs, folder=None):
+    async def login(self, num_of_dialogs, folder=None, interactive=False):
         assert self.app.proxy.port == port
         assert asyncio.get_running_loop() is self.loop
         loops.append(asyncio.get_running_loop())
@@ -181,7 +309,8 @@ def test_signer_batch_shares_one_loop(
     assert tasks == expected_tasks
     assert (clients[0] is clients[1]) is shared_client
     assert loops[0] is loops[1]
-    assert not loops[0].is_closed()
+    # run / multi-run 走 run_in_new_loop，命令结束会 close 掉该 loop。
+    assert loops[0].is_closed()
 
 
 @pytest.mark.parametrize(
@@ -191,11 +320,6 @@ def test_signer_batch_shares_one_loop(
             ["automation", "run", "--from-folder", "Sign", "task"],
             automation_cli,
             "get_automation",
-        ),
-        (
-            ["monitor", "run", "--from-folder", "Sign", "task"],
-            monitor_cli,
-            "get_monitor",
         ),
     ],
 )
@@ -208,13 +332,26 @@ def test_subsystem_run_commands_forward_folder(
     result = runner.invoke(signer_cli.tg_signer, args)
 
     assert result.exit_code == 0, result.output
-    assert worker.calls == [{"method": "run", "num_of_dialogs": 20, "folder": "Sign"}]
+    assert worker.calls == [{"method": "run", "num_of_dialogs": None, "folder": "Sign"}]
+
+
+def test_automation_run_forwards_explicit_dialogs_limit(monkeypatch, runner):
+    worker = DummyWorker()
+    monkeypatch.setattr(automation_cli, "get_automation", lambda *_a, **_k: worker)
+
+    result = runner.invoke(
+        signer_cli.tg_signer,
+        ["automation", "run", "--from-folder", "Sign", "-n", "5", "task"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert worker.calls == [{"method": "run", "num_of_dialogs": 5, "folder": "Sign"}]
 
 
 def test_folder_errors_are_reported_as_click_errors(monkeypatch, runner):
     class ErrorWorker(DummyWorker):
-        async def login(self, num_of_dialogs, folder=None):
-            del num_of_dialogs, folder
+        async def login(self, num_of_dialogs, folder=None, interactive: bool = False):
+            del num_of_dialogs, folder, interactive
             raise ChatFolderError("folder error")
 
     worker = ErrorWorker()
@@ -227,3 +364,119 @@ def test_folder_errors_are_reported_as_click_errors(monkeypatch, runner):
 
     assert result.exit_code == 1
     assert "Error: folder error" in result.output
+
+
+# ---------------------------------------------------------------------------
+# automation list / validate / export→import 往返
+# ---------------------------------------------------------------------------
+
+_YAML_CONFIG = """\
+version: 1
+rules:
+  - id: r1
+    enabled: true
+    triggers:
+      - type: timer
+        params:
+          interval_seconds: 60
+    handlers:
+      - handler: send_text
+        params:
+          text: hi
+"""
+
+
+def _invoke(runner, workdir, *args, **kwargs):
+    return runner.invoke(
+        signer_cli.tg_signer, ["--workdir", str(workdir), "automation", *args], **kwargs
+    )
+
+
+def test_automation_list_on_fresh_workdir_prints_nothing_and_creates_nothing(
+    runner, tmp_path
+):
+    """`automation list` 不得构造默认任务(my_task)并把它建出来。"""
+    workdir = tmp_path / "wd"
+
+    result = _invoke(runner, workdir, "list")
+
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == ""
+    assert not (workdir / "automations").exists()
+
+
+def test_automation_list_prints_real_tasks(runner, tmp_path):
+    workdir = tmp_path / "wd"
+    (workdir / "automations" / "task_a").mkdir(parents=True)
+    (workdir / "automations" / "task_b").mkdir(parents=True)
+
+    result = _invoke(runner, workdir, "list")
+
+    assert result.exit_code == 0, result.output
+    assert result.output.split() == ["task_a", "task_b"]
+
+
+def test_automation_validate_missing_config_does_not_create_one(runner, tmp_path):
+    """`validate <typo>` 必须报错，而不是写出模板配置并显示「校验通过」。"""
+    workdir = tmp_path / "wd"
+
+    result = _invoke(runner, workdir, "validate", "typo_task")
+
+    assert result.exit_code == 1, result.output
+    assert "配置不存在" in result.output
+    assert not list((workdir / "automations" / "typo_task").glob("config.*"))
+    assert not (workdir / "automations" / "typo_task" / "state.json").exists()
+    # 连空任务目录都不能留下:否则 `automation list` 会把它当成真实任务列出来
+    assert not (workdir / "automations" / "typo_task").exists()
+    assert not (workdir / "automations").exists()
+
+
+def test_export_missing_signer_task_reports_click_exception(runner, tmp_path):
+    """`export <typo>` 必须给出 Error，而不是 FileNotFoundError traceback。"""
+    workdir = tmp_path / "wd"
+
+    result = runner.invoke(
+        signer_cli.tg_signer, ["--workdir", str(workdir), "export", "typo_task"]
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "配置不存在" in result.output
+    assert "Traceback" not in (result.output + str(result.exception or ""))
+    assert isinstance(result.exception, SystemExit)
+
+
+def test_automation_export_missing_task_reports_click_exception(runner, tmp_path):
+    """`automation export <typo>` 同样不得以裸 traceback 退出。"""
+    workdir = tmp_path / "wd"
+
+    result = _invoke(runner, workdir, "export", "typo_task")
+
+    assert result.exit_code == 1, result.output
+    assert "配置不存在" in result.output
+    assert "Traceback" not in (result.output + str(result.exception or ""))
+    assert isinstance(result.exception, SystemExit)
+    assert not (workdir / "automations").exists()
+
+
+def test_automation_yaml_export_import_validate_roundtrip(runner, tmp_path):
+    """YAML 任务导出→导入后必须仍可加载，且 validate 通过。"""
+    yaml = pytest.importorskip("yaml")
+    workdir = tmp_path / "wd"
+    task_dir = workdir / "automations" / "my_auto"
+    task_dir.mkdir(parents=True)
+    (task_dir / "config.yaml").write_text(_YAML_CONFIG, encoding="utf-8")
+
+    exported = _invoke(runner, workdir, "export", "my_auto")
+    assert exported.exit_code == 0, exported.output
+    assert "rules:" in exported.output
+
+    imported = _invoke(runner, workdir, "import", "my_auto", input=exported.output)
+    assert imported.exit_code == 0, imported.output
+
+    # 修复前：YAML 文本落进 config.json，遮蔽 config.yaml 且解析失败。
+    assert not (task_dir / "config.json").exists()
+    assert yaml.safe_load((task_dir / "config.yaml").read_text(encoding="utf-8"))
+
+    validated = _invoke(runner, workdir, "validate", "my_auto")
+    assert validated.exit_code == 0, validated.output
+    assert "配置校验通过" in validated.output

@@ -1,6 +1,8 @@
+import json
 import re
 from datetime import time
 from enum import Enum
+from pathlib import Path
 from typing import (
     Annotated,
     Any,
@@ -9,11 +11,14 @@ from typing import (
     List,
     Literal,
     Optional,
+    Self,
     Tuple,
     Type,
+    TypeAlias,
     Union,
 )
 
+from croniter import CroniterError, croniter
 from pydantic import (
     AnyHttpUrl,
     BaseModel,
@@ -21,20 +26,10 @@ from pydantic import (
     Field,
     ValidationError,
     field_validator,
+    model_validator,
 )
-from pyrogram.types import Chat, Message
-from typing_extensions import Self, TypeAlias
 
 ChatId: TypeAlias = Union[int, str]
-
-
-class SafeFormatDict(dict):
-    def __missing__(self, key):
-        return "{" + key + "}"
-
-
-def normalize_chat_username(value: str) -> str:
-    return value.strip().lstrip("@").lower()
 
 
 def parse_chat_id_or_username(value: Union[int, str]) -> ChatId:
@@ -50,63 +45,172 @@ def parse_chat_id_or_username(value: Union[int, str]) -> ChatId:
     return int(value)
 
 
-def get_display_width(text: str) -> int:
-    """计算文本在终端中的显示宽度（考虑中文字符占2个字符位）"""
-    width = 0
-    for char in text:
-        if ord(char) > 127:  # 非ASCII字符（包括中文）
-            width += 2
-        else:
-            width += 1
-    return width
+def normalize_chat_ref(value: Union[int, str, None]) -> Union[int, str, None]:
+    """把数字字符串形式的 chat/user 引用转成 int，其余原样返回。
+
+    automation 的 ``_match_chat`` 只对 int 做数字比较，字符串 ``"-100123"`` 会落进
+    ``@username`` 分支导致规则永不命中且不报错。这里做一次宽松归一化：
+    纯数字（含负号）转 int，``@username`` 保持字符串。
+    """
+    if value is None or isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if re.fullmatch(r"-?\d+", text):
+        return int(text)
+    return value
 
 
-def pad_text_to_width(text: str, target_width: int, align: str = "left") -> str:
-    """将文本填充到指定宽度"""
-    current_width = get_display_width(text)
-    padding_needed = target_width - current_width
+def normalize_sign_at(value: str) -> str:
+    """校验签到时间，返回等价的 crontab 表达式。
 
-    if padding_needed <= 0:
-        return text
+    支持 ``HH:MM[:SS]`` 时间格式与 cron 表达式（全角冒号会先归一化）。
+    非法输入抛 ``ValueError``，供配置校验层拦截。
+    """
+    text = str(value).replace("：", ":").strip()
+    if not text:
+        raise ValueError("sign_at 不能为空")
+    try:
+        parsed = time.fromisoformat(text)
+    except ValueError:
+        pass
+    else:
+        # 原先这里只输出 f"{minute} {hour} * * *"，把秒直接丢掉：
+        # "06:00:30" 会被算成 "0 6 * * *"，实际早签 30 秒，与
+        # 「返回等价的 crontab 表达式」不符。
+        # 秒为 0 时仍返回 5 段式（绝大多数配置的形态，且存量行为不变）；
+        # 需要秒精度时返回 6 段式 —— croniter 默认把第 6 段当「秒」放在末尾。
+        if parsed.tzinfo is not None:
+            # 带偏移的写法（"06:00:30+08:00"）以前被**静默丢弃**偏移，只留下
+            # "0 6 * * * 30"。而调度时刻最终按 get_now() 的时区（TZ 环境变量
+            # → 本地时区 → DEFAULT_TIMEZONE）解释，于是 TZ=UTC 的机器上，
+            # 本该 +08:00 的签到会提前 8 小时触发，且没有任何提示。
+            # 这里不能悄悄改语义 —— 直接要求用户改用 TZ 表达时区。
+            raise ValueError(
+                f"sign_at 不支持时区偏移: {text!r}。"
+                "签到时刻统一按 TZ 环境变量（缺省为系统本地时区）解释，"
+                "请去掉偏移量，或用 TZ 环境变量指定时区。"
+            )
+        if parsed.second:
+            return f"{parsed.minute} {parsed.hour} * * * {parsed.second}"
+        return f"{parsed.minute} {parsed.hour} * * *"
+    try:
+        # 只构造 croniter 不够:"0 0 31 2 *" 语法合法但永远无下一次,晚一点才炸。
+        croniter(text).next()
+    except CroniterError as exc:
+        raise ValueError(f"不是合法的时间或 cron 表达式: {text}") from exc
+    return text
 
-    if align == "left":
-        return text + " " * padding_needed
-    elif align == "right":
-        return " " * padding_needed + text
-    else:  # center
-        left_padding = padding_needed // 2
-        right_padding = padding_needed - left_padding
-        return " " * left_padding + text + " " * right_padding
+
+def format_validation_error(exc: Exception) -> str:
+    """把校验异常压成 ``字段: 原因`` 列表，便于直接展示给用户。"""
+    if not isinstance(exc, ValidationError):
+        return str(exc)
+    errors = exc.errors()
+    parts = [
+        f"{'.'.join(str(loc) for loc in err['loc']) or '<root>'}: {err['msg']}"
+        for err in errors[:8]
+    ]
+    if len(errors) > 8:
+        parts.append(f"等 {len(errors)} 项")
+    return "; ".join(parts)
 
 
 class BaseJSONConfig(BaseModel):
     version: ClassVar[Union[str, int]] = 0
     olds: ClassVar[Optional[List[Type["BaseJSONConfig"]]]] = None
-    is_current: ClassVar[bool] = False
 
     @classmethod
-    def valid(cls, d):
+    def _validate(cls, d):
         try:
             instance = cls.model_validate(d)
-        except (ValidationError, TypeError):
-            return None
-        return instance
+        except (ValidationError, TypeError) as exc:
+            return None, format_validation_error(exc)
+        return instance, None
 
     def to_jsonable(self):
-        return self.model_dump(mode="json")
+        # `version` 是 ClassVar，不参与 `model_dump`。不显式补进去的话，磁盘上的
+        # 配置永远没有版本号，读取端也就无从按版本分发 —— 校验失败时只能报当前
+        # 版本的字段错误（一份缺 sign_text 的 V1 配置会被告知「缺 chats」）。
+        # 读取端对未知键是忽略的（pydantic 默认 extra="ignore"），所以让老版本
+        # 去读新配置也不受影响。
+        return {"version": self.version, **self.model_dump(mode="json")}
 
     @classmethod
     def to_current(cls, obj: Self):
         return obj
 
     @classmethod
-    def load(cls, d: dict) -> Optional[Tuple[Self, bool]]:
-        if instance := cls.valid(d):
-            return instance, False
+    def _known_versions(cls) -> Dict[Union[str, int], Type["BaseJSONConfig"]]:
+        """`cls` 及其所有祖先的 `{version: 类}` 映射。"""
+        found: Dict[Union[str, int], Type["BaseJSONConfig"]] = {}
+        stack: List[Type["BaseJSONConfig"]] = [cls]
+        seen: set[Type["BaseJSONConfig"]] = set()
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            found.setdefault(current.version, current)
+            stack.extend(current.olds or [])
+        return found
+
+    @classmethod
+    def _declared_version_error(cls, d: dict, declared) -> Optional[str]:
+        """优先报「配置自己声明的那个版本」的字段错误。"""
+        target = cls._known_versions().get(declared)
+        if target is None or target is cls:
+            return None
+        _instance, target_err = target._validate(d)
+        return target_err
+
+    @classmethod
+    def load_checked(cls, d: dict) -> Tuple[Optional[Self], bool, Optional[str]]:
+        """与 load() 相同，但额外返回校验失败原因，供界面展示字段明细。
+
+        配置若声明了 `version`，就以它为分发依据；未声明时维持原来的「先试当前
+        版本，再沿 olds 链回溯」。
+        """
+        declared = d.get("version") if isinstance(d, dict) else None
+        # 声明了版本且不是自己 → 先不试自己。否则在「字段恰好都兼容」时会被当成
+        # 更高版本直接接受，从而跳过低版本 -> 高版本的重建：例如一份 V2 配置的
+        # chats 同时带了 actions，老逻辑会按 V3 接受并保留手写的 actions，而正确
+        # 做法是按 V2 迁移、用 sign_text 重建 actions。
+        try_self_first = declared is None or declared == cls.version
+
+        if try_self_first:
+            instance, err = cls._validate(d)
+            if instance is not None:
+                return instance, False, None
+        else:
+            err = None
+
         for old in cls.olds or []:
-            if old_inst := old.valid(d):
-                return old.to_current(old_inst), True
-        return None
+            # 递归走 old 自己的 olds，否则 V3 -> V2 -> V1 这条链会在 V2 处断掉，
+            # 导致 V1 老配置永远无法迁移。
+            old_inst, _migrated, _old_err = old.load_checked(d)
+            if old_inst is None:
+                continue
+            try:
+                return old.to_current(old_inst), True, None
+            except (ValidationError, TypeError) as exc:
+                return None, False, format_validation_error(exc)
+
+        if not try_self_first:
+            # 声明的版本没走通 → 回落到试自己。不能因为一个写错的 version 就拒掉
+            # 以前能正常读取的配置。
+            instance, err = cls._validate(d)
+            if instance is not None:
+                return instance, False, None
+            err = cls._declared_version_error(d, declared) or err
+
+        return None, False, err
+
+    @classmethod
+    def load(cls, d: dict) -> Optional[Tuple[Self, bool]]:
+        instance, migrated, _err = cls.load_checked(d)
+        if instance is None:
+            return None
+        return instance, migrated
 
 
 class SignConfigV1(BaseJSONConfig):
@@ -133,28 +237,20 @@ class SignConfigV1(BaseJSONConfig):
 
 
 class SignChatV2(BaseJSONConfig):
-    version: ClassVar = 2
     chat_id: int
     delete_after: Optional[int] = None
-    sign_text: Union[str, Literal["🎲", "🎯", "🏀", "⚽", "🎳", "🎰"]]
+    # 原本写作 Union[Literal[骰子 emoji...], str]，但 str 吸收 Literal 分支，
+    # 白名单从未生效（任意字符串都能过）。as_dice 的真实约束在 core.send_dice()。
+    sign_text: str
     as_dice: bool = False  # 作为Dice类型的emoji进行发送
     text_of_btn_to_click: Optional[str] = None  # 需要点击的按钮的文本
     choose_option_by_image: bool = False  # 需要根据图片选择选项
     has_calculation_problem: bool = False  # 是否有计算题
 
-    @property
-    def need_response(self):
-        return (
-            bool(self.text_of_btn_to_click)
-            or self.choose_option_by_image
-            or self.has_calculation_problem
-        )
-
 
 class SignConfigV2(BaseJSONConfig):
     version: ClassVar = 2
     olds: ClassVar = [SignConfigV1]
-    is_current: ClassVar = False
 
     chats: List[SignChatV2]
     sign_at: str  # 签到时间，time或crontab表达式
@@ -214,34 +310,32 @@ class SupportAction(int, Enum):
         }[self]
 
 
-class SignAction(BaseModel):
-    action: SupportAction
-
-
-class SendTextAction(SignAction):
+class SendTextAction(BaseModel):
     action: Literal[SupportAction.SEND_TEXT] = SupportAction.SEND_TEXT
     text: str
 
 
-class SendDiceAction(SignAction):
+class SendDiceAction(BaseModel):
     action: Literal[SupportAction.SEND_DICE] = SupportAction.SEND_DICE
-    dice: Union[Literal["🎲", "🎯", "🏀", "⚽", "🎳", "🎰"], str]
+    # 同 SignChatV2.sign_text：Union[..., str] 里的 Literal 会被 str 吸收，
+    # 白名单是装饰性的。真实检查在 core.send_dice()。
+    dice: str
 
 
-class ClickKeyboardByTextAction(SignAction):
+class ClickKeyboardByTextAction(BaseModel):
     action: Literal[SupportAction.CLICK_KEYBOARD_BY_TEXT] = (
         SupportAction.CLICK_KEYBOARD_BY_TEXT
     )
     text: str
 
 
-class ChooseOptionByImageAction(SignAction):
+class ChooseOptionByImageAction(BaseModel):
     action: Literal[SupportAction.CHOOSE_OPTION_BY_IMAGE] = (
         SupportAction.CHOOSE_OPTION_BY_IMAGE
     )
 
 
-class ReplyByCalculationProblemAction(SignAction):
+class ReplyByCalculationProblemAction(BaseModel):
     action: Literal[SupportAction.REPLY_BY_CALCULATION_PROBLEM] = (
         SupportAction.REPLY_BY_CALCULATION_PROBLEM
     )
@@ -257,7 +351,6 @@ ActionT: TypeAlias = Union[
 
 
 class SignChatV3(BaseJSONConfig):
-    version: ClassVar = 3
     chat_id: ChatId
     message_thread_id: Optional[int] = None
     name: Optional[str] = None
@@ -269,87 +362,6 @@ class SignChatV3(BaseJSONConfig):
     @classmethod
     def _parse_chat_id(cls, value):
         return parse_chat_id_or_username(value)
-
-    def __repr__(self) -> str:
-        return (
-            f"SignChatV3(chat_id={self.chat_id}, "
-            f"message_thread_id={self.message_thread_id}, "
-            f"delete_after={self.delete_after}, "
-            f"actions=[{len(self.actions)} actions]),"
-            f"action_interval={self.action_interval}"
-        )
-
-    def __str__(self) -> str:
-        # 设置总宽度（不包括边框字符）
-        content_width = 48
-
-        # 构建边框
-        top_border = "╔" + "═" * content_width + "╗"
-        bottom_border = "╚" + "═" * content_width + "╝"
-        separator = "╟" + "─" * content_width + "╢"
-
-        # 构建标题部分
-        chat_id_text = f"Chat ID: {self.chat_id}"
-        title = f"║ {pad_text_to_width(chat_id_text, content_width - 2)} ║"
-
-        # 构建name部分
-        name_text = f"Name: {self.name or '-'}"
-        name_info = f"║ {pad_text_to_width(name_text, content_width - 2)} ║"
-
-        # 构建message_thread_id部分
-        thread_id_text = f"Message Thread ID: {self.message_thread_id or '-'}"
-        thread_id_info = f"║ {pad_text_to_width(thread_id_text, content_width - 2)} ║"
-
-        # 构建删除时间部分
-        delete_text = f"Delete After: {self.delete_after or '-'}"
-        delete_info = f"║ {pad_text_to_width(delete_text, content_width - 2)} ║"
-
-        # 构建actions部分
-        actions_header_text = "Actions Flow:"
-        actions_header = (
-            f"║ {pad_text_to_width(actions_header_text, content_width - 2)} ║"
-        )
-        actions_lines = []
-
-        for i, action in enumerate(self.actions, 1):
-            action_type = action.action.desc
-            details = ""
-
-            if isinstance(action, SendTextAction):
-                text_preview = (
-                    action.text[:15] + "..." if len(action.text) > 15 else action.text
-                )
-                details = f"Text: {text_preview}"
-            elif isinstance(action, SendDiceAction):
-                details = f"Dice: {action.dice}"
-            elif isinstance(action, ClickKeyboardByTextAction):
-                text_preview = (
-                    action.text[:15] + "..." if len(action.text) > 15 else action.text
-                )
-                details = f"Click: {text_preview}"
-
-            if details:
-                action_text = f"{i}. [{action_type}] {details}"
-            else:
-                action_text = f"{i}. [{action_type}]"
-
-            action_line = f"║ {pad_text_to_width(action_text, content_width - 2)} ║"
-            actions_lines.append(action_line)
-
-        # 组合所有部分
-        result = [
-            top_border,
-            title,
-            name_info,
-            thread_id_info,
-            delete_info,
-            separator,
-            actions_header,
-            *actions_lines,
-            bottom_border,
-        ]
-
-        return "\n".join(result)
 
     @property
     def requires_ai(self) -> bool:
@@ -363,20 +375,46 @@ class SignChatV3(BaseJSONConfig):
 class SignConfigV3(BaseJSONConfig):
     version: ClassVar = 3
     olds: ClassVar = [SignConfigV2]
-    is_current: ClassVar = True
 
-    _version: Literal[3] = 3
     chats: List[SignChatV3]
     sign_at: str  # 签到时间，time或crontab表达式
-    random_seconds: int = 0
+    # 下界必须校验:负数会让 random.randint(0, random_seconds) 抛
+    # ValueError(empty range),把整个签到任务打死。
+    random_seconds: int = Field(default=0, ge=0)
     sign_interval: int = 1  # 连续签到的间隔时间，单位秒
+
+    @field_validator("sign_at")
+    @classmethod
+    def _check_sign_at(cls, value: str) -> str:
+        # 只校验不改写，避免存量配置被静默重写成 crontab。
+        normalize_sign_at(value)
+        return value
+
+    @model_validator(mode="after")
+    def _check_has_chats(self) -> Self:
+        """``chats`` 不能为空。
+
+        一个没有配置任何 chat 的签到任务不会发出任何签到消息，但
+        ``sign_once`` 里的 ``succeeded or not config.chats`` 仍会走
+        「写入今日签到记录并返回成功」这一支 —— 于是记录页显示今日已签到、
+        ``run-once`` 退出 0、当天不再重试，而实际上什么都没发生。
+        这属于「配置合法、行为静默错乱」，与 ``AutomationConfig`` 拒绝重复
+        rule/trigger id 是同一类问题，所以在校验层直接拦住并说明原因。
+        """
+        if not self.chats:
+            raise ValueError(
+                "chats 不能为空：一个没有配置任何 chat 的签到任务不会发送任何"
+                "签到消息，但会被记成「今日已签到」且当天不再重试。"
+                "请至少配置一个要签到的群/频道"
+            )
+        return self
 
     @property
     def requires_ai(self) -> bool:
         return any(chat.requires_ai for chat in self.chats)
 
 
-MatchRuleT: TypeAlias = Literal["exact", "contains", "regex", "all"]
+TextRuleT: TypeAlias = Literal["exact", "contains", "regex", "all"]
 
 
 class UDPForward(BaseModel):
@@ -392,171 +430,20 @@ class HttpCallback(BaseModel):
     method: Literal["post"] = "post"
 
 
-class MatchConfig(BaseJSONConfig):
-    chat_id: ChatId  # 聊天id或username
-    rule: MatchRuleT = "exact"  # 匹配规则
-    rule_value: Optional[str] = None  # 规则值
-    from_user_ids: Optional[List[ChatId]] = (
-        None  # 发送者id或username，为空时，匹配所有人
+class ChatRefsMixin(BaseModel):
+    """把数字字符串形式的 chat/user 引用归一化成 int，@username 保持字符串。"""
+
+    @field_validator(
+        "chat_id", "chat_ids", "from_user_ids", mode="before", check_fields=False
     )
-    always_ignore_me: bool = False  # 总是忽略自己发送的消息
-    default_send_text: Optional[str] = None  # 默认发送内容
-    ai_reply: bool = False  # 是否使用AI回复
-    ai_prompt: Optional[str] = None
-    send_text_search_regex: Optional[str] = None  # 用正则表达式从消息中提取发送内容
-    send_text_template: Optional[str] = None  # 提取发送内容后的文本模板
-    delete_after: Optional[int] = None
-    ignore_case: bool = True  # 忽略大小写
-    forward_to_chat_id: Optional[ChatId] = None  # 转发消息到该聊天，默认为消息来源
-    external_forwards: Optional[List[Union[UDPForward, HttpCallback]]] = (
-        None  # 转发到外部
-    )
-    push_via_server_chan: bool = False  # 将消息通过server酱推送
-    server_chan_send_key: Optional[str] = None  # server酱的sendkey
-
-    @field_validator("chat_id", mode="before")
     @classmethod
-    def _parse_chat_id(cls, value):
-        return parse_chat_id_or_username(value)
-
-    @field_validator("forward_to_chat_id", mode="before")
-    @classmethod
-    def _parse_optional_chat_id(cls, value):
-        if value is None:
-            return None
-        return parse_chat_id_or_username(value)
-
-    def __str__(self):
-        return (
-            f"{self.__class__.__name__}(chat_id={self.chat_id}, rule={self.rule}, rule_value={self.rule_value}),"
-            f" default_send_text={self.default_send_text}, send_text_search_regex={self.send_text_search_regex},"
-            f" send_text_template={self.send_text_template}"
-        )
-
-    @property
-    def from_user_set(self):
-        return {
-            (
-                "me"
-                if u in ["me", "self"]
-                else normalize_chat_username(u)
-                if isinstance(u, str)
-                else u
-            )
-            for u in self.from_user_ids
-        }
-
-    def match_user(self, message: "Message"):
-        if not message.from_user:
-            return True
-        if self.always_ignore_me and message.from_user.is_self:
-            return False
-        if not self.from_user_ids:
-            return True
-        return (
-            message.from_user.id in self.from_user_set
-            or (
-                message.from_user.username
-                and message.from_user.username.lower() in self.from_user_set
-            )
-            or ("me" in self.from_user_set and message.from_user.is_self)
-        )
-
-    def match_text(self, text: str) -> bool:
-        """
-        根据`rule`校验`text`是否匹配
-        """
-        rule_value = self.rule_value
-        if self.rule == "all":
-            return True
-        if self.rule == "exact":
-            if self.ignore_case:
-                return rule_value.lower() == text.lower()
-            return rule_value == text
-        elif self.rule == "contains":
-            if self.ignore_case:
-                return rule_value.lower() in text.lower()
-            return rule_value in text
-        elif self.rule == "regex":
-            flags = re.IGNORECASE if self.ignore_case else 0
-            return bool(re.search(rule_value, text, flags=flags))
-        return False
-
-    def match_chat(self, chat: "Chat"):
-        if isinstance(self.chat_id, int):
-            return self.chat_id == chat.id
-        if not chat.username:
-            return False
-        return normalize_chat_username(self.chat_id) == normalize_chat_username(
-            chat.username
-        )
-
-    def match(self, message: "Message"):
-        return self.match_chat(message.chat) and bool(
-            self.match_user(message) and self.match_text(message.text)
-        )
-
-    def _render_send_text_template(self, text: str, match: Optional[re.Match]) -> str:
-        mapping: dict[str, Any] = SafeFormatDict(
-            {
-                "message_text": text,
-                "text": text,
-            }
-        )
-        if match:
-            mapping["match"] = match.group(0)
-            mapping["group0"] = match.group(0)
-            for index, value in enumerate(match.groups(), start=1):
-                mapping[f"group{index}"] = value or ""
-            mapping.update(
-                {key: value or "" for key, value in match.groupdict().items()}
-            )
-            mapping["extracted"] = mapping.get("group1", "")
-        return self.send_text_template.format_map(mapping)
-
-    def get_send_text(self, text: str) -> str:
-        send_text = self.default_send_text
-        if self.send_text_search_regex:
-            m = re.search(self.send_text_search_regex, text)
-            if not m:
-                return send_text
-            if self.send_text_template:
-                return self._render_send_text_template(text, m)
-            try:
-                send_text = m.group(1)
-            except IndexError as e:
-                raise ValueError(
-                    f"{self}: 消息文本: 「{text}」匹配成功但未能捕获关键词, 请检查正则表达式"
-                ) from e
-        elif self.send_text_template:
-            send_text = self._render_send_text_template(text, None)
-        return send_text
-
-    @property
-    def requires_ai(self) -> bool:
-        return bool(self.ai_reply and self.ai_prompt)
+    def _normalize_chat_refs(cls, value):
+        if isinstance(value, list):
+            return [normalize_chat_ref(item) for item in value]
+        return normalize_chat_ref(value)
 
 
-class MonitorConfig(BaseJSONConfig):
-    """监控配置"""
-
-    version: ClassVar = 1
-    is_current: ClassVar = True
-    match_cfgs: List[MatchConfig]
-
-    @property
-    def chat_ids(self):
-        return [cfg.chat_id for cfg in self.match_cfgs]
-
-    @property
-    def requires_ai(self) -> bool:
-        return any(cfg.requires_ai for cfg in self.match_cfgs)
-
-
-TextRuleT: TypeAlias = MatchRuleT
-
-
-class MessageTriggerParams(BaseModel):
+class MessageTriggerParams(ChatRefsMixin):
     model_config = ConfigDict(extra="forbid")
 
     chat_id: Optional[Union[int, str]] = None
@@ -567,16 +454,18 @@ class MessageTriggerParams(BaseModel):
     ignore_case: bool = True
 
 
-class TimerTriggerParams(BaseModel):
+class TimerTriggerParams(ChatRefsMixin):
     model_config = ConfigDict(extra="forbid")
 
     chat_id: Optional[Union[int, str]] = None
     cron: Optional[str] = None
-    interval_seconds: Optional[int] = None
-    random_seconds: int = 0
+    # 负/零间隔在 engine 的 1 秒轮询下会变成持续触发。
+    interval_seconds: Optional[int] = Field(default=None, gt=0)
+    # 同 SignConfigV3.random_seconds:负数会在 engine 里炸 randint。
+    random_seconds: int = Field(default=0, ge=0)
 
 
-class StartupTriggerParams(BaseModel):
+class StartupTriggerParams(ChatRefsMixin):
     model_config = ConfigDict(extra="forbid")
 
     chat_id: Optional[Union[int, str]] = None
@@ -609,7 +498,7 @@ TriggerConfig: TypeAlias = Annotated[
 ]
 
 
-class FilterConfig(BaseModel):
+class FilterConfig(ChatRefsMixin):
     chat_id: Optional[Union[int, str]] = None
     chat_ids: Optional[List[Union[int, str]]] = None
     from_user_ids: Optional[List[Union[int, str]]] = None
@@ -632,16 +521,78 @@ class RuleConfig(BaseModel):
     vars: Dict[str, Any] = Field(default_factory=dict)
 
 
+AUTOMATION_CONFIG_FILE_NAMES = ("config.json", "config.yaml", "config.yml")
+YAML_CONFIG_SUFFIXES = frozenset({".yml", ".yaml"})
+
+
+def find_automation_config_file(
+    directory: "Path", *, require_file: bool = False
+) -> Optional["Path"]:
+    """按统一顺序返回目录下第一个自动化配置文件。"""
+    check = Path.is_file if require_file else Path.exists
+    for name in AUTOMATION_CONFIG_FILE_NAMES:
+        candidate = directory / name
+        if check(candidate):
+            return candidate
+    return None
+
+
+def read_automation_config_payload(path: "Path") -> Dict[str, Any]:
+    """按后缀读取自动化配置为 dict（JSON 或 YAML）。
+
+    CLI 引擎与 WebUI 都需要这一步，此前两边各写一份，WebUI 那份把
+    ``yaml.YAMLError`` 包成了 ``ValueError``、CLI 那份没包 —— 同一份手改坏的
+    YAML 在 WebUI 里得到 400，在 CLI 里却漏出裸异常。共用这一份即可。
+    """
+    if path.suffix in YAML_CONFIG_SUFFIXES:
+        try:
+            import yaml  # type: ignore
+        except ModuleNotFoundError as exc:
+            raise ValueError("未安装pyyaml，无法读取YAML配置") from exc
+        try:
+            with open(path, "r", encoding="utf-8") as fp:
+                payload = yaml.safe_load(fp) or {}
+        except yaml.YAMLError as exc:
+            raise ValueError(f"YAML 解析失败: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("YAML配置必须是字典结构")
+        return payload
+    with open(path, "r", encoding="utf-8") as fp:
+        return json.load(fp)
+
+
 class AutomationConfig(BaseJSONConfig):
     version: ClassVar = 1
-    is_current: ClassVar = True
 
     rules: List[RuleConfig] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def _check_unique_ids(self) -> Self:
+        """rule id 与 trigger id 必须唯一。
+
+        重复的 rule id 会让两条规则共用同一个 state 桶(rules.<id>.vars 互相
+        覆盖),重复的 trigger id 会让 timer 的下次执行时间互相覆盖 —— 都是
+        「配置合法、行为静默错乱」,所以在校验层直接拦住。
+        """
+        seen_rule_ids: set[str] = set()
+        for rule in self.rules:
+            if rule.id in seen_rule_ids:
+                raise ValueError(f"重复的 rule id: {rule.id!r}；每条规则的 id 必须唯一")
+            seen_rule_ids.add(rule.id)
+            seen_trigger_ids: set[str] = set()
+            for index, trigger in enumerate(rule.triggers):
+                trigger_id = trigger.id or f"{rule.id}:{index}"
+                if trigger_id in seen_trigger_ids:
+                    raise ValueError(
+                        f"rule {rule.id!r} 内重复的 trigger id: {trigger_id!r}"
+                    )
+                seen_trigger_ids.add(trigger_id)
+        return self
+
     @property
     def requires_ai(self) -> bool:
-        for rule in self.rules:
-            for handler in rule.handlers:
-                if handler.handler == "ai_reply":
-                    return True
-        return False
+        return any(
+            handler.handler == "ai_reply"
+            for rule in self.rules
+            for handler in rule.handlers
+        )

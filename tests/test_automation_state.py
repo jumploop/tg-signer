@@ -1,7 +1,60 @@
+import json
 import logging
 from datetime import datetime, timezone
 
+import pytest
+
 from tg_signer.automation.models import RuleStateStore
+
+
+def test_save_coerces_non_json_native_values(tmp_path):
+    """YAML 里的时间戳会被 safe_load 解析成 datetime，不能让 save 崩掉。
+
+    回归：``json.dump`` 抛 ``TypeError`` 后异常逃出 ``_run_rule``，timer 的
+    next_run_at 不会被推进 —— 一条 ``interval_seconds=3600`` 的规则会在每个
+    tick 重新触发（实测 0.2 秒发了 12 条消息）。
+    """
+    path = tmp_path / "state.json"
+    store = RuleStateStore(path, logging.getLogger("test"))
+    store.set_rule_vars(
+        "r1",
+        {"when": datetime(2024, 6, 1, 12, 0, 0), "tags": {"a", "b"}},
+    )
+    store.save(force=True)
+
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["rules"]["r1"]["vars"]["when"] == "2024-06-01T12:00:00"
+    assert sorted(saved["rules"]["r1"]["vars"]["tags"]) == ["a", "b"]
+
+
+def test_non_string_next_run_at_is_treated_as_corrupt(tmp_path):
+    """``next_run_at`` 是数字时必须按损坏处理，而不是让 TypeError 逃逸。
+
+    回归：``_validate_shape`` 只校验容器、不校验叶子值类型，
+    ``datetime.fromisoformat(int)`` 抛的是 TypeError 而非 ValueError，会逃出
+    ``get_trigger_next_run`` 的捕获，每秒打断一次 ``_tick_timers`` ——
+    该配置里所有 timer 规则随之静默停摆。
+    """
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {"rules": {"r1": {"triggers": {"t1": {"next_run_at": 1735689600}}}}}
+        ),
+        encoding="utf-8",
+    )
+    store = RuleStateStore(path, logging.getLogger("test"))
+
+    assert store.get_trigger_next_run("r1", "t1") is None
+    assert list(tmp_path.glob("*.corrupt-*")), "损坏状态文件未被备份"
+
+
+def test_get_trigger_next_run_survives_non_string_value(tmp_path):
+    """即使状态绕过了校验（非 str 叶子值），读取也必须安全返回 None。"""
+    path = tmp_path / "state.json"
+    store = RuleStateStore(path, logging.getLogger("test"))
+    store._data = {"rules": {"r1": {"triggers": {"t1": {"next_run_at": 1735689600}}}}}
+
+    assert store.get_trigger_next_run("r1", "t1") is None
 
 
 def test_rule_state_store_roundtrip(tmp_path):
@@ -17,3 +70,95 @@ def test_rule_state_store_roundtrip(tmp_path):
     store2 = RuleStateStore(path, logging.getLogger("test"))
     assert store2.get_rule_vars("r1")["a"] == 1
     assert store2.get_trigger_next_run("r1", "t1") == dt
+
+
+def test_rule_state_store_save_uses_temp_file(tmp_path):
+    """save() 应使用临时文件 + os.replace 原子写入,不应残留 .tmp。"""
+    path = tmp_path / "state.json"
+    store = RuleStateStore(path, logging.getLogger("test"))
+
+    store.set_rule_vars("r1", {"a": 1})
+    store.save(force=True)
+
+    # 主文件存在且内容合法
+    assert path.is_file()
+    # 不应残留临时文件
+    assert not (path.with_name(path.name + ".tmp")).exists()
+
+
+def test_rule_state_store_dirty_skip_save(tmp_path):
+    """无变更时 save() 应跳过 IO, 不创建临时文件。"""
+    path = tmp_path / "state.json"
+    store = RuleStateStore(path, logging.getLogger("test"))
+    # 初始时 _dirty=False,save 不应写盘
+    store.save()
+    assert not path.exists()
+    assert not (path.with_name(path.name + ".tmp")).exists()
+
+
+# ---------------------------------------------------------------------------
+# B5: 各种「损坏/形状不对」的 state.json 都不得把异常抛给调用方
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "{not valid json",  # 非法 JSON（JSONDecodeError ⊂ ValueError）
+        "[]",  # 根是数组
+        "null",  # 根是 null
+        '"x"',  # 根是字符串
+        "5",  # 根是数字
+        '{"rules": null}',  # rules 为 null
+        '{"rules": 5}',  # rules 不是容器
+        '{"rules": []}',  # rules 是数组
+        '{"rules": {"r1": 5}}',  # 规则桶不是对象
+        '{"rules": {"r1": {"triggers": []}}}',  # 子结构不是对象
+        '{"rules": {"r1": {"vars": 3}}}',
+    ],
+)
+def test_rule_state_store_load_damaged_file_backs_up_and_continues(tmp_path, raw):
+    """形状损坏时必须备份 + 以空状态继续，而不是让每个自动化子命令都崩。
+
+    修复前：``[]``/``null`` 抛 AttributeError，``{"rules": null}`` 抛 TypeError，
+    ``{"rules": []}`` 抛 AttributeError —— RuleStateStore 在 UserAutomation 构造
+    阶段就被创建，于是所有子命令一起挂掉。
+    """
+    path = tmp_path / "state.json"
+    path.write_text(raw, encoding="utf-8")
+
+    store = RuleStateStore(path, logging.getLogger("test"))
+
+    backups = list(path.parent.glob(path.name + ".corrupt-*"))
+    assert len(backups) == 1
+    assert not path.exists()
+    # 空状态必须完全可用
+    assert store.get_rule_vars("r1") == {}
+    assert store.get_trigger_state("r1", "t1") == {}
+    store.set_rule_vars("r1", {"a": 1})
+    store.save(force=True)
+    assert path.is_file()
+
+
+def test_rule_state_store_load_utf16_encodes_backs_up(tmp_path):
+    """UTF-16 文件读取时抛 UnicodeDecodeError（ValueError），同样要兜住。"""
+    path = tmp_path / "state.json"
+    path.write_bytes('{"rules": {}}'.encode("utf-16"))
+
+    store = RuleStateStore(path, logging.getLogger("test"))
+
+    assert len(list(path.parent.glob(path.name + ".corrupt-*"))) == 1
+    assert store.get_rule_vars("r1") == {}
+
+
+def test_rule_state_store_load_empty_object_is_normalised(tmp_path):
+    """合法但缺 rules 的文件不备份，_data 归一化为 {"rules": {}} 形状。"""
+    path = tmp_path / "state.json"
+    path.write_text("{}", encoding="utf-8")
+
+    store = RuleStateStore(path, logging.getLogger("test"))
+
+    assert list(path.parent.glob(path.name + ".corrupt-*")) == []
+    assert path.is_file()
+    assert store._data == {"rules": {}}
+    assert store.get_rule_vars("r1") == {}

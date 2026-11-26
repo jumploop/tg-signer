@@ -1,23 +1,28 @@
 import base64
 import json
+import logging
 import os
 import pathlib
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Optional, Union
 
 import json_repair
 from pydantic import TypeAdapter
-from typing_extensions import Optional, Required, TypedDict
+
+# 这里必须用 typing_extensions.TypedDict,不能用 standard library 的
+# typing.TypedDict:pydantic 在 Python < 3.12 上会直接拒绝后者
+# (PydanticUserError: Please use `typing_extensions.TypedDict` instead of
+# `typing.TypedDict` on Python < 3.12)。实测 3.11.13 + pydantic 2.13.5 仍会报错,
+# 3.12/3.13 才放行 —— 所以只要最低支持版本还是 3.11,这个导入就不能"顺手清理"。
+from typing_extensions import Required, TypedDict
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI  # 在性能弱的机器上导入openai包实在有些慢
 
-from tg_signer.utils import UserInput, print_to_user
+from tg_signer.utils import UserInput, restrict_file_permissions, write_json_atomic
 
 DEFAULT_MODEL = "gpt-4o"
 
-
-def encode_image(image: bytes):
-    return base64.b64encode(image).decode("utf-8")
+logger = logging.getLogger("tg-signer")
 
 
 class OpenAIConfig(TypedDict, total=False):
@@ -36,9 +41,6 @@ class OpenAIConfigManager:
     def has_env_config(self):
         return bool(os.environ.get("OPENAI_API_KEY"))
 
-    def has_config(self) -> bool:
-        return self.has_env_config() and bool(self.load_file_config())
-
     def load_file_config(self) -> Optional[dict]:
         config_file = self.get_config_file()
         if config_file.exists():
@@ -49,9 +51,16 @@ class OpenAIConfigManager:
 
     def save_config(self, api_key: str, base_url: str = None, model: str = None):
         config_file = self.get_config_file()
+        self.workdir.mkdir(parents=True, exist_ok=True)
         config = OpenAIConfig(api_key=api_key, base_url=base_url, model=model)
-        with open(config_file, "w", encoding="utf-8") as fp:
-            json.dump(config, fp, ensure_ascii=False, indent=2)
+        write_json_atomic(
+            config_file,
+            config,
+            fsync=True,
+            before_replace=restrict_file_permissions,
+        )
+        # 文件里是明文 API Key,收紧到仅属主可读写(POSIX)。
+        restrict_file_permissions(config_file)
 
     def load_config(self) -> Optional[OpenAIConfig]:
         # 环境变量优先
@@ -64,11 +73,11 @@ class OpenAIConfigManager:
         return self.load_file_config()
 
     def ask_for_config(self):
-        print_to_user("开始配置OpenAI API并保存至本地。")
+        print("开始配置OpenAI API并保存至本地。")
         input_ = UserInput()
         api_key = input_("请输入 OPENAI_API_KEY: ").strip()
         while not api_key:
-            print_to_user("API Key不能为空！")
+            print("API Key不能为空！")
             api_key = input_("请输入 OPENAI_API_KEY: ").strip()
 
         base_url = (
@@ -84,21 +93,35 @@ class OpenAIConfigManager:
             or None
         )
         self.save_config(api_key, base_url=base_url, model=model)
-        print_to_user("OpenAI配置已保存。")
+        print("OpenAI配置已保存。")
         return self.load_config()
 
 
 def get_openai_client(
     api_key: str = None,
     base_url: str = None,
-    **kwargs,
-) -> Optional["AsyncOpenAI"]:
-    from openai import AsyncOpenAI, OpenAIError
+) -> "AsyncOpenAI":
+    from openai import AsyncOpenAI
 
+    return AsyncOpenAI(api_key=api_key, base_url=base_url)
+
+
+async def test_openai_connection(
+    api_key: str, base_url: str | None = None, model: str | None = None
+) -> tuple[bool, str]:
+    """调用模型列表接口测试 OpenAI 兼容 API 的连通性。"""
+    api_key = api_key.strip()
+    if not api_key:
+        return False, "API Key 不能为空"
+    client = get_openai_client(api_key=api_key, base_url=base_url)
     try:
-        return AsyncOpenAI(api_key=api_key, base_url=base_url, **kwargs)
-    except OpenAIError:
-        return None
+        await client.models.list()
+        suffix = f"，模型：{model}" if model else ""
+        return True, f"连接成功{suffix}"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"连接失败：{exc}"
+    finally:
+        await client.close()
 
 
 class AITools:
@@ -113,9 +136,6 @@ class AITools:
         image: bytes,
         query: str,
         options: list[tuple[int, str]],
-        client: "AsyncOpenAI" = None,
-        model: str = None,
-        temperature=0.1,
     ) -> int:
         sys_prompt = """你是一个**图片识别助手**，可以根据提供的图片和问题选择出**唯一正确**的选项，如果你觉得每个都不对，也要给出一个你认为最符合的答案，以如下JSON格式输出你的回复：
     {
@@ -124,8 +144,6 @@ class AITools:
     }
     option字段表示你选择的选项。
     """
-        client = client or self.client
-        model = model or self.default_model
         text_query = f"问题为：{query}, 选项为：{json.dumps(options)}。"
         messages = [
             {"role": "system", "content": sys_prompt},
@@ -136,57 +154,62 @@ class AITools:
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": f"data:image/jpeg;base64,{encode_image(image)}"
+                            "url": (
+                                "data:image/jpeg;base64,"
+                                f"{base64.b64encode(image).decode('utf-8')}"
+                            )
                         },
                     },
                 ],
             },
         ]
         # noinspection PyTypeChecker
-        completion = await client.chat.completions.create(
+        completion = await self.client.chat.completions.create(
             messages=messages,
-            model=model,
+            model=self.default_model,
             response_format={"type": "json_object"},
             stream=False,
-            temperature=temperature,
+            temperature=0.1,
         )
         message = completion.choices[0].message
-        result = json_repair.loads(message.content)
-        return int(result["option"])
+        # 模型偶尔会输出非 JSON / 缺 option 字段 / 空 content。这个方法的返回值
+        # 直接被签到主循环使用,不能让解析异常逃逸出去打死整个任务,统一收敛成
+        # -1 由调用方按「序号无效」处理。
+        result = json_repair.loads(message.content or "")
+        if not isinstance(result, dict):
+            logger.warning("图片识别返回的不是 JSON 对象: %r", message.content)
+            return -1
+        try:
+            return int(result["option"])
+        except (KeyError, TypeError, ValueError):
+            logger.warning("图片识别返回缺少合法的 option 字段: %r", message.content)
+            return -1
 
-    async def calculate_problem(
-        self,
-        query: str,
-        sys_prompt: str = """你是一个**答题助手**，可以根据用户的问题给出正确的回答，只需要回复答案，不要解释，不要输出任何其他内容。""",
-        client: "AsyncOpenAI" = None,
-        model: str = None,
-        temperature=0.1,
-    ) -> str:
-        model = model or self.default_model
-        client = client or self.client
-        messages = []
-        if sys_prompt:
-            messages.append({"role": "system", "content": sys_prompt})
+    async def calculate_problem(self, query: str) -> str:
+        messages = [
+            {
+                "role": "system",
+                "content": "你是一个**答题助手**，可以根据用户的问题给出正确的回答，"
+                "只需要回复答案，不要解释，不要输出任何其他内容。",
+            }
+        ]
         text = f"问题是: {query}\n\n只需要给出答案，不要解释，不要输出任何其他内容。The answer is:"
         messages.append({"role": "user", "content": text})
         # noinspection PyTypeChecker
-        completion = await client.chat.completions.create(
+        completion = await self.client.chat.completions.create(
             messages=messages,
-            model=model,
+            model=self.default_model,
             stream=False,
-            temperature=temperature,
+            temperature=0.1,
         )
-        return completion.choices[0].message.content.strip()
+        content = completion.choices[0].message.content
+        return (content or "").strip()
 
     async def get_reply(
         self,
         sys_prompt: str,
         query: str,
-        client: "AsyncOpenAI" = None,
-        model: str = None,
     ) -> str:
-        model = model or self.default_model
-        client = client or self.client
         messages = [
             {
                 "role": "system",
@@ -195,10 +218,12 @@ class AITools:
             {"role": "user", "content": f"{query}"},
         ]
         # noinspection PyTypeChecker
-        completion = await client.chat.completions.create(
+        completion = await self.client.chat.completions.create(
             messages=messages,
-            model=model,
+            model=self.default_model,
             stream=False,
         )
         message = completion.choices[0].message
-        return message.content
+        # content 可能是 None(例如模型只返回 tool_calls),返回空串让调用方
+        # 得到「没拿到内容」而不是把 None 传给 send_message。
+        return message.content or ""

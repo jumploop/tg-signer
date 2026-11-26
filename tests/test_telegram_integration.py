@@ -18,19 +18,15 @@ from tg_signer.automation.handlers import register_builtin_handlers
 from tg_signer.cli import tg_signer
 from tg_signer.config import (
     AutomationConfig,
-    ChooseOptionByImageAction,
     ClickKeyboardByTextAction,
     HandlerConfig,
-    MatchConfig,
     MessageTriggerConfig,
-    MonitorConfig,
-    ReplyByCalculationProblemAction,
     RuleConfig,
     SendTextAction,
     SignChatV3,
     SignConfigV3,
 )
-from tg_signer.core import UserMonitor, UserSigner
+from tg_signer.core import UserSigner
 
 
 @pytest.fixture
@@ -413,15 +409,11 @@ async def test_captcha_actions_use_parsed_keyboard_and_download(
         ]
         assert isinstance(parsed[0], Message)
         assert parsed[0].photo.width == 320
-        assert await worker._choose_option_by_image(
-            ChooseOptionByImageAction(), parsed[0]
-        )
+        assert await worker._choose_option_by_image(parsed[0])
         assert await worker._click_keyboard_by_text(
             ClickKeyboardByTextAction(text="TV"), parsed[0]
         )
-        assert await worker._reply_by_calculation_problem(
-            ReplyByCalculationProblemAction(), parsed[0]
-        )
+        assert await worker._reply_by_calculation_problem(parsed[0])
 
     ai_tools.choose_option_by_image.assert_awaited_once_with(
         b"image", "Choose the item", [(0, "Phone"), (1, "TV")]
@@ -441,7 +433,6 @@ async def test_captcha_actions_use_parsed_keyboard_and_download(
     [
         (UserSigner, False),
         (UserSigner, True),
-        (UserMonitor, False),
         (UserAutomation, False),
         (UserAutomation, True),
     ],
@@ -461,17 +452,6 @@ async def test_raw_updates_reach_worker_handlers(
                 message_thread_id=7,
                 actions=[SendTextAction(text="ok")],
             )
-        )
-    elif worker_cls is UserMonitor:
-        worker.config = MonitorConfig(
-            match_cfgs=[
-                MatchConfig(
-                    chat_id=chat_id,
-                    rule="contains",
-                    rule_value="hello",
-                    default_send_text="reply",
-                )
-            ]
         )
     else:
         register_builtin_handlers()
@@ -533,6 +513,9 @@ async def test_raw_updates_reach_worker_handlers(
             },
         )
         await asyncio.wait_for(done.wait(), timeout=3)
+        # 规则链在后台任务里执行，必须先等它们收场再退出 client 上下文。
+        for task in list(getattr(worker, "_dispatch_tasks", ())):
+            await asyncio.gather(task, return_exceptions=True)
 
     assert isinstance(seen[0], Message)
     assert isinstance(seen[0].from_user, User)

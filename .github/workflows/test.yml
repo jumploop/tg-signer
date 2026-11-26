@@ -15,14 +15,14 @@ jobs:
 
     strategy:
       matrix:
-        python-version: [ '3.10', '3.11', '3.12' ]
+        python-version: [ '3.11', '3.12', '3.13' ]
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -34,7 +34,38 @@ jobs:
       - name: Lint
         run: |
           ruff check
+          ruff format --check
 
       - name: Run tests
         run: |
           pytest -W=ignore::DeprecationWarning:pyrogram.sync -vv tests/
+
+  e2e:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        # v4 内部跑在 Node 20 上，已被 GitHub 强制迁移到 Node 24 并告警；
+        # v5 起改用 node24（v7 只是 ESM 迁移 + 缓存输出增强，对「只用
+        # node-version」的用法无破坏性变更）。
+        uses: actions/setup-node@v7
+        with:
+          # Node 20 已于 2026-04 EOL；e2e 在本地较新的 Node 上同样通过。
+          node-version: '24'
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: tg_signer/webui/frontend
+
+      # 先重新构建，确保回归测的是当前源码而不是仓库里可能过期的产物。
+      # 产物漏提交由 tests/test_webui_server.py 的静态资源完整性用例守住。
+      - name: Build frontend
+        run: npm run build
+        working-directory: tg_signer/webui/frontend
+
+      - name: Run browser regression tests
+        run: npm run test:e2e
+        working-directory: tg_signer/webui/frontend

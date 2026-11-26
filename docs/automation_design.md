@@ -103,11 +103,22 @@ CLI 入口：`tg-signer automation run <task_name>`，最终调用 `UserAutomati
 
 `on_message` 对每条入站消息执行：
 
-1. 遍历启用规则。
-2. 仅处理 `trigger.type == "message"` 的触发器。
-3. 触发器匹配：chat/user/reply 条件。
-4. 过滤器匹配：`chat/from_user/text_rule`。
-5. 创建 `Event` 并进入 `_run_rule` 执行 handler 链。
+1. 把规则链**派发到独立 task** 后立即返回。pyrogram 的
+   `Dispatcher.handler_worker` 在唯一一个 worker 协程里 `await handler.callback(...)`，
+   若在此内联 `await`，一条 `delay: 300` 的规则会让整个账号的所有更新停摆 5 分钟。
+   派发出去的 task 登记在 `_dispatch_tasks`，进程退出时统一取消。
+2. 在该 task 内：遍历启用规则。
+3. 仅处理 `trigger.type == "message"` 的触发器。
+4. 触发器匹配：chat/user/reply 条件。
+5. 过滤器匹配：`chat/from_user/text_rule`。
+6. **同一条规则最多执行一次 handler 链**：多个 trigger 同时命中时取第一条，
+   其余记 DEBUG（否则同群的 `chat_id` 写成 `-100123` 和 `@name` 两种形式
+   就会自动回复两次）。
+7. 创建 `Event` 并进入 `_run_rule` 执行 handler 链。
+
+`_run_rule` 入口处按 `rule.id` 取 `asyncio.Lock` 串行化，保证
+「读 `vars` → 改 → 回写」不会交错（否则带 `timer` + `message` 触发的规则
+会被更新 task 与 `timer_loop` 并发进入，counter 只 +1）。
 
 ### 4.3 定时触发链路
 
@@ -183,7 +194,7 @@ sequenceDiagram
 
 - 规则变量初始化：`ctx.vars = rule.vars + state.vars`（后者覆盖前者）。
 - handler 串行执行；任一异常会中断当前规则链。
-- 链执行结束后统一回写 `ctx.vars` 到状态存储。
+- 链执行结束后统一回写 `ctx.vars` 到状态存储；`store_state(keys=[...])` 可通过 `ctx.persist_vars` 声明「只回写列出的键」，未声明时维持回写全部 `ctx.vars` 的契约。
 
 ## 6. 模板与变量机制
 
@@ -196,7 +207,8 @@ sequenceDiagram
 - `message` 对象。
 - `chat_id`、`now`。
 
-缺失变量不会抛错，会保留为 `{var_name}` 原文（`SafeFormatDict`）。
+缺失变量会抛 `TemplateRenderError`，不会把未渲染的 `{var_name}` 原样发给 Telegram；
+正文里本来就是普通花括号的 JSON 请求体不算模板，仍按原样返回。
 
 ## 7. 插件机制
 
@@ -242,7 +254,7 @@ HANDLERS = {"my_hello": hello}
 
 ## 9. 兼容性与演进建议
 
-- 新增自动化能力优先放在 `automation` 子系统，而不是 legacy `monitor`。
+- 所有规则驱动能力都放在 `automation` 子系统；legacy `monitor` 已下线。
 - 配置模型变更必须保证向后兼容（或提供自动迁移）。
 - 涉及 Telegram 调用节流/FloodWait 时，复用已有 API 调用封装，避免旁路调用。
 - 新增 handler 时建议同时补充：

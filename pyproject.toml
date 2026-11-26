@@ -11,20 +11,36 @@ authors = [
 ]
 license = "BSD-3-Clause"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
     "Intended Audience :: Developers",
+    # 与 requires-python(>=3.11)及 CI matrix / tox envlist 保持一致:
+    # PyPI 上能按具体版本筛到本项目,用户也能一眼看出哪些版本是实测过的。
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3 :: Only"
 ]
 dependencies = [
     "kurigram==2.2.27",
     "click",
-    "pydantic",
+    # 代码使用 ConfigDict / model_validate / model_validator,均是 pydantic v2 API。
+    # 不写下界时,环境里已装的 pydantic v1 会满足要求,import 阶段直接失败。
+    "pydantic>=2",
     "openai",
     "croniter",
     "json_repair",
+    # 不能删:ai_tools.py 的 OpenAIConfig 用的是 typing_extensions.TypedDict。
+    # pydantic 在 Python < 3.12 上明确拒绝 typing.TypedDict(PydanticUserError),
+    # 实测 3.11.13 + pydantic 2.13.5 仍会失败 —— 只要最低版本还是 3.11,这就是
+    # 一个必须显式声明的直接依赖(而不是"反正 pydantic 会带进来")。
     "typing-extensions",
     "httpx",
+    # zoneinfo 不自带时区库,Windows / 精简容器镜像上没有系统 tz DB,
+    # ZoneInfo("Asia/Shanghai") 会直接 ZoneInfoNotFoundError —— 于是 TZ 环境变量
+    # 被静默忽略、get_now() 退回 UTC,定时签到与定时消息会整体偏移(东八区用户差 8h)。
+    # 本仓库的 Dockerfile 都 apt-get install 了 tzdata,但 pip 安装路径不经过它。
+    "tzdata; platform_system == 'Windows'",
 ]
 
 [dependency-groups]
@@ -33,6 +49,14 @@ dev = [
     "tox>=4.32.0",
     "pytest>=9.0.1",
     "pytest-asyncio>=1.3.0",
+    "fastapi",
+    "uvicorn",
+    # WebUI 账号登录支持「扫码登录」：后端把 tg://login?token=... 渲染成内联
+    # SVG，避免再引入前端二维码依赖，也让静态产物保持零额外体积。
+    "qrcode",
+    # 与 fastapi/uvicorn 同理:测试要覆盖可选能力的真实路径(YAML 配置的
+    # 读取/导出/导入往返),不能只测到 importorskip 的跳过分支。
+    "pyyaml",
 ]
 
 [project.optional-dependencies]
@@ -40,7 +64,10 @@ speedup = [
     "tgcrypto"
 ]
 gui = [
-    "nicegui"
+    "fastapi",
+    "uvicorn",
+    # 二维码登录需要把 tg://login?token=... 渲染成 SVG。
+    "qrcode",
 ]
 yaml = [
     "pyyaml"
@@ -55,6 +82,9 @@ tg-signer = "tg_signer.__main__:signer"
 
 [tool.setuptools]
 include-package-data = true
+
+[tool.setuptools.package-data]
+"tg_signer.webui" = ["static/**/*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "tg_signer.__version__" }
@@ -73,7 +103,7 @@ extend-select = [
     "C4", # flake8-comprehensions
 ]
 ignore = [
-    "E501", # line too long, handled by black
+    "E501", # line too long, handled by the formatter
     "B008", # do not perform function calls in argument defaults
     "C901", # too complex
     "W191", # indentation contains tabs
@@ -82,9 +112,16 @@ ignore = [
 ]
 
 [tool.pytest.ini_options]
-asyncio_default_fixture_loop_scope = "function"
 addopts = [
     "-vv",
     "-x",
-    "-W=ignore::DeprecationWarning:pyrogram.utils"
+    "-W=ignore::DeprecationWarning:pyrogram.utils",
+    "-p", "pytest_asyncio"
+]
+# pytest-asyncio 只认这一个配置项(`asyncio_mode`)。此前写成
+# `[tool.pytest_asyncio] auto_mode = true`,不是它认识的键,属于静默失效 ——
+# 之所以一直没暴露,只是因为所有 async 用例都显式打了 @pytest.mark.asyncio。
+asyncio_mode = "auto"
+markers = [
+    "asyncio: mark test as async"
 ]

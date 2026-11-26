@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+from click.testing import CliRunner
 from pyrogram.session import Session
 
 from tests.telegram import TelegramServer
@@ -54,6 +55,11 @@ def signer_factory(tmp_path):
         )
 
     return factory
+
+
+@pytest.fixture
+def runner():
+    return CliRunner()
 
 
 @pytest.fixture

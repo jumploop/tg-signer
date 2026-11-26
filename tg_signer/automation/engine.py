@@ -3,18 +3,19 @@ import json
 import logging
 import random
 import re
-from collections import OrderedDict, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Union
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple, Union
 
-from croniter import CroniterBadCronError, croniter
+from croniter import CroniterError, croniter
 from pyrogram import filters
 from pyrogram.handlers import EditedMessageHandler, MessageHandler
 from pyrogram.methods.utilities.idle import idle
 from pyrogram.types import Message
 
 from tg_signer.config import (
+    AUTOMATION_CONFIG_FILE_NAMES,
+    YAML_CONFIG_SUFFIXES,
     AutomationConfig,
     FilterConfig,
     HandlerConfig,
@@ -22,8 +23,12 @@ from tg_signer.config import (
     RuleConfig,
     TimerTriggerConfig,
     TriggerConfig,
+    find_automation_config_file,
+    normalize_chat_ref,
+    read_automation_config_payload,
 )
 from tg_signer.core import BaseUserWorker, get_now
+from tg_signer.utils import safe_regex_search, write_json_atomic, write_text_atomic
 
 from .handlers import (
     get_handler,
@@ -34,6 +39,14 @@ from .handlers import (
 from .models import AutomationContext, Event, RuleStateStore
 
 logger = logging.getLogger("tg-signer")
+
+# 引擎实际驱动了哪些触发器类型。config 的 `TriggerConfig` 是 discriminated union，
+# 未知 type 在解析阶段就会被拒；但如果 config 那边新增了类型而这里没跟上，就会变成
+# 「配置合法、规则却永不触发」的静默失效。两边清单的一致性由
+# tests/test_automation_engine.py::test_engine_drives_every_declared_trigger_type 兜住。
+STARTUP_TRIGGER_TYPE = "startup"
+TIMER_TRIGGER_TYPE = "timer"
+MESSAGE_TRIGGER_TYPE = "message"
 
 
 class UserAutomation(BaseUserWorker[AutomationConfig]):
@@ -51,93 +64,144 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.state = RuleStateStore(self.state_file, logger)
+        # 状态存储懒加载:仅构造 worker 不应触碰 <workdir>/automations/<task>,
+        # 否则 `automation list` 这类只读命令会凭空建出任务目录。
+        self._state: Optional[RuleStateStore] = None
         self._tick_seconds = 1.0
-        # 按 chat_id -> message_id 缓存最近消息，供后续 wait_for/复杂 handler 复用。
-        self._message_cache: dict[int, OrderedDict[int, Message]] = defaultdict(
-            OrderedDict
-        )
-        self._message_cache_limit = 200
+        # 每条规则一把锁:保证同一 rule 的「读 vars -> 改 -> 回写」不会并发交错。
+        # 不加锁时,带 timer + message 触发的规则会被 pyrogram 的各条更新 task 与
+        # timer_loop 同时进入,两边各自基于同一份旧值 +1,结果只 +1(丢更新)。
+        self._rule_locks: Dict[str, asyncio.Lock] = {}
+        # 脱离 pyrogram 调度协程、正在后台执行的规则链 task。
+        self._dispatch_tasks: "set[asyncio.Task]" = set()
 
-    def ensure_ctx(self):
-        return {}
+    def _rule_lock(self, rule_id: str) -> asyncio.Lock:
+        lock = self._rule_locks.get(rule_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._rule_locks[rule_id] = lock
+        return lock
 
     @property
-    def state_file(self) -> Path:
-        return self.task_dir / "state.json"
+    def state(self) -> RuleStateStore:
+        if self._state is None:
+            self._state = RuleStateStore(self.task_dir / "state.json", logger)
+        return self._state
 
-    @property
-    def handlers_dir(self) -> Path:
-        return self.workdir / "handlers"
+    @classmethod
+    def list_task_names(cls, workdir: Union[str, Path]) -> List[str]:
+        """列出已有自动化任务目录名（只读，不创建任何目录）。
 
-    def _config_candidates(self) -> List[Path]:
-        # JSON 优先，其次 YAML，符合当前产品决策。
-        return [
-            self.task_dir / "config.json",
-            self.task_dir / "config.yaml",
-            self.task_dir / "config.yml",
-        ]
+        `automation list` 需要一个不构造 worker 的入口:构造 worker 会带上
+        默认任务名并据此建目录,把「列出」变成「创建」。
+        """
+        tasks_dir = Path(workdir) / cls._tasks_dir
+        if not tasks_dir.is_dir():
+            return []
+        return sorted(path.name for path in tasks_dir.iterdir() if path.is_dir())
+
+    def config_dir_path(self) -> Path:
+        """任务配置目录路径(只拼路径,不创建目录)。"""
+        return self.workdir / self._tasks_dir / self.task_name
+
+    def find_existing_config_file(self) -> Optional[Path]:
+        """返回已存在的配置文件;都不存在时返回 ``None``,且不创建任何目录。
+
+        只读命令必须用它而不是 :meth:`_resolve_config_file`:后者经 ``task_dir``
+        会创建任务目录,于是 ``automation validate <打错的task>`` 会在磁盘上
+        留下一个空的 ``<workdir>/automations/<task>/`` 目录,随后被 ``list``
+        当成真实任务列出来。
+        """
+        return find_automation_config_file(self.config_dir_path())
 
     def _resolve_config_file(self) -> Path:
         # 返回第一个存在的配置文件；若都不存在，则返回默认 JSON 路径。
-        for path in self._config_candidates():
-            if path.exists():
-                return path
-        return self._config_candidates()[0]
+        return find_automation_config_file(self.task_dir) or (
+            self.task_dir / AUTOMATION_CONFIG_FILE_NAMES[0]
+        )
 
-    def _read_config_payload(self, path: Path) -> Dict[str, object]:
-        if path.suffix in {".yml", ".yaml"}:
-            try:
-                import yaml  # type: ignore
-            except ModuleNotFoundError as exc:
-                raise ValueError("未安装pyyaml，无法读取YAML配置") from exc
-            with open(path, "r", encoding="utf-8") as fp:
-                payload = yaml.safe_load(fp) or {}
-            if not isinstance(payload, dict):
-                raise ValueError("YAML配置必须是字典结构")
-            return payload
-        with open(path, "r", encoding="utf-8") as fp:
-            return json.load(fp)
-
-    def load_config(
-        self, cfg_cls: Optional[type[AutomationConfig]] = None
-    ) -> AutomationConfig:  # type: ignore[override]
-        cfg_cls = cfg_cls or self.cfg_cls
+    def load_config(self) -> AutomationConfig:  # type: ignore[override]
         config_path = self._resolve_config_file()
         self.log(f"读取自动化配置: {config_path}", level="DEBUG")
         if not config_path.exists():
             self.log("配置文件不存在，生成模板配置", level="INFO")
             config = self.reconfig()
         else:
-            payload = self._read_config_payload(config_path)
-            loaded = cfg_cls.load(payload)
-            if loaded is None:
-                raise ValueError(f"无法解析配置: {config_path}")
-            config, from_old = loaded
-            if config_path.suffix in {".yml", ".yaml"}:
-                self.config = config
-                self.log(
-                    f"配置加载完成: rules={len(config.rules)} (yaml)", level="INFO"
-                )
-                return config
+            payload = read_automation_config_payload(config_path)
+            config, from_old, err = self.cfg_cls.load_checked(payload)
+            if config is None:
+                raise ValueError(f"无法解析配置: {config_path}（{err or '未知原因'}）")
             if config_path.suffix == ".json" and from_old:
                 self.write_config(config)
                 self.log("检测到旧版配置并已自动迁移为当前结构", level="INFO")
         self.config = config
-        self.log(f"配置加载完成: rules={len(config.rules)}", level="INFO")
+        suffix = " (yaml)" if config_path.suffix in YAML_CONFIG_SUFFIXES else ""
+        self.log(f"配置加载完成: rules={len(config.rules)}{suffix}", level="INFO")
         return config
 
     def export(self):  # type: ignore[override]
-        config_path = self._resolve_config_file()
+        config_path = self.find_existing_config_file() or (
+            self.config_dir_path() / AUTOMATION_CONFIG_FILE_NAMES[0]
+        )
         if not config_path.exists():
             raise FileNotFoundError(f"配置不存在: {config_path}")
         with open(config_path, "r", encoding="utf-8") as fp:
             return fp.read()
 
+    def _parse_import_payload(self, config_str: str) -> Dict[str, object]:
+        # 导入内容可能是 JSON,也可能是从 YAML 任务导出的 YAML 文本。
+        try:
+            payload = json.loads(config_str)
+        except ValueError:
+            try:
+                import yaml  # type: ignore
+            except ModuleNotFoundError as exc:
+                raise ValueError(
+                    "导入内容不是合法JSON，且未安装pyyaml无法按YAML解析"
+                ) from exc
+            try:
+                payload = yaml.safe_load(config_str)
+            except yaml.YAMLError as exc:
+                raise ValueError(f"无法解析导入内容: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("导入内容必须是JSON/YAML对象")
+        return payload
+
+    def _write_config_payload(self, path: Path, config: AutomationConfig) -> None:
+        payload = config.to_jsonable()
+        if path.suffix in YAML_CONFIG_SUFFIXES:
+            try:
+                import yaml  # type: ignore
+            except ModuleNotFoundError as exc:
+                raise ValueError("未安装pyyaml，无法写入YAML配置") from exc
+            write_text_atomic(
+                path,
+                yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
+            )
+            return
+        write_json_atomic(path, payload)
+
+    def import_(self, config_str: str) -> None:  # type: ignore[override]
+        """按目标文件格式落盘。
+
+        `export()` 导出的是解析后配置文件(可能是 YAML)的原文,而基类实现一律写
+        `<task>/config.json`:YAML 文本落进 config.json 后会遮蔽 config.yaml 并
+        解析失败。这里先解析(JSON 优先、YAML 兜底)、校验,再按目标文件格式序列化。
+        """
+        target = self._resolve_config_file()
+        payload = self._parse_import_payload(config_str)
+        config, _from_old, err = self.cfg_cls.load_checked(payload)
+        if config is None:
+            raise ValueError(f"无法解析导入配置（{err or '未知原因'}）")
+        self._write_config_payload(target, config)
+        self.config = config
+        self.log(f"配置已导入: {target}", level="INFO")
+
     def ask_for_config(self) -> AutomationConfig:
         return self.template_config()
 
-    def template_config(self) -> AutomationConfig:
+    @staticmethod
+    def template_config() -> AutomationConfig:
         return AutomationConfig(
             rules=[
                 RuleConfig(
@@ -171,45 +235,68 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
 
     async def run(
         self,
-        num_of_dialogs: int = 20,
+        num_of_dialogs: Optional[int] = 50,
         folder: Optional[str] = None,
     ):
         if self.user is None:
             await self.login(num_of_dialogs, print_chat=True, folder=folder)
 
-        cfg = self.load_config(self.cfg_cls)
+        cfg = self.load_config()
         if cfg.requires_ai:
             self.ensure_ai_cfg()
 
         register_builtin_handlers()
-        load_plugins(self.handlers_dir, logger)
-        self.log(f"已注册 handlers 数量: {len(list(list_handlers()))}", level="INFO")
+        load_plugins(self.workdir / "handlers", logger)
+        self.log(f"已注册 handlers 数量: {len(list_handlers())}", level="INFO")
 
         self.app.add_handler(MessageHandler(self.on_message, filters.all))
         self.app.add_handler(EditedMessageHandler(self.on_edited_message, filters.all))
-        # startup trigger 每条规则只在进程启动后执行一次。
-        startup_tasks = [
-            asyncio.create_task(self.run_startup(rule))
-            for rule in cfg.rules
-            if rule.enabled and self._has_trigger(rule, "startup")
-        ]
-        self.log(f"startup 任务数: {len(startup_tasks)}", level="DEBUG")
-        # timer trigger 统一由轮询调度循环驱动。
-        timer_task = asyncio.create_task(self.timer_loop())
+        # 后台任务必须在 client 真正启动之后创建:冷启动时 client 还没 start,
+        # 首次 Telegram 调用会抛 "Client has not been started yet",该异常会被
+        # `_run_rule` 吞掉并中断 handler 链,timer 的 next_run_at 还会被照常推进
+        # —— 即本次到期的运行被静默消费。
         async with self.app:
+            # startup trigger 每条规则只在进程启动后执行一次。
+            startup_tasks: List[asyncio.Task] = [
+                asyncio.create_task(self.run_startup(rule))
+                for rule in cfg.rules
+                if rule.enabled
+                and any(
+                    trigger.type == STARTUP_TRIGGER_TYPE for trigger in rule.triggers
+                )
+            ]
+            self.log(f"startup 任务数: {len(startup_tasks)}", level="DEBUG")
+            # timer trigger 统一由轮询调度循环驱动。
+            timer_task: asyncio.Task = asyncio.create_task(self.timer_loop())
+            for task in (*startup_tasks, timer_task):
+                task.add_done_callback(self._on_dispatch_done)
             self.log("开始自动化运行...")
-            await idle()
-        for task in startup_tasks:
-            task.cancel()
-        timer_task.cancel()
+            try:
+                await idle()
+            finally:
+                # 退出前取消后台任务:此时 client 仍在运行,取消是安全的。
+                for task in startup_tasks:
+                    task.cancel()
+                timer_task.cancel()
+                # 后台跑的消息规则链也要收掉:它们可能正卡在 delay 里,
+                # 若放任不管,__aexit__ 已经关掉 client 之后 handler 才去发消息。
+                await self._cancel_dispatch_tasks()
 
-    def _has_trigger(self, rule: RuleConfig, trigger_type: str) -> bool:
-        return any(trigger.type == trigger_type for trigger in rule.triggers)
+    @staticmethod
+    def _iter_triggers(
+        rule: RuleConfig, trigger_type: str
+    ) -> Iterator[Tuple[int, TriggerConfig]]:
+        """按类型取出规则下的触发器，连同下标一起给出（`_trigger_id` 需要它）。
+
+        三条驱动路径都必须按类型筛选，收敛到这一处，避免每个循环各写一遍
+        `trigger.type != "..."` 而漏掉某个分支。
+        """
+        for index, trigger in enumerate(rule.triggers):
+            if trigger.type == trigger_type:
+                yield index, trigger
 
     async def run_startup(self, rule: RuleConfig) -> None:
-        for index, trigger in enumerate(rule.triggers):
-            if trigger.type != "startup":
-                continue
+        for index, trigger in self._iter_triggers(rule, STARTUP_TRIGGER_TYPE):
             trigger_params = trigger.params
             trigger_id = self._trigger_id(rule, trigger, index)
             self.log(
@@ -227,126 +314,200 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             await self._run_rule(rule, event)
 
     async def timer_loop(self) -> None:
+        """轮询调度循环。
+
+        异常必须被关在这一层:该协程是 ``create_task`` 起的、无人 await,
+        一旦抛出就只会以 "Task exception was never retrieved" 的形式被 GC
+        打印,进程照常存活但**所有 timer 规则永久不再触发**(静默失效)。
+        """
         self.log(f"timer 轮询启动, tick={self._tick_seconds}s", level="DEBUG")
         while True:
-            now = get_now()
-            cfg = self.config
-            for rule in cfg.rules:
-                if not rule.enabled:
-                    continue
-                for index, trigger in enumerate(rule.triggers):
-                    if trigger.type != "timer":
-                        continue
-                    timer_trigger = trigger
-                    trigger_id = self._trigger_id(rule, trigger, index)
-                    next_run = self.state.get_trigger_next_run(rule.id, trigger_id)
-                    if next_run is None:
-                        # 首次见到该 trigger，计算并写入 next_run_at。
-                        next_run = self._compute_next_run(timer_trigger, now)
-                        if next_run:
-                            self.state.set_trigger_next_run(
-                                rule.id, trigger_id, next_run
-                            )
-                            self.state.save()
-                            self.log(
-                                f"初始化 timer 下次执行: rule={rule.id}, trigger={trigger_id}, next={next_run.isoformat()}",
-                                level="DEBUG",
-                            )
-                        else:
-                            self.log(
-                                f"timer 未配置 cron/interval: rule={rule.id}, trigger={trigger_id}",
-                                level="DEBUG",
-                            )
-                        continue
-                    if now >= next_run:
-                        self.log(
-                            f"触发 timer: rule={rule.id}, trigger={trigger_id}, due={next_run.isoformat()}",
-                            level="DEBUG",
-                        )
-                        event = Event(
-                            type="timer",
-                            chat_id=timer_trigger.params.chat_id,
-                            message=None,
-                            now=now,
-                            trigger_id=trigger_id,
-                            rule_id=rule.id,
-                        )
-                        await self._run_rule(rule, event)
-                        next_run = self.state.get_trigger_next_run(rule.id, trigger_id)
-                        if not next_run or next_run <= now:
-                            # 未被 schedule_next 覆盖时，按 trigger 默认策略推导下一次。
-                            next_run = self._compute_next_run(timer_trigger, now)
-                        self.state.set_trigger_next_run(rule.id, trigger_id, next_run)
-                        self.state.set_trigger_last_run(rule.id, trigger_id, now)
-                        self.state.save()
-                        self.log(
-                            f"timer 执行完成: rule={rule.id}, trigger={trigger_id}, next={next_run.isoformat() if next_run else 'None'}",
-                            level="DEBUG",
-                        )
+            try:
+                await self._tick_timers()
+            except Exception:  # noqa: BLE001
+                logger.exception("timer 轮询异常，%ss 后继续", self._tick_seconds)
             await asyncio.sleep(self._tick_seconds)
 
-    async def on_message(self, client, message: Message):
-        _ = client
-        await self._handle_message_event(message, event_type="message")
-
-    async def on_edited_message(self, client, message: Message):
-        _ = client
-        await self._handle_message_event(message, event_type="edited_message")
-
-    async def _handle_message_event(self, message: Message, event_type: str) -> None:
-        # 消息/编辑消息统一走“触发器匹配 -> 过滤器匹配 -> handler链”三段式流程。
-        self._cache_message(message)
+    async def _tick_timers(self) -> None:
+        """遍历所有 timer trigger,到期即执行一轮规则。"""
+        now = get_now()
         cfg = self.config
         for rule in cfg.rules:
             if not rule.enabled:
                 continue
-            for index, trigger in enumerate(rule.triggers):
-                if trigger.type != "message":
+            for index, timer_trigger in self._iter_triggers(rule, TIMER_TRIGGER_TYPE):
+                trigger_id = self._trigger_id(rule, timer_trigger, index)
+                next_run = self.state.get_trigger_next_run(rule.id, trigger_id)
+                if next_run is None:
+                    # 首次见到该 trigger，计算并写入 next_run_at。
+                    next_run = self._compute_next_run(timer_trigger, now)
+                    if next_run:
+                        self.state.set_trigger_next_run(rule.id, trigger_id, next_run)
+                        self.state.save()
+                        self.log(
+                            f"初始化 timer 下次执行: rule={rule.id}, trigger={trigger_id}, next={next_run.isoformat()}",
+                            level="DEBUG",
+                        )
+                    else:
+                        self.log(
+                            f"timer 未配置 cron/interval: rule={rule.id}, trigger={trigger_id}",
+                            level="DEBUG",
+                        )
                     continue
+                if now >= next_run:
+                    self.log(
+                        f"触发 timer: rule={rule.id}, trigger={trigger_id}, due={next_run.isoformat()}",
+                        level="DEBUG",
+                    )
+                    event = Event(
+                        type="timer",
+                        chat_id=timer_trigger.params.chat_id,
+                        message=None,
+                        now=now,
+                        trigger_id=trigger_id,
+                        rule_id=rule.id,
+                    )
+                    # 先同步把 next_run_at 推离当前时刻，再派发任务。
+                    # 否则慢规则跑着的时候，每个 tick 都会把同一个 timer 再派发一次。
+                    # 任务结束时如果 `schedule_next` 写入了新值，会覆盖这里。
+                    default_next = self._compute_next_run(timer_trigger, now)
+                    self.state.set_trigger_next_run(rule.id, trigger_id, default_next)
+                    self.state.set_trigger_last_run(rule.id, trigger_id, now)
+                    self.state.save()
+                    # 规则链放进独立 task：timer 里可能有 delay / 慢 AI / 慢 HTTP，
+                    # 内联 await 会让后面所有 timer 规则一起排队等它结束。
+                    task = asyncio.ensure_future(
+                        self._run_timer_rule(rule, event, timer_trigger)
+                    )
+                    self._dispatch_tasks.add(task)
+                    task.add_done_callback(self._dispatch_tasks.discard)
+                    task.add_done_callback(self._on_dispatch_done)
+                    self.log(
+                        f"timer 已派发: rule={rule.id}, trigger={trigger_id}",
+                        level="DEBUG",
+                    )
+
+    async def _run_timer_rule(
+        self,
+        rule: RuleConfig,
+        event: Event,
+        timer_trigger: TimerTriggerConfig,
+    ) -> None:
+        """执行一次 timer 规则，并在结束时推进 next_run_at。
+
+        异常只在单条规则范围内处理，不能让 ``_tick_timers`` 后面的规则停摆。
+        next_run_at 在派发前已同步推进；这里只处理 ``schedule_next`` 的覆盖，
+        保证它写入的新值不会被默认间隔盖掉。
+        """
+        trigger_id = event.trigger_id
+        try:
+            await self._run_rule(rule, event)
+        except Exception:  # noqa: BLE001
+            self.log(
+                f"timer 规则执行异常，已跳过本轮: rule={rule.id}, trigger={trigger_id}",
+                level="ERROR",
+            )
+            logger.exception("timer 规则执行异常: rule=%s", rule.id)
+        finally:
+            advanced = self.state.get_trigger_next_run(rule.id, trigger_id)
+            if not advanced or advanced <= event.now:
+                # 未被 schedule_next 覆盖时，按 trigger 默认策略推导下一次。
+                advanced = self._compute_next_run(timer_trigger, event.now)
+            self.state.set_trigger_next_run(rule.id, trigger_id, advanced)
+            self.state.save()
+            self.log(
+                f"timer 执行完成: rule={rule.id}, trigger={trigger_id}, "
+                f"next={advanced.isoformat() if advanced else 'None'}",
+                level="DEBUG",
+            )
+
+    async def on_message(self, client, message: Message):
+        _ = client
+        self._dispatch_message(message, event_type="message")
+
+    async def on_edited_message(self, client, message: Message):
+        _ = client
+        self._dispatch_message(message, event_type="edited_message")
+
+    def _dispatch_message(self, message: Message, event_type: str) -> None:
+        """把规则链放进独立 task，不要在 pyrogram 的调度协程里内联 await。
+
+        pyrogram 的 ``Dispatcher.handler_worker`` 在**唯一一个** worker 协程里
+        ``await handler.callback(...)``，因此任何 handler 的耗时都会阻塞整个账号
+        的更新流 —— 一条 ``delay: 300`` 的规则会让所有群的所有消息停摆 5 分钟
+        （``forward`` / ``ai_reply`` 等耗时 handler 同理）。
+
+        抽出去之后同一条规则的多次触发由 ``_rule_lock`` 串行，顺序仍然稳定，
+        但不再互相阻塞 pyrogram。
+        """
+        task = asyncio.ensure_future(
+            self._handle_message_event(message, event_type=event_type)
+        )
+        self._dispatch_tasks.add(task)
+        task.add_done_callback(self._dispatch_tasks.discard)
+        task.add_done_callback(self._on_dispatch_done)
+
+    def _on_dispatch_done(self, task: "asyncio.Task") -> None:
+        """记录后台任务异常退出（startup/timer/消息规则链共用）。
+
+        这些 task 脱离了各自的调度协程，没人主动取异常的话，只会以
+        "Task exception was never retrieved" 的形式在 GC 时冒出来，既进不了
+        日志文件也抓不到 —— 等于故障被静默吞掉。
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            self.log(f"后台任务异常退出: {exc}", level="ERROR")
+            logger.exception("后台任务异常退出", exc_info=exc)
+
+    async def _cancel_dispatch_tasks(self) -> None:
+        """退出时收掉仍在跑的规则链，避免 client 关闭后 handler 才发消息。"""
+        tasks = [t for t in self._dispatch_tasks if not t.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _handle_message_event(self, message: Message, event_type: str) -> None:
+        # 消息/编辑消息统一走“触发器匹配 -> 过滤器匹配 -> handler链”三段式流程。
+        cfg = self.config
+        for rule in cfg.rules:
+            if not rule.enabled:
+                continue
+            # 一条规则对同一条消息最多执行一次 handler 链：同一群的多个
+            # message trigger（例如 chat_id 写 int 和 @username 两种形式）
+            # 会同时命中一条消息，原来在这里被逐个执行 —— 自动回复类规则
+            # 会对同一条消息连发两次，而第二次往往是用户自己刚收到的回声。
+            matched: List[str] = []
+            for index, trigger in self._iter_triggers(rule, MESSAGE_TRIGGER_TYPE):
                 if not self._match_message_trigger(trigger, message):
                     continue
                 if rule.filters and not self._match_filter(rule.filters, message):
                     continue
-                trigger_id = self._trigger_id(rule, trigger, index)
+                matched.append(self._trigger_id(rule, trigger, index))
+            if not matched:
+                continue
+            if len(matched) > 1:
                 self.log(
-                    f"{event_type}命中规则: rule={rule.id}, trigger={trigger_id}, chat={message.chat.id}",
+                    f"{event_type}规则 {rule.id} 有多个 trigger 同时命中，"
+                    f"按第一条执行: {matched}",
                     level="DEBUG",
                 )
-                event = Event(
-                    type=event_type,
-                    chat_id=message.chat.id,
-                    message=message,
-                    now=get_now(),
-                    trigger_id=trigger_id,
-                    rule_id=rule.id,
-                )
-                await self._run_rule(rule, event)
-
-    def _cache_message(self, message: Message) -> None:
-        message_id = message.id
-        chat_id = message.chat and message.chat.id
-        if chat_id is None:
-            return
-        cache = self._message_cache[chat_id]
-        cache[message_id] = message
-        cache.move_to_end(message_id)
-        while len(cache) > self._message_cache_limit:
-            cache.popitem(last=False)
-        self.log(
-            f"消息已缓存: chat={chat_id}, message_id={message_id}, cached={len(cache)}",
-            level="DEBUG",
-        )
-
-    def get_cached_messages(
-        self, chat_id: int, limit: Optional[int] = None
-    ) -> List[Message]:
-        cache = self._message_cache.get(chat_id)
-        if not cache:
-            return []
-        messages = list(cache.values())
-        if limit is None or limit <= 0:
-            return messages
-        return messages[-limit:]
+            trigger_id = matched[0]
+            self.log(
+                f"{event_type}命中规则: rule={rule.id}, trigger={trigger_id}, chat={message.chat.id}",
+                level="DEBUG",
+            )
+            event = Event(
+                type=event_type,
+                chat_id=message.chat.id,
+                message=message,
+                now=get_now(),
+                trigger_id=trigger_id,
+                rule_id=rule.id,
+            )
+            await self._run_rule(rule, event)
 
     def _trigger_id(self, rule: RuleConfig, trigger: TriggerConfig, index: int) -> str:
         return trigger.id or f"{rule.id}:{index}"
@@ -360,7 +521,10 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             try:
                 it = croniter(trigger_params.cron, start_time=now)
                 next_dt: datetime = it.next(ret_type=datetime)
-            except CroniterBadCronError:
+            # CroniterBadCronError 与 CroniterBadDateError 都是 CroniterError 子类。
+            # 后者出现在「语法合法但永不存在」的 cron（如 0 0 31 2 *）；漏捕它会让
+            # 单个坏 trigger 反复炸掉整个 _tick_timers，拖垮同配置的其它规则。
+            except CroniterError:
                 self.log(f"cron表达式无效: {trigger_params.cron}", level="WARNING")
                 return None
         elif trigger_params.interval_seconds:
@@ -377,18 +541,32 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         )
         return next_dt
 
+    def _match_refs(
+        self,
+        message: Message,
+        chat_id: Optional[Union[int, str]],
+        chat_ids: Optional[List[Union[int, str]]],
+        from_user_ids: Iterable[Union[int, str]],
+        ignore_case: bool,
+    ) -> bool:
+        if (chat_id or chat_ids) and not self._match_chat(
+            message, chat_id, chat_ids, ignore_case=ignore_case
+        ):
+            return False
+        return not from_user_ids or self._match_user(message, from_user_ids)
+
     def _match_message_trigger(
         self, trigger: MessageTriggerConfig, message: Message
     ) -> bool:
         trigger_params = trigger.params
-        if trigger_params.chat_id or trigger_params.chat_ids:
-            if not self._match_chat(
-                message, trigger_params.chat_id, trigger_params.chat_ids
-            ):
-                return False
-        if trigger_params.from_user_ids:
-            if not self._match_user(message, trigger_params.from_user_ids):
-                return False
+        if not self._match_refs(
+            message,
+            trigger_params.chat_id,
+            trigger_params.chat_ids,
+            trigger_params.from_user_ids,
+            trigger_params.ignore_case,
+        ):
+            return False
         if trigger_params.reply_to_me:
             if not message.reply_to_message:
                 return False
@@ -404,12 +582,14 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         return True
 
     def _match_filter(self, filter_cfg: FilterConfig, message: Message) -> bool:
-        if filter_cfg.chat_id or filter_cfg.chat_ids:
-            if not self._match_chat(message, filter_cfg.chat_id, filter_cfg.chat_ids):
-                return False
-        if filter_cfg.from_user_ids:
-            if not self._match_user(message, filter_cfg.from_user_ids):
-                return False
+        if not self._match_refs(
+            message,
+            filter_cfg.chat_id,
+            filter_cfg.chat_ids,
+            filter_cfg.from_user_ids,
+            filter_cfg.ignore_case,
+        ):
+            return False
         text = message.text or message.caption or ""
         rule = filter_cfg.text_rule
         value = filter_cfg.text_value or ""
@@ -427,17 +607,21 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             return value in text
         if rule == "regex":
             flags = 0 if not filter_cfg.ignore_case else re.IGNORECASE
-            return re.search(value, text, flags=flags) is not None
+            try:
+                return safe_regex_search(value, text, flags=flags) is not None
+            except ValueError as exc:
+                # 配置里的正则非法/超长:当成「不匹配」而不是抛异常打断整条规则链。
+                self.log(f"filters.text_rule: {exc}", level="WARNING")
+                return False
         return False
 
     def _match_user(
         self, message: Message, from_user_ids: Iterable[Union[int, str]]
     ) -> bool:
+        # 无发送者（频道帖、服务消息等）无法判定是否来自指定用户，不应放行。
         if not message.from_user:
-            return True
-        normalized = {
-            self._normalize_user_id(item) for item in from_user_ids if item is not None
-        }
+            return False
+        normalized = {self._normalize_user_id(item) for item in from_user_ids}
         user_id = message.from_user.id
         username = message.from_user.username
         if user_id in normalized:
@@ -452,7 +636,9 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         if isinstance(value, str):
             if value in {"me", "self"}:
                 return "me"
-            return value.lower().strip("@")
+            text = value.lower().strip("@")
+            # 数字字符串也要能匹配 int 形式的 user id。
+            return normalize_chat_ref(text)
         return value
 
     def _match_chat(
@@ -460,6 +646,7 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         message: Message,
         chat_id: Optional[Union[int, str]],
         chat_ids: Optional[List[Union[int, str]]],
+        ignore_case: bool = True,
     ) -> bool:
         if chat_ids is None:
             chat_ids = []
@@ -468,15 +655,30 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
         if not chat_ids:
             return True
         for target in chat_ids:
+            # 配置里写成数字字符串也要能命中，否则规则会静默永不触发。
+            target = normalize_chat_ref(target)
             if isinstance(target, int) and message.chat.id == target:
                 return True
             if isinstance(target, str):
+                # Telegram 用户名大小写不敏感:`@MyChannel` 与配置里的
+                # `@mychannel` 必须能互相命中(ignore_case 默认 True)。
                 target_norm = target.strip("@")
-                if message.chat.username == target_norm:
+                username = (message.chat.username or "").strip("@")
+                if ignore_case:
+                    if username.lower() == target_norm.lower():
+                        return True
+                elif username == target_norm:
                     return True
         return False
 
     async def _run_rule(self, rule: RuleConfig, event: Event) -> None:
+        # 同一 rule 的读-改-写必须串行：pyrogram 把每条消息更新放在各自 task 里，
+        # timer_loop 又是独立 task，带 timer + message 触发的规则会并发进入。
+        # 两边都读到同一份旧 vars、各自 +1 再回写，counter 只 +1（丢更新）。
+        async with self._rule_lock(rule.id):
+            await self._run_rule_locked(rule, event)
+
+    async def _run_rule_locked(self, rule: RuleConfig, event: Event) -> None:
         # 规则级变量 = 配置初始变量 + 持久化状态变量（后者覆盖前者）。
         ctx_vars = {**rule.vars, **self.state.get_rule_vars(rule.id)}
         self.log(
@@ -491,32 +693,48 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             worker=self,
             workdir=self.workdir,
         )
-        for handler_cfg in rule.handlers:
-            handler = get_handler(handler_cfg.handler)
-            if not handler:
-                self.log(f"未找到handler: {handler_cfg.handler}", level="WARNING")
-                break
+        try:
+            for handler_cfg in rule.handlers:
+                handler = get_handler(handler_cfg.handler)
+                if not handler:
+                    self.log(f"未找到handler: {handler_cfg.handler}", level="WARNING")
+                    break
+                try:
+                    self.log(
+                        f"执行 handler: rule={rule.id}, handler={handler_cfg.handler}",
+                        level="DEBUG",
+                    )
+                    result = await handler(event, ctx, handler_cfg.params)
+                    self.log(
+                        f"handler 结果: rule={rule.id}, handler={handler_cfg.handler}, result={result}",
+                        level="DEBUG",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self.log(
+                        f"handler执行失败: {handler_cfg.handler} ({exc})", level="ERROR"
+                    )
+                    break
+                # 只能对字符串判停:插件返回 dict/list 时 `result in {...}` 会抛
+                # TypeError: unhashable,而它写在上面的 except 之外 —— 于是异常
+                # 逃出 _run_rule,后面的 handler 不再执行,下面 finally 里的状态
+                # 落盘也一起被跳过(插件写进 ctx.vars 的东西全丢)。
+                if isinstance(result, str) and result in {"stop", "defer"}:
+                    # stop/defer 都会中断后续 handler。
+                    break
+        finally:
+            # store_state(keys=[...]) 可用 ctx.persist_vars 限定只回写部分变量;
+            # 未声明时维持原契约:回写全部 ctx.vars。
+            # 放在 finally 里:规则链中途异常也必须把已产生的变量落盘。
+            persisted_vars = (
+                ctx.persist_vars if ctx.persist_vars is not None else ctx.vars
+            )
             try:
-                self.log(
-                    f"执行 handler: rule={rule.id}, handler={handler_cfg.handler}",
-                    level="DEBUG",
-                )
-                result = await handler(event, ctx, handler_cfg.params or {})
-                self.log(
-                    f"handler 结果: rule={rule.id}, handler={handler_cfg.handler}, result={result}",
-                    level="DEBUG",
-                )
-            except Exception as exc:  # noqa: BLE001
-                self.log(
-                    f"handler执行失败: {handler_cfg.handler} ({exc})", level="ERROR"
-                )
-                break
-            if result in {"stop", "defer"}:
-                # stop/defer 都会中断后续 handler。
-                break
-        self.state.set_rule_vars(rule.id, ctx.vars)
-        self.state.save()
-        self.log(
-            f"规则执行结束并持久化变量: rule={rule.id}, keys={list(ctx.vars.keys())}",
-            level="DEBUG",
-        )
+                self.state.set_rule_vars(rule.id, persisted_vars)
+                self.state.save()
+            except Exception:  # noqa: BLE001
+                self.log("规则变量持久化失败", level="ERROR")
+                logger.exception("规则变量持久化失败: rule=%s", rule.id)
+            self.log(
+                f"规则执行结束并持久化变量: rule={rule.id}, keys={list(persisted_vars.keys())}",
+                level="DEBUG",
+            )

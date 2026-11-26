@@ -21,7 +21,7 @@ sleep infinity
 - `ghcr.io/amchii/tg-signer:<tag>-webui`
 - `ghcr.io/amchii/tg-signer:latest-webui`（当推送合法 Docker tag 格式的 Git tag，例如 `v0.0.0`、`0.0.0`、`v0.0.0-beta` 时更新）
 
-其中基础镜像默认包含 `speedup` 所需的 `tgcrypto`，`-webui` 变体会额外安装 `gui` 额外依赖（当前包含 `nicegui`）并默认监听 `8080` 端口。
+其中基础镜像默认包含 `speedup` 所需的 `tgcrypto`，`-webui` 变体会额外安装 `gui` 额外依赖（包含 `fastapi` / `uvicorn`，前端为 Vue 构建产物）并默认监听 `8080` 端口。
 如果你需要使用国内镜像源或调整构建参数，仍然可以继续按下文方式在本地构建。
 
 ### 手动测试推送
@@ -59,7 +59,7 @@ docker run -d --name tg-signer-webui \
 * ### 构建镜像：
 
     ```sh
-    docker build -t tg-signer:latest -f CN.Dockerfile .
+    docker build -t tg-signer:latest -f docker/CN.Dockerfile .
     ```
 
 * ### 运行
@@ -75,7 +75,7 @@ docker run -d --name tg-signer-webui \
     构建镜像时也可以通过 `TZ` 参数让容器的系统时区保持一致，例如：
 
     ```sh
-    docker build --build-arg TZ=Europe/Paris -t tg-signer:latest -f CN.Dockerfile .
+    docker build --build-arg TZ=Europe/Paris -t tg-signer:latest -f docker/CN.Dockerfile .
     ```
 
     运行容器时再次设置环境变量确保 `TZ` 传递进去：
@@ -91,7 +91,7 @@ docker run -d --name tg-signer-webui \
 ## 或使用Docker Compose
 
 ```sh
-docker-compose up -d
+docker compose -f docker/docker-compose.yml up -d
 ```
 
 ### 可选：调整时区
@@ -99,13 +99,13 @@ docker-compose up -d
 通过 `TZ` 环境变量可以在启动和构建期间一致地设置时区。运行时会优先读取 `TZ`；如果未设置，则回退到 Python 本地时区，再回退到 `Asia/Shanghai`。示例：
 
 ```sh
-TZ=Europe/Paris docker compose up -d
+TZ=Europe/Paris docker compose -f docker/docker-compose.yml up -d
 ```
 
-如果还需要让镜像内的系统时区文件一起更新（例如从 `docker compose build` 构建自定义镜像），也可以在构建时加上同样的 `TZ` 环境变量：
+如果还需要让镜像内的系统时区文件一起更新（例如使用 `docker compose -f docker/docker-compose.yml build` 构建自定义镜像），也可以在构建时加上同样的 `TZ` 环境变量：
 
 ```sh
-TZ=Europe/Paris docker compose build
+TZ=Europe/Paris docker compose -f docker/docker-compose.yml build
 ```
 
 ## 配置任务

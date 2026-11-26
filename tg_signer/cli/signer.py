@@ -1,24 +1,19 @@
 import asyncio
 import logging
 import os
+from functools import partial
 from typing import Optional
 
 import click
 from click import Context, HelpFormatter
 
 from tg_signer.config import parse_chat_id_or_username
-from tg_signer.core import ChatFolderError, UserSigner, get_event_loop, get_proxy
+from tg_signer.core import ChatFolderError, UserSigner, get_proxy
 from tg_signer.sign_record_store import SignRecordStore
 
 
 class AliasedGroup(click.Group):
-    _aliases = {"run_once": "run-once", "send_text": "send-text"}
-
-    def __init__(self, name, aliases: dict[str, str] = None, *args, **kwargs):
-        self.aliases = self._aliases.copy()
-        if aliases:
-            self.aliases.update(aliases)
-        super().__init__(name, *args, **kwargs)
+    aliases = {"run_once": "run-once", "send_text": "send-text"}
 
     def get_command(self, ctx, cmd_name):
         cmd = super().get_command(ctx, cmd_name)
@@ -43,10 +38,10 @@ class AliasedGroup(click.Group):
                 formatter.write_text(f"{k} -> {v}")
 
 
-def get_signer(
-    task_name, ctx_obj: dict, loop: Optional[asyncio.AbstractEventLoop] = None
+def make_worker(
+    cls, task_name, ctx_obj: dict, loop: Optional[asyncio.AbstractEventLoop] = None
 ):
-    signer = UserSigner(
+    return cls(
         task_name=task_name,
         account=ctx_obj["account"],
         proxy=ctx_obj["proxy"],
@@ -56,47 +51,133 @@ def get_signer(
         in_memory=ctx_obj["in_memory"],
         loop=loop,
     )
-    return signer
+
+
+get_signer = partial(make_worker, UserSigner)
 
 
 def from_folder_option(command):
     return click.option(
         "--from-folder",
         "folder",
-        default=None,
         help="从指定普通 Folder 加载手动添加的对话，可使用名称或 ID",
     )(command)
 
 
+def export_file_option(command):
+    return click.option("--file", "-O", type=click.Path(), help="导出至该文件")(command)
+
+
+def import_file_option(command):
+    return click.option("--file", "-I", type=click.Path(), help="导入该文件")(command)
+
+
+def delete_after_option(command):
+    return click.option(
+        "--delete-after",
+        type=int,
+        help="秒, 发送消息后进行删除, 默认不删除, '0'表示立即删除.",
+    )(command)
+
+
+def message_thread_id_option(command):
+    return click.option(
+        "--message-thread-id",
+        type=int,
+        help="话题ID（message_thread_id）, 不填则发送到非话题会话",
+    )(command)
+
+
+def chat_id_option(command):
+    return click.option(
+        "--chat_id",
+        required=True,
+        help="整数id或字符串username, username须以@开头",
+    )(command)
+
+
+def dialogs_option(command=None, *, default: int = 50):
+    def wrap(cmd):
+        return click.option(
+            "--num-of-dialogs",
+            "-n",
+            default=default,
+            show_default=True,
+            type=int,
+            help="获取最近N个对话（默认50）；--from-folder 时仅在显式指定时截断，0 表示不限制",
+        )(cmd)
+
+    return wrap(command) if command is not None else wrap
+
+
+def dialogs_limit(ctx, folder, num_of_dialogs):
+    """Folder 模式下只有显式传入 --num-of-dialogs 才截断。
+
+    未传时返回 ``None``，由 worker 加载 Folder 内全部对话——保持
+    「--from-folder 加载全部」的既有契约；显式 ``0`` 同样表示不限制。
+    """
+    if not folder:
+        return num_of_dialogs
+    source = ctx.get_parameter_source("num_of_dialogs")
+    if source is None or source >= click.ParameterSource.DEFAULT_MAP:
+        return None
+    return None if num_of_dialogs == 0 else num_of_dialogs
+
+
 def run_worker(worker, coroutine):
+    # 返回协程结果:run_once 靠它判断本轮签到是否成功。
     try:
-        worker.app_run(coroutine)
+        return worker.app_run(coroutine)
     except ChatFolderError as exc:
         raise click.ClickException(str(exc)) from exc
 
 
-def run_signers(tasks, num_of_dialogs, folder):
-    loop = get_event_loop()
-
-    async def run_tasks():
-        signers = [
-            get_signer(task_name, ctx_obj, loop=loop) for task_name, ctx_obj in tasks
-        ]
-        await asyncio.gather(
-            *(signer.run(num_of_dialogs, folder=folder) for signer in signers)
-        )
-
+def run_coroutines(loop, coroutines):
+    # 兄弟任务必须一起收场：gather 只抛第一个异常时，其余协程仍在后台跑着
+    # （loop 随后被 close()，它们要么被 RuntimeWarning 静默丢弃，要么在
+    # 半应用状态上继续发消息）。所以整体 cancel + 回收，并把异常转成
+    # ClickException，而不是让裸 traceback 打穿 CLI。
+    tasks = [asyncio.ensure_future(coro, loop=loop) for coro in coroutines]
     try:
-        loop.run_until_complete(run_tasks())
+        return loop.run_until_complete(asyncio.gather(*tasks))
+    except asyncio.CancelledError as exc:
+        for task in tasks:
+            task.cancel()
+        loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
+        raise click.ClickException("任务已被取消") from exc
     except ChatFolderError as exc:
+        # 兄弟任务同样必须先 cancel 收场,理由同上面的 CancelledError 分支。
+        for task in tasks:
+            task.cancel()
+        loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
         raise click.ClickException(str(exc)) from exc
+    except Exception as exc:
+        for task in tasks:
+            task.cancel()
+        loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
+        raise click.ClickException(f"{type(exc).__name__}: {exc}") from exc
+
+
+def run_in_new_loop(build_coroutines):
+    """新建事件循环跑完 ``build_coroutines(loop)`` 返回的协程列表。
+
+    ``get_client`` / ``_call_telegram_api`` 依赖 ``asyncio.get_event_loop()``
+    拿到这个 loop，所以必须 ``set_event_loop`` 留着；但不 ``close()`` 的话
+    每次调用都泄漏一个 loop 及其内部 selector（Windows 上还占着一个
+    epoll/select 句柄）。
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        run_coroutines(loop, build_coroutines(loop))
+    finally:
+        loop.close()
 
 
 @click.group(name="tg-signer", help="使用<子命令> --help查看使用说明", cls=AliasedGroup)
 @click.option(
     "--log-level",
     "-l",
-    "log_level",
     default="info",
     show_default=True,
     type=click.Choice(["debug", "info", "warn", "error"], case_sensitive=False),
@@ -104,15 +185,13 @@ def run_signers(tasks, num_of_dialogs, folder):
 )
 @click.option(
     "--log-file",
-    "log_file",
-    default="logs/tg-signer.log",
-    show_default=True,
+    # 不给默认值: 让 configure_logger 用实际 --log-dir 拼出 <log_dir>/tg-signer.log,
+    # 否则改了 --log-dir 后日志仍被写进硬编码的 logs/。
     type=click.Path(),
-    help="日志文件路径, 可以是相对路径",
+    help="日志文件路径, 可以是相对路径（默认为 <log-dir>/tg-signer.log）",
 )
 @click.option(
     "--log-dir",
-    "log_dir",
     default="logs",
     show_default=True,
     type=click.Path(),
@@ -121,16 +200,12 @@ def run_signers(tasks, num_of_dialogs, folder):
 @click.option(
     "--proxy",
     "-p",
-    "proxy",
-    default=None,
-    show_default=True,
     show_envvar=True,
     envvar="TG_PROXY",
     help="代理地址, 例如: socks5://127.0.0.1:1080, 会覆盖环境变量`TG_PROXY`的值",
 )
 @click.option(
     "--session_dir",
-    "session_dir",
     default=".",
     show_default=True,
     type=click.Path(),
@@ -139,7 +214,6 @@ def run_signers(tasks, num_of_dialogs, folder):
 @click.option(
     "--account",
     "-a",
-    "account",
     default="my_account",
     show_default=True,
     show_envvar=True,
@@ -149,7 +223,6 @@ def run_signers(tasks, num_of_dialogs, folder):
 @click.option(
     "--workdir",
     "-w",
-    "workdir",
     default=".signer",
     show_default=True,
     type=click.Path(),
@@ -157,16 +230,12 @@ def run_signers(tasks, num_of_dialogs, folder):
 )
 @click.option(
     "--session-string",
-    "session_string",
-    default=None,
-    show_default=True,
     show_envvar=True,
     envvar="TG_SESSION_STRING",
     help="Telegram Session String, 会覆盖环境变量`TG_SESSION_STRING`的值",
 )
 @click.option(
     "--in-memory",
-    "in_memory",
     default=False,
     is_flag=True,
     help="是否将session存储在内存中，默认为False，存储在文件",
@@ -244,8 +313,6 @@ def list_folders(obj):
 )
 @click.option(
     "--user-id",
-    "user_id",
-    default=None,
     help="按 user_id 过滤",
 )
 @click.pass_obj
@@ -266,19 +333,19 @@ def list_sign_records(obj, task_name: str | None, limit: int, user_id: str | Non
 
 
 @tg_signer.command(help="登录账号（用于获取session）")
-@click.option(
-    "--num-of-dialogs",
-    "-n",
-    default=50,
-    show_default=True,
-    type=int,
-    help="未指定 --from-folder 时获取最近N个对话",
-)
+@dialogs_option
 @from_folder_option
-@click.pass_obj
-def login(obj, num_of_dialogs, folder):
-    signer = get_signer(None, obj)
-    run_worker(signer, signer.login(num_of_dialogs, folder=folder))
+@click.pass_context
+def login(ctx, num_of_dialogs, folder):
+    signer = get_signer(None, ctx.obj)
+    run_worker(
+        signer,
+        signer.login(
+            dialogs_limit(ctx, folder, num_of_dialogs),
+            folder=folder,
+            interactive=True,
+        ),
+    )
 
 
 @tg_signer.command(help="登出账号并删除session文件")
@@ -290,60 +357,46 @@ def logout(obj):
 
 @tg_signer.command(help="根据任务配置运行签到")
 @click.argument("task_names", nargs=-1)
-@click.option(
-    "--num-of-dialogs",
-    "-n",
-    default=50,
-    show_default=True,
-    type=int,
-    help="未指定 --from-folder 时获取最近N个对话",
-)
+@dialogs_option
 @from_folder_option
-@click.pass_obj
-def run(obj, task_names, num_of_dialogs, folder):
+@click.pass_context
+def run(ctx, task_names, num_of_dialogs, folder):
     if len(task_names) < 1:
         raise click.UsageError("At least one task name is required")
-    run_signers(((task_name, obj) for task_name in task_names), num_of_dialogs, folder)
+    limit = dialogs_limit(ctx, folder, num_of_dialogs)
+    obj = ctx.obj
+    run_in_new_loop(
+        lambda loop: [
+            get_signer(task_name, obj, loop=loop).run(limit, folder=folder)
+            for task_name in task_names
+        ]
+    )
 
 
 @tg_signer.command(help="运行一次签到任务，即使该签到任务今日已执行过")
 @click.argument("task_name", default="my_sign")
-@click.option(
-    "--num-of-dialogs",
-    "-n",
-    "num_of_dialogs",
-    default=50,
-    show_default=True,
-    type=int,
-    help="未指定 --from-folder 时获取最近N个对话",
-)
+@dialogs_option
 @from_folder_option
-@click.pass_obj
-def run_once(obj, task_name, num_of_dialogs, folder):
-    signer = get_signer(task_name, obj)
-    run_worker(signer, signer.run_once(num_of_dialogs, folder=folder))
+@click.pass_context
+def run_once(ctx, task_name, num_of_dialogs, folder):
+    signer = get_signer(task_name, ctx.obj)
+    succeeded = run_worker(
+        signer,
+        signer.run_once(dialogs_limit(ctx, folder, num_of_dialogs), folder=folder),
+    )
+    # 全部 chat 均失败时 normal_run 返回 False(且当天不会重试、也没写记录)。
+    # 必须转成非 0 退出码,否则 cron 只会看到「成功」,漏签完全无声。
+    if succeeded is False:
+        raise click.ClickException(
+            f"任务「{task_name}」本轮所有 chat 均签到失败，未写入今日签到记录"
+        )
 
 
 @tg_signer.command(help='发送一次文本消息, 请确保当前会话已经"见过"该`chat_id`')
-@click.argument(
-    "chat_id",
-    type=str,
-)
+@click.argument("chat_id")
 @click.argument("text")
-@click.option(
-    "--delete-after",
-    "delete_after",
-    type=int,
-    required=False,
-    help="秒, 发送消息后进行删除, 默认不删除, '0'表示立即删除.",
-)
-@click.option(
-    "--message-thread-id",
-    "message_thread_id",
-    type=int,
-    required=False,
-    help="话题ID（message_thread_id）, 不填则发送到非话题会话",
-)
+@delete_after_option
+@message_thread_id_option
 @click.pass_obj
 def send_text(obj, chat_id, text, delete_after=None, message_thread_id=None):
     singer = get_signer(None, obj)
@@ -362,25 +415,10 @@ def send_text(obj, chat_id, text, delete_after=None, message_thread_id=None):
 @tg_signer.command(
     help="发送一次DICE消息, 请确保当前会话已经\"见过\"该`chat_id`。\n注意，`emoji`应该是'🎲', '🎯', '🏀', '⚽', '🎳'或'🎰'之一"
 )
-@click.argument(
-    "chat_id",
-    type=str,
-)
+@click.argument("chat_id")
 @click.argument("emoji")
-@click.option(
-    "--delete-after",
-    "delete_after",
-    type=int,
-    required=False,
-    help="秒, 发送消息后进行删除, 默认不删除, '0'表示立即删除.",
-)
-@click.option(
-    "--message-thread-id",
-    "message_thread_id",
-    type=int,
-    required=False,
-    help="话题ID（message_thread_id）, 不填则发送到非话题会话",
-)
+@delete_after_option
+@message_thread_id_option
 @click.pass_obj
 def send_dice(obj, chat_id, emoji, delete_after=None, message_thread_id=None):
     singer = get_signer(None, obj)
@@ -397,7 +435,7 @@ def send_dice(obj, chat_id, emoji, delete_after=None, message_thread_id=None):
 
 
 @tg_signer.command(help="重新配置")
-@click.argument("task_name", nargs=1, default="my_sign")
+@click.argument("task_name", default="my_sign")
 @click.pass_obj
 def reconfig(obj, task_name):
     signer = UserSigner(task_name=task_name, workdir=obj["workdir"])
@@ -405,8 +443,9 @@ def reconfig(obj, task_name):
 
 
 def parse_chat_id(chat_id: str):
-    if chat_id.startswith("@"):
-        return parse_chat_id_or_username(chat_id)
+    # 只包一次 try：原先 "@" 分支在 try 之外，parse_chat_id("@") 抛的
+    # ValueError("username cannot be empty") 会变成整段 traceback，
+    # 而不是本该给出的用法错误。
     try:
         return parse_chat_id_or_username(chat_id)
     except ValueError as e:
@@ -414,18 +453,12 @@ def parse_chat_id(chat_id: str):
 
 
 @tg_signer.command(help="查询聊天（群或频道）的成员, 频道需要管理员权限")
-@click.option(
-    "--chat_id",
-    "chat_id",
-    required=True,
-    help="整数id或字符串username, username须以@开头",
-)
-@click.option("--admin", "admin", default=False, is_flag=True, help="只列出管理员")
-@click.argument("query", nargs=1, default="")
+@chat_id_option
+@click.option("--admin", default=False, is_flag=True, help="只列出管理员")
+@click.argument("query", default="")
 @click.option(
     "--limit",
     "-l",
-    "limit",
     default=10,
     type=int,
 )
@@ -437,16 +470,10 @@ def list_members(obj, chat_id: str, query: str, admin, limit):
 
 
 @tg_signer.command(help="列出群组话题ID（message_thread_id）")
-@click.option(
-    "--chat_id",
-    "chat_id",
-    required=True,
-    help="整数id或字符串username, username须以@开头",
-)
+@chat_id_option
 @click.option(
     "--limit",
     "-l",
-    "limit",
     default=20,
     show_default=True,
     type=int,
@@ -459,17 +486,12 @@ def list_topics(obj, chat_id: str, limit: int):
     signer.app_run(signer.list_topics(chat_id, limit=limit))
 
 
-@tg_signer.command(
-    help="""导出配置，默认为输出到终端。\n\n e.g.\n\n  tg-signer export -O config.json mytask\n\n  tg-signer export mytask > config.json"""
-)
-@click.argument("task_name")
-@click.option(
-    "--file", "-O", "file", type=click.Path(), default=None, help="导出至该文件"
-)
-@click.pass_obj
-def export(obj, task_name: str, file: str = None):
-    signer = get_signer(task_name, obj)
-    data = signer.export()
+def export_config(config, file):
+    try:
+        data = config.export()
+    except (FileNotFoundError, OSError) as exc:
+        # 与 run/validate 的失败呈现保持一致: 一句 Error 而不是裸 traceback。
+        raise click.ClickException(str(exc)) from exc
     if not file:
         click.echo(data)
     else:
@@ -477,44 +499,49 @@ def export(obj, task_name: str, file: str = None):
             fp.write(data)
 
 
+def import_config(config, file):
+    # 未指定 --file 时从 stdin 读取。用 open_file("-") 而不是
+    # get_text_stream("stdin")：它在 Click 8.5 已弃用、9.0 会移除。
+    with click.open_file(file or "-", "r", encoding="utf-8") as fp:
+        data = fp.read()
+    config.import_(data)
+
+
+@tg_signer.command(
+    help="""导出配置，默认为输出到终端。\n\n e.g.\n\n  tg-signer export -O config.json mytask\n\n  tg-signer export mytask > config.json"""
+)
+@click.argument("task_name")
+@export_file_option
+@click.pass_obj
+def export(obj, task_name: str, file: str = None):
+    signer = get_signer(task_name, obj)
+    export_config(signer, file)
+
+
 @tg_signer.command(
     name="import",
     help="""导入配置，默认为从终端读取。\n\n e.g.\n\n  tg-signer import -I config.json mytask\n\n  cat config.json | tg-signer import mytask""",
 )
 @click.argument("task_name")
-@click.option(
-    "--file", "-I", "file", type=click.Path(), default=None, help="导入该文件"
-)
+@import_file_option
 @click.pass_obj
 def import_(obj, task_name: str, file: str = None):
     signer = get_signer(task_name, obj)
-    if not file:
-        stdin_text = click.get_text_stream("stdin")
-        data = stdin_text.read()
-    else:
-        with click.open_file(file, "r", encoding="utf-8") as fp:
-            data = fp.read()
-    signer.import_(data)
+    import_config(signer, file)
 
 
 @tg_signer.command(help="批量配置Telegram自带的定时发送消息功能")
-@click.argument(
-    "chat_id",
-    type=str,
-)
+@click.argument("chat_id")
 @click.argument("text")
 @click.option(
     "--crontab",
     "-C",
-    "crontab",
-    type=str,
     required=True,
     help=" `crontab`语法, 如'0 0 * * *'表示每天0点发送.",
 )
 @click.option(
     "--next-times",
     "-N",
-    "next_times",
     type=int,
     default=1,
     show_default=True,
@@ -523,19 +550,12 @@ def import_(obj, task_name: str, file: str = None):
 @click.option(
     "--random-seconds",
     "-RS",
-    "random_seconds",
     type=int,
     default=0,
     show_default=True,
     help="加入随机秒数，会应用于每个定时消息",
 )
-@click.option(
-    "--message-thread-id",
-    "message_thread_id",
-    type=int,
-    required=False,
-    help="话题ID（message_thread_id）, 不填则发送到非话题会话",
-)
+@message_thread_id_option
 @click.pass_obj
 def schedule_messages(
     obj, chat_id, text, crontab, next_times, random_seconds, message_thread_id
@@ -555,19 +575,20 @@ def schedule_messages(
 
 
 @tg_signer.command(help="显示已配置的定时消息")
-@click.argument("chat_id", type=str)
+@click.argument("chat_id")
 @click.pass_obj
 def list_schedule_messages(obj, chat_id):
-    logging.root.setLevel(
-        level=logging.WARNING,
-    )
+    # 要压的是 tg-signer 自己的 INFO 日志，不是 root：configure_logger 给该
+    # logger 设了 propagate = False，它的记录根本不会向上冒泡到 root，
+    # 因此 logging.root.setLevel(WARNING) 是一个彻底的空操作（已验证）。
+    logging.getLogger("tg-signer").setLevel(logging.WARNING)
     signer = get_signer(None, obj)
     chat_id = parse_chat_id(chat_id)
     signer.app_run(signer.get_schedule_messages(chat_id))
 
 
 @tg_signer.command(name="multi-run", help="使用一套配置同时运行多个账号")
-@click.argument("task_name", nargs=1, default="my_sign")
+@click.argument("task_name", default="my_sign")
 @click.option(
     "--account",
     "-a",
@@ -576,21 +597,25 @@ def list_schedule_messages(obj, chat_id):
     multiple=True,
     help="多个account，每个account是一个自定义账号名称，对应session文件名为<account>.session",
 )
-@click.option(
-    "--num-of-dialogs",
-    "-n",
-    default=50,
-    show_default=True,
-    type=int,
-    help="未指定 --from-folder 时获取最近N个对话",
-)
+@dialogs_option
 @from_folder_option
-@click.pass_obj
-def multi_run(obj, accounts, task_name, num_of_dialogs, folder):
+@click.pass_context
+def multi_run(ctx, accounts, task_name, num_of_dialogs, folder):
     logger = logging.getLogger("tg-signer")
     logger.info(f"开始使用一套配置({task_name})同时运行多个账号..")
-    tasks = ((task_name, {**obj, "account": account}) for account in accounts)
-    run_signers(tasks, num_of_dialogs, folder)
+    limit = dialogs_limit(ctx, folder, num_of_dialogs)
+    obj = ctx.obj
+
+    def build(loop):
+        coros = []
+        for account in accounts:
+            obj["account"] = account
+            coros.append(
+                get_signer(task_name, obj, loop=loop).run(limit, folder=folder)
+            )
+        return coros
+
+    run_in_new_loop(build)
 
 
 @tg_signer.command(name="llm-config", help="配置大模型API")
@@ -608,13 +633,10 @@ def llm_config(obj):
 )
 @click.option(
     "--legacy-user-id",
-    "legacy_user_id",
-    default=None,
     help="为旧版 signs/<task>/sign_record.json 指定 user_id；未指定时会尝试自动推断",
 )
 @click.option(
     "--delete-json",
-    "delete_json",
     default=False,
     is_flag=True,
     help="迁移成功后删除原 sign_record.json 文件",
@@ -633,41 +655,37 @@ def migrate_sign_records(obj, legacy_user_id: str | None, delete_json: bool):
     if delete_json:
         click.echo(f"删除 JSON 文件数: {summary.removed_files}")
     if summary.skipped_files:
-        click.echo("以下文件未迁移（缺少 user_id，且无法自动推断）:")
+        # skipped_files 现在也包含「读不出来」的文件，原来的固定文案
+        # 「缺少 user_id」会把这些误报成 user_id 问题。
+        click.echo("以下文件未迁移（内容无法解析，或缺少 user_id 且无法自动推断）:")
         for path in summary.skipped_files:
             click.echo(f"  - {path}")
+    if summary.undeleted_files:
+        click.echo("以下文件已迁移，但 JSON 副本未能删除（文件可能仍被占用）:")
+        for path, reason in summary.undeleted_files:
+            click.echo(f"  - {path}: {reason}")
 
 
 @tg_signer.command(
     name="webgui",
     help="启动一个WebGUI（需要通过`pip install tg-signer[gui]`安装相关依赖）",
 )
-@click.option("--host", "-H", "host", default="127.0.0.1", help="监听地址")
-@click.option("--port", "-P", "port", default=8080, help="监听端口")
-@click.option(
-    "--storage-secret",
-    "-S",
-    "storage_secret",
-    default=None,
-    show_default=True,
-    help="存储密钥，若不输入则每次启动会使用随机字符串",
-)
+@click.option("--host", "-H", default="127.0.0.1", help="监听地址")
+@click.option("--port", "-P", default=8080, help="监听端口")
 @click.option(
     "--auth-code",
-    "auth_code",
-    default=None,
-    show_default=True,
     envvar="TG_SIGNER_GUI_AUTHCODE",
     help="授权码，也可通过环境变量`TG_SIGNER_GUI_AUTHCODE`设置。若存在则访问界面时需要正确输入。",
 )
+@click.pass_obj
 def webgui(
+    obj,
     host: str = None,
     port: int = None,
-    storage_secret: str = None,
     auth_code: str = None,
 ):
     from tg_signer.webui import AUTH_CODE_ENV, main
 
     if auth_code:
         os.environ[AUTH_CODE_ENV] = auth_code
-    main(host=host, port=port, storage_secret=storage_secret)
+    main(host=host, port=port, workdir=obj["workdir"])

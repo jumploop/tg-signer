@@ -32,7 +32,13 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 RUN pip config set global.index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple && \
-    pip install /tmp/*.whl && \
-    pip install -U "tg-signer[tgcrypto]"
+    pip install --no-cache-dir /tmp/*.whl
+
+WORKDIR /tmp/tg-signer-src
+COPY pyproject.toml README.md ./
+COPY tg_signer ./tg_signer
+
+RUN pip install --no-cache-dir . && \
+    cd / && rm -rf /tmp/*.whl /tmp/tg-signer-src
 
 WORKDIR /opt/tg-signer

@@ -1,256 +1,382 @@
+import json
 import os
 import pathlib
+import re
+import tempfile
+import time
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Literal
+from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from typing_extensions import TypeAlias
+NumberingLangT: TypeAlias = Literal["arabic", "chinese_simple"]
 
-NumberingLangT: TypeAlias = Literal[
-    "arabic",
-    "chinese_simple",
-    "chinese_traditional",
-    "roman",
-    "roman_lower",
-    "letter_upper",
-    "letter_lower",
-    "greek_upper",
-    "greek_lower",
-    "circled",
-    "parenthesized",
-    "japanese_kanji",
-    "japanese_kana",
-    "arabic_indic",
-    "devanagari",
-    "hebrew",
-    "tian_gan",
-    "di_zhi",
-    "emoji",
-]
 
-numbering_systems: Dict[int, Dict[NumberingLangT, str]] = {
-    # 基础数字
-    1: {
-        "arabic": "1",
-        "chinese_simple": "一",
-        "chinese_traditional": "壹",
-        "roman": "I",
-        "roman_lower": "i",
-        "letter_upper": "A",
-        "letter_lower": "a",
-        "greek_upper": "Α",  # Alpha
-        "greek_lower": "α",
-        "circled": "①",
-        "parenthesized": "⑴",
-        "japanese_kanji": "一",
-        "japanese_kana": "いち",
-        "arabic_indic": "١",  # Arabic numeral 1
-        "devanagari": "१",  # Hindi/Sanskrit
-        "hebrew": "א",  # Aleph
-        "tian_gan": "甲",  # 天干
-        "di_zhi": "子",  # 地支
-        "emoji": "1️⃣",
-    },
-    2: {
-        "arabic": "2",
-        "chinese_simple": "二",
-        "chinese_traditional": "貳",
-        "roman": "II",
-        "roman_lower": "ii",
-        "letter_upper": "B",
-        "letter_lower": "b",
-        "greek_upper": "Β",  # Beta
-        "greek_lower": "β",
-        "circled": "②",
-        "parenthesized": "⑵",
-        "japanese_kanji": "二",
-        "japanese_kana": "に",
-        "arabic_indic": "٢",
-        "devanagari": "२",
-        "hebrew": "ב",  # Bet
-        "tian_gan": "乙",
-        "di_zhi": "丑",
-        "emoji": "2️⃣",
-    },
-    3: {
-        "arabic": "3",
-        "chinese_simple": "三",
-        "chinese_traditional": "叁",
-        "roman": "III",
-        "roman_lower": "iii",
-        "letter_upper": "C",
-        "letter_lower": "c",
-        "greek_upper": "Γ",  # Gamma
-        "greek_lower": "γ",
-        "circled": "③",
-        "parenthesized": "⑶",
-        "japanese_kanji": "三",
-        "japanese_kana": "さん",
-        "arabic_indic": "٣",
-        "devanagari": "३",
-        "hebrew": "ג",  # Gimel
-        "tian_gan": "丙",
-        "di_zhi": "寅",
-        "emoji": "3️⃣",
-    },
-    4: {
-        "arabic": "4",
-        "chinese_simple": "四",
-        "chinese_traditional": "肆",
-        "roman": "IV",
-        "roman_lower": "iv",
-        "letter_upper": "D",
-        "letter_lower": "d",
-        "greek_upper": "Δ",  # Delta
-        "greek_lower": "δ",
-        "circled": "④",
-        "parenthesized": "⑷",
-        "japanese_kanji": "四",
-        "japanese_kana": "し／よん",
-        "arabic_indic": "٤",
-        "devanagari": "४",
-        "hebrew": "ד",  # Dalet
-        "tian_gan": "丁",
-        "di_zhi": "卯",
-        "emoji": "4️⃣",
-    },
-    5: {
-        "arabic": "5",
-        "chinese_simple": "五",
-        "chinese_traditional": "伍",
-        "roman": "V",
-        "roman_lower": "v",
-        "letter_upper": "E",
-        "letter_lower": "e",
-        "greek_upper": "Ε",  # Epsilon
-        "greek_lower": "ε",
-        "circled": "⑤",
-        "parenthesized": "⑸",
-        "japanese_kanji": "五",
-        "japanese_kana": "ご",
-        "arabic_indic": "٥",
-        "devanagari": "५",
-        "hebrew": "ה",  # He
-        "tian_gan": "戊",
-        "di_zhi": "辰",
-        "emoji": "5️⃣",
-    },
-    6: {
-        "arabic": "6",
-        "chinese_simple": "六",
-        "chinese_traditional": "陸",
-        "roman": "VI",
-        "roman_lower": "vi",
-        "letter_upper": "F",
-        "letter_lower": "f",
-        "greek_upper": "Ζ",  # Zeta
-        "greek_lower": "ζ",
-        "circled": "⑥",
-        "parenthesized": "⑹",
-        "japanese_kanji": "六",
-        "japanese_kana": "ろく",
-        "arabic_indic": "٦",
-        "devanagari": "६",
-        "hebrew": "ו",  # Vav
-        "tian_gan": "己",
-        "di_zhi": "巳",
-        "emoji": "6️⃣",
-    },
-    7: {
-        "arabic": "7",
-        "chinese_simple": "七",
-        "chinese_traditional": "柒",
-        "roman": "VII",
-        "roman_lower": "vii",
-        "letter_upper": "G",
-        "letter_lower": "g",
-        "greek_upper": "Η",  # Eta
-        "greek_lower": "η",
-        "circled": "⑦",
-        "parenthesized": "⑺",
-        "japanese_kanji": "七",
-        "japanese_kana": "しち／なな",
-        "arabic_indic": "٧",
-        "devanagari": "७",
-        "hebrew": "ז",  # Zayin
-        "tian_gan": "庚",
-        "di_zhi": "午",
-        "emoji": "7️⃣",
-    },
-    8: {
-        "arabic": "8",
-        "chinese_simple": "八",
-        "chinese_traditional": "捌",
-        "roman": "VIII",
-        "roman_lower": "viii",
-        "letter_upper": "H",
-        "letter_lower": "h",
-        "greek_upper": "Θ",  # Theta
-        "greek_lower": "θ",
-        "circled": "⑧",
-        "parenthesized": "⑻",
-        "japanese_kanji": "八",
-        "japanese_kana": "はち",
-        "arabic_indic": "٨",
-        "devanagari": "८",
-        "hebrew": "ח",  # Het
-        "tian_gan": "辛",
-        "di_zhi": "未",
-        "emoji": "8️⃣",
-    },
-    9: {
-        "arabic": "9",
-        "chinese_simple": "九",
-        "chinese_traditional": "玖",
-        "roman": "IX",
-        "roman_lower": "ix",
-        "letter_upper": "I",
-        "letter_lower": "i",
-        "greek_upper": "Ι",  # Iota
-        "greek_lower": "ι",
-        "circled": "⑨",
-        "parenthesized": "⑼",
-        "japanese_kanji": "九",
-        "japanese_kana": "きゅう／く",
-        "arabic_indic": "٩",
-        "devanagari": "९",
-        "hebrew": "ט",  # Tet
-        "tian_gan": "壬",
-        "di_zhi": "申",
-        "emoji": "9️⃣",
-    },
-    10: {
-        "arabic": "10",
-        "chinese_simple": "十",
-        "chinese_traditional": "拾",
-        "roman": "X",
-        "roman_lower": "x",
-        "letter_upper": "J",
-        "letter_lower": "j",
-        "greek_upper": "Κ",  # Kappa
-        "greek_lower": "κ",
-        "circled": "⑩",
-        "parenthesized": "⑽",
-        "japanese_kanji": "十",
-        "japanese_kana": "じゅう",
-        "arabic_indic": "١٠",
-        "devanagari": "१०",
-        "hebrew": "י",  # Yod
-        "tian_gan": "癸",
-        "di_zhi": "酉",
-        "emoji": "🔟",  # 10的emoji是特殊符号
-    },
-}
+def replace_with_retry(
+    src: pathlib.Path,
+    dst: pathlib.Path,
+    *,
+    attempts: int,
+    delay: float,
+) -> None:
+    """Retry ``os.replace`` on transient Windows file locks."""
+    for attempt in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay * (attempt + 1))
+
+
+def write_json_atomic(
+    path: str | os.PathLike[str],
+    payload,
+    *,
+    fsync: bool = False,
+    attempts: int = 1,
+    delay: float = 0.0,
+    default=None,
+    before_replace=None,
+) -> None:
+    """Write JSON through a same-directory temporary file and atomic replace."""
+    write_text_atomic(
+        path,
+        json.dumps(payload, ensure_ascii=False, indent=2, default=default),
+        fsync=fsync,
+        attempts=attempts,
+        delay=delay,
+        before_replace=before_replace,
+    )
+
+
+def write_text_atomic(
+    path: str | os.PathLike[str],
+    text: str,
+    *,
+    fsync: bool = False,
+    attempts: int = 1,
+    delay: float = 0.0,
+    before_replace=None,
+) -> None:
+    """Write text through a same-directory temporary file and atomic replace."""
+    target = pathlib.Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=target.parent, prefix=f"{target.name}.", suffix=".tmp"
+    )
+    tmp = pathlib.Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fp:
+            fp.write(text)
+            fp.flush()
+            if fsync:
+                os.fsync(fp.fileno())
+        if before_replace is not None:
+            before_replace(tmp)
+        if attempts > 1:
+            replace_with_retry(tmp, target, attempts=attempts, delay=delay)
+        else:
+            os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def message_text(message) -> str:
+    if message is None:
+        return ""
+    return getattr(message, "text", None) or getattr(message, "caption", None) or ""
+
+
+CHINESE_NUMBERS = "一二三四五六七八九十"
 
 DEFAULT_TIMEZONE_NAME = "Asia/Shanghai"
 DEFAULT_TIMEZONE = timezone(timedelta(hours=8), name=DEFAULT_TIMEZONE_NAME)
 
 
 def numbering(num: int, lang: NumberingLangT):
+    if lang == "chinese_simple" and 1 <= num <= len(CHINESE_NUMBERS):
+        return CHINESE_NUMBERS[num - 1]
+    return str(num)
+
+
+def resolve_under(
+    root: str | os.PathLike[str], name: str, *, suffix: str = ""
+) -> pathlib.Path:
+    """把 ``name`` 解析为 ``root`` 下的直接子项,越界即抛 ``ValueError``。
+
+    调用方多是把外部字符串(配置名 / 账号名)直接拼进路径,而部分调用方随后
+    会创建或删除文件,所以 ``name`` 必须是单一路径分量。仅靠 ``resolve()``
+    后的包含性断言不够:``.`` 与空串解析后就是 ``root`` 自身;``.. `` /
+    ``...`` 这类名称会被 Win32 剥离尾随点与空格,变成 ``..``。
+    """
+    invalid = f"名称非法: {name!r}"
+    if not isinstance(name, str) or not name or "\x00" in name:
+        raise ValueError(invalid)
+    if name in (".", "..") or "/" in name or "\\" in name:
+        raise ValueError(invalid)
+    if name != name.rstrip(". "):
+        raise ValueError(invalid)
+    if pathlib.Path(name).is_absolute() or pathlib.Path(name).drive:
+        raise ValueError(invalid)
+    root_path = pathlib.Path(root)
+    target = root_path / f"{name}{suffix}"
+    if target.resolve().parent != root_path.resolve():
+        raise ValueError(invalid)
+    return target
+
+
+def resolve_log_under(
+    root: str | os.PathLike[str], path: str | os.PathLike[str]
+) -> pathlib.Path:
+    """把 ``path`` 解析为 ``root`` 下的 ``*.log``,最多允许一层子目录。
+
+    日志页需要同时支持两类路径:
+    - ``<workdir>/logs/tg-signer.log`` —— WebUI 主进程/主日志
+    - ``<workdir>/logs/<kind>-<account>/tg-signer.log`` —— 按任务隔离的子目录日志
+      (见 ``webui/runner.py``:每个子进程用独立 RotatingFileHandler,否则多个
+      handler 会互相截断同一个文件)
+
+    这里只允许直接子项或一层任务子目录，并强制 ``.log`` 后缀。
+    ``resolve()`` 会展开符号链接,指向 root 之外的软链仍被拒。
+    """
+    raw = os.fspath(path)
+    if not raw or "\x00" in raw:
+        raise ValueError(f"路径非法: {raw!r}")
+    root_path = pathlib.Path(root).resolve()
+    candidate = pathlib.Path(raw).expanduser()
+    if candidate.is_absolute():
+        resolved = candidate.resolve()
+    else:
+        resolved = (root_path / candidate).resolve()
+    # 顶层 logs/x.log 的 parent 就是 root，子目录 logs/<kind>-<account>/x.log
+    # 的 parent 是 root 下的子目录；再深一层（parent.parent.parent）一律拒绝。
+    if resolved.parent != root_path and resolved.parent.parent != root_path:
+        raise ValueError(f"路径越界: {raw!r}")
+    # 先判越界再判后缀：workdir 根下的 *.session_string 属于越界，报「路径越界」
+    # 比报「仅允许读取 .log」更贴近真实原因。
+    if resolved.suffix.lower() != ".log":
+        raise ValueError(f"仅允许读取 .log 文件: {raw!r}")
+    return resolved
+
+
+def restrict_file_permissions(path: str | os.PathLike[str]) -> bool:
+    """把凭据文件收紧为「仅属主可读写」,返回是否实际生效。
+
+    ``*.session_string`` / ``.openai_config.json`` 默认按进程 umask 落盘(常见
+    0644),同机其他用户可直接读到账号凭据与 API Key。Windows 上 ``chmod`` 只
+    影响只读位,所以这里只做 best-effort —— 权限位收紧失败不应该让登录/保存失败。
+    """
+    if os.name != "posix":
+        return False
     try:
-        return numbering_systems[num][lang]
-    except KeyError:
-        return str(num)
+        os.chmod(path, 0o600)
+    except OSError:
+        return False
+    return True
+
+
+# 配置里的正则表达式由用户提供,而 CPython 的 ``re`` 无法中断灾难性回溯
+# (匹配期间不释放 GIL,线程超时也打不断它)。三层护栏:
+#   1. 限制 pattern 与待匹配文本的长度(内存 / 多项式级回溯);
+#   2. 用形状检查挡掉「量词套量词」(star height >= 2),那是指数级回溯的典型形态;
+#   3. 正则非法时统一抛 ValueError。
+# 真正的「超时中断」需要 regex 等第三方库,此处不引入新依赖。
+MAX_REGEX_PATTERN_LENGTH = 512
+MAX_REGEX_SUBJECT_LENGTH = 8 * 1024
+
+# 这些转义匹配的是「一类字符」，不能像字面字符那样钉死匹配位置。
+# 其余转义（`\.` `\$` `\\` `\n` …）匹配确定字符，出现即说明位置已确定。
+_AMBIGUOUS_ESCAPES = frozenset("dDwWsSbBAZG")
+
+
+def _unbounded_quantifier_end(pattern: str, start: int) -> int | None:
+    """若 ``pattern[start:]`` 以「无上限量词」开头则返回其结束下标,否则 None。
+
+    无上限 = ``*`` / ``+`` / ``{n,}``;有上限的 ``?`` / ``{n}`` / ``{n,m}`` 不算
+    —— 它们把重复次数钉死,不会产生指数级回溯。
+    """
+    if start >= len(pattern):
+        return None
+    ch = pattern[start]
+    if ch in "*+":
+        return start + 1
+    if ch == "{":
+        end = pattern.find("}", start)
+        if end == -1:
+            return None
+        body = pattern[start + 1 : end]
+        if body.endswith(",") and body[:-1].isdigit():
+            return end + 1
+    return None
+
+
+def _char_class_end(pattern: str, start: int) -> int:
+    """返回 ``pattern[start] == '['`` 对应字符组的 ``]`` 下标。
+
+    处理 ``[]]``（首字符是字面 ``]``）与 ``[\\]]``（转义）两种情况；
+    找不到闭合 ``]`` 时返回末尾下标。
+    """
+    index = start + 1
+    if pattern[index : index + 1] == "^":
+        index += 1
+    if pattern[index : index + 1] == "]":
+        index += 1
+    while index < len(pattern):
+        ch = pattern[index]
+        if ch == "\\":
+            index += 2
+            continue
+        if ch == "]":
+            return index
+        index += 1
+    return len(pattern) - 1
+
+
+def _atom_classes_overlap(left, right) -> bool:
+    """两个被无上限量词作用的原子是否会竞争同一段文本。
+
+    只认「明显重叠」的几种：同类、任一方是 ``.``、任一方是反向字符组（``[^…]``，
+    几乎匹配所有字符）。``\\w+\\s*`` 这类类别互斥的写法必须放行，否则
+    ``\\w+\\s*=\\s*\\w+`` 这种正常正则会被人为拒绝。
+    """
+    if left is None or right is None:
+        return False
+    if left == right:
+        return True
+    for atom in (left, right):
+        if atom[0] in ("dot", "neg"):
+            return True
+    return False
+
+
+def has_superlinear_quantifier(pattern: str) -> bool:
+    """粗判 ``pattern`` 是否存在超线性回溯的危险形状。
+
+    两类：
+
+    1. **嵌套无上限量词**（star height >= 2）—— ``(a+)+$``、``(\\d*)*``、
+       ``(a+b)+`` 是指数级回溯，27 个字符就能卡死约 24 秒。
+    2. **同一层里紧挨着的无上限量词** —— ``\\d+\\d+$``、``\\w+\\w+``、``.*.*``
+       是二次回溯，2000 字符 12.8s，而 Telegram 允许 4096 字符的单条消息。
+
+    这是启发式（不是完整解析）。判断「紧挨着」时只看中间有没有能钉死位置的
+    字符：``a+b+``、``\\d+\\.\\d+`` 中间的字面字符能钉死位置，所以放行；
+    ``\\d+`` 后面的 ``\\d``/``.``/字符组仍可能重复匹配同一段文本，所以拦下。
+    因此 ``(a+)?``、``(\\d{2,4})+``、``(?:\\d{1,3}\\.){3}\\d{1,3}`` 这类常见
+    写法不会被误伤。
+    """
+    # groups[i] 表示第 i 层「当前所在分组」内是否已经出现过无上限量词。
+    groups: list[bool] = [False]
+    # quant_atom[i]：当前层里最后一个**贪婪无上限量词**所作用的原子类别。
+    # 若下一个无上限量词作用在可能重复匹配同一段文本的类别上（同类、`.`、
+    # 反向字符组），就是二次回溯；None 表示位置已被字面字符钉死。
+    quant_atom: list[object] = [None]
+    # last_atom[i]：当前层里最近一个原子的类别，供上面的比较使用。
+    last_atom: list[object] = [None]
+    index = 0
+    while index < len(pattern):
+        ch = pattern[index]
+        if ch == "\\":
+            nxt = pattern[index + 1 : index + 2]
+            if nxt in _AMBIGUOUS_ESCAPES:
+                last_atom[-1] = ("esc", nxt.lower())
+            else:
+                # `\.` `\$` `\\` 等匹配确定字符，钉死了匹配位置。
+                last_atom[-1] = ("lit", nxt)
+                quant_atom[-1] = None
+            index += 2
+            continue
+        if ch == "[":
+            close = _char_class_end(pattern, index)
+            body = pattern[index + 1 : close]
+            if body.startswith("^"):
+                last_atom[-1] = ("neg",)
+            else:
+                last_atom[-1] = ("cls", frozenset(body))
+            index = close + 1
+            continue
+        if ch == "(":
+            groups.append(False)
+            quant_atom.append(None)
+            last_atom.append(None)
+            index += 1
+            continue
+        if ch == ")":
+            if len(groups) > 1:
+                inner = groups.pop()
+                quant_atom.pop()
+                last_atom.pop()
+                end = _unbounded_quantifier_end(pattern, index + 1)
+                if end is not None:
+                    if inner:
+                        return True
+                    # 组整体被无上限量词重复,对父层而言也算「含无上限量词」。
+                    groups[-1] = True
+                    index = end
+                    continue
+                # `)` 后面没有量词时,这一组的内容仍然属于父层,必须把
+                # 「组内已出现无上限量词」的事实继承给父组。
+                # 原先这条分支把 inner 直接丢弃,于是多包一层括号就能绕过:
+                # `((a+))+$` 与 `(a+)+$` 语义完全相同,却不再被拦下 ——
+                # 而 CPython 的 re 在回溯期间不释放 GIL 也无法中断,
+                # 27 个字符的文本就能把事件循环卡住约 24 秒。
+                groups[-1] = groups[-1] or inner
+                # 分组的内容类别无法在此简单归约，保守起见不参与相邻判定。
+                last_atom[-1] = None
+                quant_atom[-1] = None
+            index += 1
+            continue
+        end = _unbounded_quantifier_end(pattern, index)
+        if end is not None and index > 0:
+            # 同一层里两个「挨着的」无上限量词若可能匹配同一段文本，就是二次
+            # 回溯，同样足以卡死事件循环：`\d+\d+$` 在 2000 字符上要 12.8s，
+            # 而 Telegram 允许 4096 字符的单条消息 —— 约 53s。由于 re 在回溯
+            # 期间不放 GIL 也无法中断，整个 automation 引擎（所有账号、所有
+            # 定时器、pyrogram 的 update 分发）都会停摆。
+            atom = last_atom[-1]
+            if _atom_classes_overlap(quant_atom[-1], atom):
+                return True
+            # 惰性量词（`+?`）优先匹配最少数量的文本，不产生这种回溯。
+            quant_atom[-1] = None if pattern[end : end + 1] == "?" else atom
+            groups[-1] = True
+            index = end
+            continue
+        if ch == ".":
+            # `.` 能匹配任意字符（默认不匹配换行，但仍与绝大多数类别重叠）。
+            last_atom[-1] = ("dot",)
+        else:
+            # 确定的字面字符钉死了位置，后续量词不会重复匹配同一段文本。
+            last_atom[-1] = ("lit", ch)
+            quant_atom[-1] = None
+        index += 1
+    return False
+
+
+def safe_regex_search(pattern: str, text: str, *, flags: int = 0) -> re.Match | None:
+    """``re.search`` 的长度受限 + 形状受限包装,返回值语义与 ``re.search`` 一致。
+
+    正则非法、过长、或含嵌套无上限量词(可能指数级回溯)时统一抛 ``ValueError``,
+    方便调用方用一处异常处理覆盖所有情况。超长的待匹配文本会被截断而不是拒绝
+    —— 只影响尾部匹配,不会静默漏掉靠前的匹配结果。
+    """
+    if not isinstance(pattern, str):
+        raise ValueError(f"正则必须是字符串: {pattern!r}")
+    if len(pattern) > MAX_REGEX_PATTERN_LENGTH:
+        raise ValueError(
+            f"正则过长({len(pattern)} > {MAX_REGEX_PATTERN_LENGTH}),已跳过匹配"
+        )
+    if has_superlinear_quantifier(pattern):
+        raise ValueError(
+            f"正则含嵌套无上限量词,可能灾难性回溯,已跳过匹配: {pattern[:64]!r}"
+        )
+    subject = text if isinstance(text, str) else str(text or "")
+    if len(subject) > MAX_REGEX_SUBJECT_LENGTH:
+        subject = subject[:MAX_REGEX_SUBJECT_LENGTH]
+    try:
+        return re.search(pattern, subject, flags=flags)
+    except re.error as exc:
+        raise ValueError(f"正则非法: {pattern!r} ({exc})") from exc
 
 
 def _load_timezone_from_file(path: str | os.PathLike[str]):
@@ -280,15 +406,16 @@ def _load_timezone(name: str | None):
             return tz
     try:
         return ZoneInfo(candidate)
-    except ZoneInfoNotFoundError:
+    # 除 ZoneInfoNotFoundError 外，某些 key（如 ".."、"C:\\..."）会抛
+    # ValueError("ZoneInfo keys must refer to subdirectories of TZPATH")。
+    # get_timezone() 在每个自动化 tick 上都会调用，一个写错的 TZ 不该让整个
+    # 任务崩掉，走文档里的兜底链即可。
+    except (ZoneInfoNotFoundError, ValueError):
         return None
 
 
 def _get_local_timezone():
-    local_tz = datetime.now().astimezone().tzinfo
-    if local_tz is not None:
-        return local_tz
-    return None
+    return datetime.now().astimezone().tzinfo
 
 
 def get_timezone():
@@ -306,25 +433,18 @@ def get_now():
 
 
 class UserInput:
-    def __init__(self, index: int = 1, numbering_lang: NumberingLangT = "arabic"):
-        self.index = index
+    def __init__(self, numbering_lang: NumberingLangT = "arabic"):
+        self.index = 1
         self.numbering_lang = numbering_lang
 
-    def incr(self, n: int = 1):
-        self.index += n
-
-    def decr(self, n: int = 1):
-        self.index -= n
+    def incr(self):
+        self.index += 1
 
     @property
     def index_str(self):
         return f"{numbering(self.index, self.numbering_lang)}. "
 
-    def __call__(self, prompt: str = None):
+    def __call__(self, prompt: str):
         r = input(f"{self.index_str}{prompt}")
-        self.incr(1)
+        self.incr()
         return r
-
-
-def print_to_user(*args, sep=" ", end="\n", flush=False, **kwargs):
-    return print(*args, sep=sep, end=end, flush=flush, **kwargs)

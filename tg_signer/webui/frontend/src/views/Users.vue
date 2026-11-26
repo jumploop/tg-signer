@@ -1,0 +1,121 @@
+<template>
+  <el-card shadow="never">
+    <div class="ts-intro">
+      <div>
+        <span class="ts-section-label">用户信息</span>
+        <p class="ts-section-caption">查看本地缓存的账户资料与最近对话，不触发 Telegram 网络请求。</p>
+      </div>
+      <el-button :loading="loading" @click="refresh">刷新</el-button>
+    </div>
+    <div class="ts-callout users-note">
+      <el-icon><InfoFilled /></el-icon>
+      <span>数据来源：当前工作目录下的 <code>users/*/me.json</code> 与最近对话缓存。</span>
+    </div>
+    <div class="ts-table-heading">
+      <span>已缓存账户</span>
+      <span class="ts-table-heading__meta">{{ users.length }} 个账户</span>
+    </div>
+    <el-table v-loading="loading" :data="users">
+      <el-table-column prop="user_id" label="User ID" width="140" />
+      <el-table-column label="名称">
+        <template #default="{ row }">
+          <div class="user-cell">
+            <span class="user-avatar">{{ userInitial(row) }}</span>
+            <span>{{ row.data.first_name || row.data.username || '-' }}</span>
+          </div>
+        </template>
+      </el-table-column>
+      <el-table-column label="最新对话数" width="120">
+        <template #default="{ row }">
+          <el-tag size="small" effect="plain">{{ row.latest_chats.length }} 个</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="120">
+        <template #default="{ row }">
+          <el-button size="small" @click="showChats(row)">查看对话</el-button>
+        </template>
+      </el-table-column>
+      <template #empty>
+        <el-empty description="暂无用户信息（读取 users/*/me.json）" :image-size="60" />
+      </template>
+    </el-table>
+
+    <el-dialog
+      v-model="dialogVisible"
+      :title="'对话列表 - ' + (currentUser?.data.first_name || currentUser?.user_id)"
+      width="640px"
+    >
+      <el-table :data="currentChats" max-height="400">
+        <el-table-column prop="id" label="ID" width="140" />
+        <el-table-column prop="title" label="标题" />
+        <el-table-column prop="type" label="类型" width="120" />
+        <el-table-column prop="username" label="用户名" />
+      </el-table>
+    </el-dialog>
+  </el-card>
+</template>
+
+<script setup>
+import { ref, computed, onMounted } from 'vue'
+import { InfoFilled } from '@element-plus/icons-vue'
+import { useList } from '../api'
+
+const {
+  list: users,
+  loading,
+  refresh,
+} = useList('/api/users', '用户信息加载失败')
+const dialogVisible = ref(false)
+const currentUser = ref(null)
+const currentChats = computed(() => currentUser.value?.latest_chats || [])
+
+onMounted(refresh)
+
+function showChats(row) {
+  currentUser.value = row
+  dialogVisible.value = true
+}
+
+function userInitial(row) {
+  const name = row.data.first_name || row.data.username || String(row.user_id)
+  return name.slice(0, 1).toUpperCase()
+}
+</script>
+
+<style scoped>
+.ts-intro {
+  margin-bottom: 14px;
+}
+.users-note {
+  align-items: center;
+  margin-bottom: 24px;
+}
+.users-note code {
+  font-family: var(--el-font-family-mono);
+  font-size: 11px;
+}
+.user-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 600;
+}
+.user-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  background: var(--ts-sky-soft);
+  color: var(--ts-sky);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+@media (max-width: 600px) {
+  .users-note {
+    align-items: flex-start;
+  }
+}
+</style>

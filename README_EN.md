@@ -9,12 +9,13 @@
 - Use AI for image recognition and click the matching keyboard button
 - Monitor personal, group, and channel messages, then forward or auto-reply
 - Execute action flows based on configuration
+- Automation rule engine (message/timer/startup triggers + handler chains)
 
   **...**
 
 ### Installation
 
-Requires Python 3.10 or above.
+Requires Python 3.11 or above.
 
 ```sh
 pip install -U tg-signer
@@ -26,6 +27,12 @@ Or install the performance extras:
 pip install "tg-signer[speedup]"
 ```
 
+To enable YAML configuration support:
+
+```sh
+pip install "tg-signer[yaml]"
+```
+
 #### WebUI
 
 `tg-signer` also ships with a WebUI. Install it with:
@@ -35,6 +42,9 @@ pip install "tg-signer[gui]"
 ```
 
 ![webgui](./assets/webui.jpeg)
+
+The WebUI includes account management (login/logout), config management (Signer / Automation config editing and the interactive config wizard; LLM API config lives on the "LLM connection" page under the workdir), group selection, user info, sign records and log pages. The account page can log in to obtain a session and log out to delete session files; the group selection page lists cached groups/channels and can quickly fill them into signer or automation configs.
+The WebUI uses a front-end/back-end separated architecture: the backend is FastAPI (REST API + static file hosting) and the frontend is Vue 3 (source in `tg_signer/webui/frontend/`). You do not need to build the frontend yourself - the package installed via `pip install "tg-signer[gui]"` already contains the built assets. To modify the frontend, run `npm install && npm run build` inside `tg_signer/webui/frontend/`; the output goes to `tg_signer/webui/static/`.
 
 ### Docker
 
@@ -65,8 +75,8 @@ Options:
   -l, --log-level [debug|info|warn|error]
                                   Log level: `debug`, `info`, `warn`, `error`
                                   [default: info]
-  --log-file PATH                 Log file path, can be relative  [default: logs/tg-
-                                  signer.log]
+  --log-file PATH                 Log file path, can be relative (defaults to
+                                  `<log-dir>/tg-signer.log`)
   --log-dir PATH                  Log directory, can be relative  [default: logs]
   -p, --proxy TEXT                Proxy address, for example:
                                   socks5://127.0.0.1:1080. Overrides the
@@ -100,7 +110,6 @@ Commands:
   migrate-sign-records    Migrate check-in records from JSON to SQLite (keeps the
                           original files by default)
   logout                  Log out and delete the session file
-  monitor                 Configure and run monitoring
   multi-run               Run multiple accounts with a shared configuration
   reconfig                Reconfigure
   run                     Run check-in tasks based on task configuration
@@ -136,10 +145,22 @@ tg-signer list-members --chat_id -1001680975844 --admin  # List channel admins
 tg-signer list-topics --chat_id -1003763902761 --limit 50  # List group topics and message_thread_id
 tg-signer schedule-messages --crontab '0 0 * * *' --next-times 10 -- -1001680975844 hello  # Send a message to '-1001680975844' at 00:00 for the next 10 days
 tg-signer schedule-messages --crontab '0 0 * * *' --next-times 3 --message-thread-id 1 -- -1003763902761 hello  # Configure scheduled messages for a group topic
-tg-signer monitor run  # Configure and run personal/group/channel message monitoring and auto reply
 tg-signer multi-run -a account_a -a account_b same_task  # Run 'account_a' and 'account_b' using the same 'same_task' config
 tg-signer webgui --auth-code averycomplexcode  # Start the WebGUI
 ```
+
+When `--auth-code` is set, 5 consecutive wrong attempts lock the login for 60 seconds.
+
+The WebGUI listens on `127.0.0.1` by default and is only reachable locally when no auth code is set. To expose it on `--host 0.0.0.0` (or any non-loopback address) you **must** also pass `--auth-code` or set `TG_SIGNER_GUI_AUTHCODE`; otherwise startup is refused, because an unauthenticated WebGUI can read local files and operate your accounts.
+
+The WebGUI "work directory" can only be switched within a limited range: by default the **parent** of the work directory it was started with. Targets outside that range are rejected and no directory is created. The work directory decides where plugins are loaded from (`<workdir>/handlers/*.py`) and what the child processes can read and write. If you really need other locations, list the allowed roots in `TG_SIGNER_WEBUI_WORKDIR_ROOTS` (separated by the platform path separator):
+
+```sh
+export TG_SIGNER_WEBUI_WORKDIR_ROOTS=/srv/tg-signer:/mnt/backup
+tg-signer webgui
+```
+
+The API key on the "LLM connection" page is only returned as a mask (e.g. `****1234`); the plaintext secret never reaches the browser. Leaving the field blank — or keeping the returned mask as-is — means "do not change the stored key", and "Test connection" falls back to the stored key when the field is blank.
 
 ### Configure a Proxy (Optional)
 
@@ -164,6 +185,20 @@ Follow the prompts to enter your phone number and verification code. The command
 will print your recent chats, so make sure the chat you want to use for
 check-ins is included.
 
+Running tasks (`run` / `run-once` / `multi-run` / `automation run`) reuses an existing valid session file directly, so no re-login is required.
+You only need to log in (via `tg-signer login` or the WebUI "Account" page) when
+the session is missing or invalid.
+
+For WebUI account login, enter the phone number with its country code (for
+example `+8613800138000`). Telegram may deliver the code through the Telegram
+service chat on an already logged-in device, by SMS, or by phone call; the page
+shows which channel was used, and "Resend" switches to the next channel if the
+code does not arrive. If it says the account name already has a valid session,
+no code is sent: use another account name or log out that account first. If the
+API ID is rejected, create your own credentials at
+[my.telegram.org](https://my.telegram.org) and set `TG_API_ID` /
+`TG_API_HASH` before restarting the WebUI.
+
 Signer `chat_id` also supports integer IDs and `@`-prefixed usernames such as
 `@neo`.
 
@@ -181,11 +216,12 @@ tg-signer login --from-folder 2
 ```
 
 `--from-folder` discovers chats from the folder and is also available on `run`,
-`run-once`, `multi-run`, `automation run`, and `monitor run`. When specified,
-all manually included or pinned chats in the folder are loaded and
-`--num-of-dialogs` is ignored. Folders whose membership is generated from
-dynamic rules such as contacts, bots, groups, or channels are not supported;
-use a regular folder containing only manually added chats.
+`run-once`, `multi-run`, and `automation run`. By default all manually included
+or pinned chats in the folder are loaded; if `--num-of-dialogs` is given
+explicitly, the list is truncated to that limit (`0` means no limit). Folders
+whose membership is generated from dynamic rules such as contacts, bots,
+groups, or channels are not supported; use a regular folder containing only
+manually added chats.
 
 ### Time Zone
 
@@ -198,6 +234,13 @@ time zone in the following order:
 
 If you need schedules to follow a specific time zone, set `TZ` before starting
 the process.
+
+> On Windows the time zone database comes from the `tzdata` pip package (installed
+> automatically with this project). If you cannot confirm that `TZ` is being
+> honoured in your environment, run
+> `python -c "from tg_signer.utils import get_timezone; print(get_timezone())"`
+> and check that it prints the expected zone rather than UTC — a silently ignored
+> time zone shifts every scheduled task.
 
 ### Get Group Topic IDs
 
@@ -289,195 +332,37 @@ Daily check-in time (time or crontab expression, such as '06:00:00' or '0 6 * * 
 Random time deviation in seconds (default is 0): 300
 ```
 
-### Configure and Run Monitoring
+When the task actually runs:
+
+- On startup, if **today's** scheduled time has already passed, it signs once immediately (catch-up); if it has not arrived yet, it **waits for that time** instead of signing early (otherwise the same day would be signed twice).
+- A non-daily crontab (e.g. `0 6 * * 1`, Mondays only) only signs on matching days; on other days nothing is signed.
+- The day is recorded as done only when **every** chat has signed successfully. On a partial success nothing is recorded: the round is retried after 60 seconds, and only the **failed** chats are retried (chats that already succeeded are not messaged twice). After 3 consecutive retries the record is written anyway and an ERROR names exactly which chats did not sign, so the task does not spin until tomorrow. When every chat fails, the day is likewise not recorded and the round is retried at most 3 times.
+- Use `tg-signer run-once <task>` to force an immediate run; on a partial failure it honestly reports failure (non-zero exit code) without retrying.
+
+### Monitoring Has Been Removed
+
+`tg-signer monitor` and `<workdir>/monitors/` are gone. Use `tg-signer automation`
+for message monitoring, forwarding, and auto reply:
 
 ```sh
-tg-signer monitor run my_monitor
+tg-signer automation init my_auto
+# Edit .signer/automations/my_auto/config.json
+tg-signer automation run my_auto
 ```
 
-Then follow the prompts.
+Migration map:
 
-#### Example
+| Old monitor concept | automation equivalent |
+| --- | --- |
+| Monitor item `chat_id` + matching rule | `message` trigger + `filters` (`text_rule` / `text_value` / `from_user_ids`) |
+| Default reply text | `send_text` handler |
+| AI reply | `ai_reply` handler |
+| Regex extraction of reply text | `extract_regex` handler (extract to a variable) + `send_text` (send with the `{var}` template) |
+| Forward to a chat | `forward` handler |
+| Forward to an external target (UDP / HTTP) | `external_forward` handler |
+| ServerChan push | `server_chan` handler |
 
-```text
-Start configuring task <my_monitor>
-Both chat IDs and user IDs support either integer IDs or string usernames. Usernames must start with @, such as @neo.
-
-Configure monitor item 1
-1. Chat ID (the ID shown in the recent chats output during login): -4573702599
-2. Match rule ('exact', 'contains', 'regex', 'all'): contains
-3. Rule value (required): kfc
-4. Only match messages from specific user IDs (comma-separated; press Enter to match all): @neo
-5. Default text to send: V Me 50
-6. Regex used to extract the text to send from the message:
-7. Delete the sent message after N seconds (wait N seconds after sending before deleting; enter '0' for immediate deletion, or press Enter to keep it), N:
-Continue configuring? (y/N): y
-
-Configure monitor item 2
-1. Chat ID (the ID shown in the recent chats output during login): -4573702599
-2. Match rule ('exact', 'contains', 'regex'): regex
-3. Rule value (required): Participation keyword: 「.*?」
-4. Only match messages from specific user IDs (comma-separated; press Enter to match all): 61244351
-5. Default text to send:
-6. Regex used to extract the text to send from the message: Participation keyword: 「(?P<keyword>(.*?))」\n
-7. Text template to send (supports {extracted}/{group1}/named groups; press Enter if not needed): Join {keyword}
-8. Delete the sent message after N seconds (wait N seconds after sending before deleting; enter '0' for immediate deletion, or press Enter to keep it), N: 5
-Continue configuring? (y/N): y
-
-Configure monitor item 3
-1. Chat ID (the ID shown in the recent chats output during login): -4573702599
-2. Match rule (exact, contains, regex, all): all
-3. Only match messages from specific user IDs (comma-separated; press Enter to match all):
-4. Always ignore messages sent by yourself (y/N): y
-5. Default text to send (press Enter if not needed):
-6. Use AI to reply? (y/N): n
-7. Regex used to extract the text to send from the message (press Enter if not needed):
-8. Push messages through ServerChan? (y/N): n
-9. Forward to external endpoints (UDP, HTTP)? (y/N): y
-10. Forward to UDP? (y/N): y
-11. Enter the UDP server address and port (for example `127.0.0.1:1234`): 127.0.0.1:9999
-12. Forward to HTTP? (y/N): y
-13. Enter the HTTP endpoint (for example `http://127.0.0.1:1234`): http://127.0.0.1:8000/tg/user1/messages
-Continue configuring? (y/N): n
-```
-
-#### Explanation
-
-1. Both `chat_id` and `user_id` support integer IDs and string usernames.
-   Usernames must start with `@`, so use `@neo` instead of `neo`. Note that a
-   username may not exist. In the example above, `chat_id=-4573702599` means the
-   rule only applies to that chat.
-
-2. Matching rules are currently all case-insensitive:
-
-   1. `exact` means exact match. The message content must equal the configured
-      value.
-
-   2. `contains` means substring matching. For example, if `contains="kfc"`,
-      the message `"I like MacDonalds rather than KfC"` still matches.
-
-   3. `regex` means regular expression matching. See
-      [Python regular expressions](https://docs.python.org/3/library/re.html).
-      A match is triggered as soon as the pattern is found anywhere in the
-      message. In the example above, `Participation keyword: 「.*?」` can match
-      a message like:
-
-      `A new lottery has been created... Participation keyword: 「I want to join」`
-
-      `Please DM the bot first`
-
-   4. You can restrict matches to messages from specific users only, for
-      example, group admins instead of any random participant.
-
-   5. You can configure a default outgoing text, meaning the configured text is
-      sent immediately whenever a message matches.
-
-   6. You can extract outgoing text with a regex such as
-      `Participation keyword: 「(?P<keyword>.*?)」\n`. Use parentheses `(...)` to
-      capture the text you want. That pattern can extract `I want to join` from
-      the example in step 3 and send it automatically. If you configure a send
-      text template, use `{extracted}` or `{group1}` for the first capture group,
-      or a named group such as `{keyword}`. For example, `Join {keyword}` sends
-      `Join I want to join`.
-
-3. The `Message` structure looks like this:
-
-```json
-{
-    "_": "Message",
-    "id": 2950,
-    "from_user": {
-        "_": "User",
-        "id": 123456789,
-        "is_self": false,
-        "is_contact": false,
-        "is_mutual_contact": false,
-        "is_deleted": false,
-        "is_bot": false,
-        "is_verified": false,
-        "is_restricted": false,
-        "is_scam": false,
-        "is_fake": false,
-        "is_support": false,
-        "is_premium": false,
-        "is_contact_require_premium": false,
-        "is_close_friend": false,
-        "is_stories_hidden": false,
-        "is_stories_unavailable": true,
-        "is_business_bot": false,
-        "first_name": "linux",
-        "status": "UserStatus.ONLINE",
-        "next_offline_date": "2025-05-30 11:52:40",
-        "username": "linuxdo",
-        "dc_id": 5,
-        "phone_number": "*********",
-        "photo": {
-            "_": "ChatPhoto",
-            "small_file_id": "AQADBQADqqcxG6hqrTMAEAIAA6hqrTMABLkwVDcqzBjAAAQeBA",
-            "small_photo_unique_id": "AgADqqcxG6hqrTM",
-            "big_file_id": "AQADBQADqqcxG6hqrTMAEAMAA6hqrTMABLkwVDcqzBjAAAQeBA",
-            "big_photo_unique_id": "AgADqqcxG6hqrTM",
-            "has_animation": false,
-            "is_personal": false
-        },
-        "added_to_attachment_menu": false,
-        "inline_need_location": false,
-        "can_be_edited": false,
-        "can_be_added_to_attachment_menu": false,
-        "can_join_groups": false,
-        "can_read_all_group_messages": false,
-        "has_main_web_app": false
-    },
-    "date": "2025-05-30 11:47:46",
-    "chat": {
-        "_": "Chat",
-        "id": -52737131599,
-        "type": "ChatType.GROUP",
-        "is_creator": true,
-        "is_deactivated": false,
-        "is_call_active": false,
-        "is_call_not_empty": false,
-        "title": "Test Group",
-        "has_protected_content": false,
-        "members_count": 4,
-        "permissions": {
-            "_": "ChatPermissions",
-            "can_send_messages": true,
-            "can_send_media_messages": true,
-            "can_send_other_messages": true,
-            "can_send_polls": true,
-            "can_add_web_page_previews": true,
-            "can_change_info": true,
-            "can_invite_users": true,
-            "can_pin_messages": true,
-            "can_manage_topics": true
-        }
-    },
-    "from_offline": false,
-    "show_caption_above_media": false,
-    "mentioned": false,
-    "scheduled": false,
-    "from_scheduled": false,
-    "edit_hidden": false,
-    "has_protected_content": false,
-    "text": "test, hello",
-    "video_processing_pending": false,
-    "outgoing": false
-}
-```
-
-#### Example Runtime Output
-
-```text
-[INFO] [tg-signer] 2024-10-25 12:29:06,516 core.py 458 Starting monitoring...
-[INFO] [tg-signer] 2024-10-25 12:29:37,034 core.py 439 Matched monitor item: MatchConfig(chat_id=-4573702599, rule=contains, rule_value=kfc), default_send_text=V me 50, send_text_search_regex=None
-[INFO] [tg-signer] 2024-10-25 12:29:37,035 core.py 442 Sending text: V me 50
-[INFO] [tg-signer] 2024-10-25 12:30:02,726 core.py 439 Matched monitor item: MatchConfig(chat_id=-4573702599, rule=regex, rule_value=参与关键词：「.*?」), default_send_text=None, send_text_search_regex=参与关键词：「(?P<keyword>(.*?))」\n
-[INFO] [tg-signer] 2024-10-25 12:30:02,727 core.py 442 Sending text: 我要抽奖
-[INFO] [tg-signer] 2024-10-25 12:30:03,001 core.py 226 Message "我要抽奖" to -4573702599 will be deleted after 5 seconds.
-[INFO] [tg-signer] 2024-10-25 12:30:03,001 core.py 229 Waiting...
-[INFO] [tg-signer] 2024-10-25 12:30:08,260 core.py 232 Message "我要抽奖" to -4573702599 deleted!
-```
+See [docs/automation_usage.md](docs/automation_usage.md) for details.
 
 ### Changelog
 
@@ -492,13 +377,14 @@ run `tree .signer`, you will see:
 .signer
 ├── .openai_config.json  # Optional LLM configuration
 ├── data.sqlite3  # SQLite check-in record database
-├── monitors  # Monitor tasks
-│   ├── my_monitor  # Monitor task name
-│       └── config.json  # Monitor configuration
 ├── users
 │   └── 123456789
 │       ├── latest_chats.json  # Recently fetched chats
 │       └── me.json  # Personal profile
+├── automations  # Automation rules
+│   └── my_auto  # Automation task name
+│       ├── config.json  # Automation configuration
+│       └── state.json  # Runtime state
 └── signs  # Check-in tasks
     └── linuxdo  # Check-in task name
         ├── config.json  # Check-in configuration
@@ -506,7 +392,7 @@ run `tree .signer`, you will see:
         │   └── sign_record.json  # Legacy JSON check-in records (still supported for migration)
         └── sign_record.json  # Even older JSON path (still supported for migration)
 
-5 directories, 6 files
+8 directories, 9 files
 ```
 
 After migrating to SQLite, new check-in records are written only to

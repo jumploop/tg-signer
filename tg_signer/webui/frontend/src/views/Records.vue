@@ -1,0 +1,119 @@
+<template>
+  <el-card shadow="never">
+    <div class="ts-intro">
+      <div>
+        <span class="ts-section-label">签到历史</span>
+        <p class="ts-section-caption">按任务查看签到日期、执行时间和历史记录数量。</p>
+      </div>
+      <el-button :loading="loading" @click="refresh">刷新</el-button>
+    </div>
+    <div class="record-metrics">
+      <div class="record-metric">
+        <span class="ts-metric-value">{{ records.length }}</span>
+        <span class="ts-metric-label">任务数</span>
+      </div>
+      <div class="record-metric">
+        <span class="ts-metric-value">{{ totalRecords }}</span>
+        <span class="ts-metric-label">签到记录</span>
+      </div>
+      <div class="record-filter">
+      <el-input
+        v-model="filterText"
+        placeholder="按任务名过滤"
+        clearable
+      />
+      </div>
+    </div>
+    <div class="ts-table-heading">
+      <span>任务记录</span>
+      <span class="ts-table-heading__meta">当前显示 {{ filtered.length }} 个任务</span>
+    </div>
+    <el-table v-loading="loading" :data="filtered">
+      <el-table-column prop="task" label="任务" />
+      <el-table-column prop="user_id" label="User ID" width="140" />
+      <el-table-column label="记录数" width="100">
+        <template #default="{ row }">{{ row.records.length }}</template>
+      </el-table-column>
+      <el-table-column label="最近签到" width="200">
+        <template #default="{ row }">
+          <!-- records 两路数据源（SQLite sign_date DESC / JSON reverse=True）均最新在前 -->
+          <template v-if="row.records.length">
+            {{ row.records[0].sign_date }}
+            {{ row.records[0].signed_at }}
+          </template>
+          <span v-else>-</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="记录" min-width="280">
+        <template #default="{ row }">
+          <div v-for="record in row.records" :key="record.sign_date" class="rec">
+            <code>{{ record.sign_date }}</code> → {{ record.signed_at }}
+          </div>
+        </template>
+      </el-table-column>
+      <template #empty>
+        <el-empty description="暂无签到记录，运行签到任务后在此查看" :image-size="60" />
+      </template>
+    </el-table>
+  </el-card>
+</template>
+
+<script setup>
+import { ref, computed, onMounted } from 'vue'
+import { useList } from '../api'
+
+const {
+  list: records,
+  loading,
+  refresh,
+} = useList('/api/records', '签到记录加载失败')
+const filterText = ref('')
+const filtered = computed(() =>
+  records.value.filter((record) => !filterText.value || record.task.includes(filterText.value))
+)
+const totalRecords = computed(() =>
+  records.value.reduce((sum, record) => sum + record.records.length, 0)
+)
+
+onMounted(refresh)
+</script>
+
+<style scoped>
+.record-metrics {
+  display: grid;
+  grid-template-columns: 150px 150px minmax(220px, 1fr);
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.record-metric,
+.record-filter {
+  min-height: 68px;
+  padding: 13px 15px;
+  border: 1px solid var(--ts-line);
+  border-radius: 12px;
+  background: #FAFCFF;
+}
+.record-metric {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+}
+.record-filter {
+  display: flex;
+  align-items: center;
+}
+.record-filter :deep(.el-input) {
+  width: 100%;
+}
+@media (max-width: 700px) {
+  .record-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .record-filter {
+    grid-column: 1 / -1;
+  }
+}
+
+</style>
