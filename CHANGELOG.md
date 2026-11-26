@@ -430,6 +430,14 @@
 - 修复 WebUI 登录日志文件滚动、账号数据持久化、Schema 校验与初始化等若干问题
 - 测试覆盖 WebUI 账号、鉴权、数据、日志与自动化动作
 
+### 0.9.2
+
+- 固定依赖 `kurigram==2.2.27`，适配新版事件循环接口，修复登录和任务启动失败的问题（#145）
+- 使用 `ForumTopic.name` 输出话题名称，修复登录和查询话题时的字段访问错误
+- 修复登出时客户端尚未初始化导致会话无法清理的问题
+- 保留省略端口的代理配置，SOCKS4/5 默认使用 `1080`，HTTP 默认使用 `8080`
+- 修复计算题答案带引号时无法匹配 InlineKeyboard 按钮的问题（#144）
+
 ### 0.9.0
 - 新增 `list-folders` 和 `--from-folder`，支持从 Telegram 普通对话 Folder 加载手动添加的对话
 - 兼容 Kurigram 同步与异步论坛话题解析接口
@@ -539,6 +547,11 @@
 - Support captcha flows where the image and InlineKeyboard buttons are sent as separate messages for `ChooseOptionByImageAction`
 - Fix several WebUI issues including login log file rotation, account data persistence, schema validation, and initialization
 - Add/update unit tests covering WebUI accounts, auth, data, logs, and automation actions
+- Pin `kurigram==2.2.27` and adapt to its event loop changes to fix login and task startup failures (#145)
+- Read topic names from `ForumTopic.name` to fix topic output during login and topic queries
+- Initialize the connected client before logout so session cleanup can complete
+- Preserve proxy URLs without an explicit port by defaulting SOCKS4/5 to `1080` and HTTP to `8080`
+- Fix InlineKeyboard button matching when calculation answers contain surrounding quotes (#144)
 
 ### 0.9.0
 - Add `list-folders` and `--from-folder` to load manually added chats from regular Telegram folders

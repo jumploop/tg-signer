@@ -36,6 +36,7 @@ from pyrogram.storage.sqlite_storage import SQLiteStorage
 from pyrogram.types import (
     Chat,
     Folder,
+    ForumTopic,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
@@ -74,6 +75,7 @@ from .utils import (
 logger = logging.getLogger("tg-signer")
 
 DICE_EMOJIS = ("🎲", "🎯", "🏀", "⚽", "🎳", "🎰")
+_PROXY_DEFAULT_PORTS = {"socks4": 1080, "socks5": 1080, "http": 8080}
 
 # Kurigram 2.2.27 移除了 ``Client(loop=...)`` 参数，改由 ``start()`` 记录当前
 # 运行中的 loop。这里按实际签名决定是否透传，避免在 2.2.19 ~ 2.2.26 上丢失
@@ -239,9 +241,11 @@ def chat_has_forum_topics(chat: Chat) -> bool:
     )
 
 
-def readable_topic(topic) -> str:
+def readable_topic(topic: ForumTopic) -> str:
+    # Kurigram 2.2.27 起 ForumTopic 使用 ``name``；旧版本/测试替身仍用 ``title``。
+    title = getattr(topic, "name", None) or getattr(topic, "title", None) or "-"
     return (
-        f"message_thread_id: {topic.id}, title: {topic.title or '-'}, "
+        f"message_thread_id: {topic.id}, title: {title}, "
         f"closed: {bool(getattr(topic, 'is_closed', False))}, "
         f"pinned: {bool(getattr(topic, 'is_pinned', False))}"
     )
@@ -395,9 +399,10 @@ class Client(SafeGetForumTopics, BaseClient):
         return self.session_string
 
     async def log_out(self):
-        await super().log_out()
+        result = await super().log_out()
         if self.session_string_file.is_file():
             os.remove(self.session_string_file)
+        return result
 
 
 DEFAULT_API_ID = 611335
@@ -432,7 +437,7 @@ def get_proxy(proxy: str = None):
         return {
             "scheme": r.scheme,
             "hostname": r.hostname,
-            "port": r.port,
+            "port": r.port or _PROXY_DEFAULT_PORTS.get(r.scheme),
             "username": r.username,
             "password": r.password,
         }
@@ -465,6 +470,24 @@ def get_client(
     )
     _CLIENT_INSTANCES[key] = client
     return client
+
+
+def make_dirs(path: pathlib.Path, exist_ok=True):
+    path = pathlib.Path(path)
+    if not path.is_dir():
+        os.makedirs(path, exist_ok=exist_ok)
+    return path
+
+
+def get_event_loop() -> asyncio.AbstractEventLoop:
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = None
+    if loop is None or loop.is_closed():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop
 
 
 ConfigT = TypeVar("ConfigT", bound=BaseJSONConfig)
@@ -570,6 +593,8 @@ class BaseUserWorker(Generic[ConfigT]):
         self._proxy = proxy
         if workdir:
             self._workdir = pathlib.Path(workdir)
+        if loop is None:
+            loop = get_event_loop()
         self.app = get_client(
             account,
             proxy,
@@ -859,6 +884,7 @@ class BaseUserWorker(Generic[ConfigT]):
             _LOGIN_USERS.pop(self.app.key, None)
             self.user = None
             return None
+        await self.app.initialize()
         result = await self.app.log_out()
         _LOGIN_USERS.pop(self.app.key, None)
         self.user = None
@@ -1718,7 +1744,24 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             answer = answer.strip()
             self.log(f"回答为: {answer}")
             if option_to_btn:
-                target_btn = option_to_btn.get(_normalize_option_text(answer))
+                normalized_answer = _normalize_option_text(answer)
+                target_btn = option_to_btn.get(normalized_answer)
+                if not target_btn:
+                    # 保留原样匹配的优先级，兼容模型为答案添加成对引号。
+                    for opening, closing in [
+                        ('"', '"'),
+                        ("'", "'"),
+                        ("“", "”"),
+                        ("‘", "’"),
+                        ("`", "`"),
+                    ]:
+                        if (
+                            len(normalized_answer) >= 2
+                            and normalized_answer.startswith(opening)
+                            and normalized_answer.endswith(closing)
+                        ):
+                            target_btn = option_to_btn.get(normalized_answer[1:-1])
+                            break
                 if not target_btn:
                     self.log("未找到匹配的按钮", level="WARNING")
                     return False

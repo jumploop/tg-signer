@@ -10,6 +10,8 @@ from typing import get_args
 
 import pytest
 from pydantic import ValidationError
+from pyrogram.enums import ChatType
+from pyrogram.types import Chat, Message, User
 
 from tg_signer.automation.engine import (
     MESSAGE_TRIGGER_TYPE,
@@ -147,9 +149,9 @@ def test_numeric_string_from_user_id_actually_matches(tmp_path):
 
 def test_match_filter_variants(tmp_path):
     worker = make_worker(tmp_path)
-    chat = DummyChat(id=1, username="room")
-    user = DummyUser(id=2, username="Neo", is_self=False)
-    msg = DummyMessage(text="Hello World", chat=chat, from_user=user)
+    chat = Chat(type=ChatType.GROUP, id=1, username="room")
+    user = User(id=2, username="Neo", is_self=False)
+    msg = Message(id=1, text="Hello World", chat=chat, from_user=user)
 
     assert worker._match_filter(
         FilterConfig(text_rule="contains", text_value="world", ignore_case=True),
@@ -233,11 +235,11 @@ def test_match_filter_caps_regex_subject_length(tmp_path):
 
 def test_match_message_trigger_and_user(tmp_path):
     worker = make_worker(tmp_path)
-    chat = DummyChat(id=1, username="room")
-    me = DummyUser(id=99, username="me", is_self=True)
-    other = DummyUser(id=2, username="neo", is_self=False)
-    replied = DummyMessage(text="hi", chat=chat, from_user=me)
-    msg = DummyMessage(text="ok", chat=chat, from_user=other, reply_to_message=replied)
+    chat = Chat(type=ChatType.GROUP, id=1, username="room")
+    me = User(id=99, username="me", is_self=True)
+    other = User(id=2, username="neo", is_self=False)
+    replied = Message(id=1, text="hi", chat=chat, from_user=me)
+    msg = Message(id=1, text="ok", chat=chat, from_user=other, reply_to_message=replied)
 
     trigger = MessageTriggerConfig(
         type="message", params={"chat_id": 1, "reply_to_me": True}
@@ -261,8 +263,8 @@ def test_match_message_trigger_and_user(tmp_path):
 
 def test_match_chat_ids_and_username(tmp_path):
     worker = make_worker(tmp_path)
-    chat = DummyChat(id=1, username="room")
-    msg = DummyMessage(text="ok", chat=chat)
+    chat = Chat(type=ChatType.GROUP, id=1, username="room")
+    msg = Message(id=1, text="ok", chat=chat)
 
     assert worker._match_chat(msg, 1, None)
     assert worker._match_chat(msg, "@room", None)
@@ -429,7 +431,9 @@ async def test_on_edited_message_matches_message_trigger(tmp_path):
         events.append((rule.id, event.type, event.chat_id))
 
     worker._run_rule = fake_run_rule  # type: ignore[method-assign]
-    msg = DummyMessage(text="edited", chat=DummyChat(id=1, username="room"))
+    msg = Message(
+        id=1, text="edited", chat=Chat(type=ChatType.GROUP, id=1, username="room")
+    )
 
     await worker.on_edited_message(None, msg)
     await worker.drain()

@@ -167,6 +167,8 @@ The API key on the "LLM connection" page is only returned as a mask (e.g. `****1
 `tg-signer` does not read the system proxy. Use the `TG_PROXY` environment
 variable or the `--proxy` argument instead.
 
+If the port is omitted, SOCKS4/5 defaults to `1080` and HTTP defaults to `8080`.
+
 For example:
 
 ```sh
