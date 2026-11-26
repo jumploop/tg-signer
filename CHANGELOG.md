@@ -1,6 +1,27 @@
 # Changelog / 版本变动日志
 
 ## 版本变动日志
+### 0.10.20
+发布 WebUI 账号登录验证码修复，并同步上游 `amchii/tg-signer` 最新代码。
+
+**fix: WebUI 账号页登录收不到验证码**
+- 兼容 `kurigram 2.2.27` 移除的 `Client(loop=...)` 参数，避免发码前直接 `TypeError`
+- 账号名已有 session 时不再误报「验证码已发送」
+- 展示验证码投递方式并支持重新发送，复用同一登录会话
+- 补充 Telegram 登录错误提示、README 说明与回归测试
+
+**同步上游（`32550a1`、`28cf9d9`、`fb035a9`、`cc05ae9`）**
+- 适配 Kurigram 2.2.27 的事件循环变化：新增 `get_event_loop()`，同时保留本地对 `loop` 的兼容传递
+- 登出前先 `initialize()` 客户端，确保 session 清理完成
+- 话题标题优先读取 `ForumTopic.name`，兼容旧版 `title`
+- 代理地址省略端口时，SOCKS4/5 默认 `1080`、HTTP 默认 `8080`
+- 计算题答案带成对引号时仍能匹配到对应按钮（#144）
+- 引入上游离线 Telegram 测试设施 `tests/telegram.py` 与 `tests/test_telegram_integration.py`
+
+**保留本地行为**
+- 版本号、`AGENTS.md`、CLI 事件循环收场（`run_in_new_loop` 关闭 loop、兄弟任务 cancel）与本地回归用例保持原样
+- `pyproject.toml` 依赖固定为 `kurigram==2.2.27`
+
 ### 0.10.19
 第十、十一轮 ponytail 审计（异常/并发边界、CLI 与配置交界、前端样式重复；时间/数值边界、WebUI 路径与鉴权、CLI 退出码、文档示例），外加四处用户可见的行为修复与一处默认值统一（前端 `static/` 已随源码重新构建）。
 
