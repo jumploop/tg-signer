@@ -6,6 +6,7 @@ import json
 import logging
 import pathlib
 import shutil
+import sqlite3
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -30,6 +31,10 @@ logger = logging.getLogger("tg-signer")
 # Client。用户 send_code 之后中途放弃(关页面 / 不发验证码)时这些资源没人回收,
 # 所以给会话加 TTL,由下一次调用顺手淘汰。
 LOGIN_SESSION_TTL_SECONDS = 10 * 60
+# 扫码会话如果连续这么久没人轮询状态，基本可以确定用户已经关掉弹窗。
+# 这类会话会一直握着 <account>.session（以及 -journal），后续任何「获取最近
+# 对话 / 登出」都会撞上 database is locked，所以必须主动回收。
+QR_IDLE_TIMEOUT_SECONDS = 2 * 60
 # LOGIN_SESSIONS 由 FastAPI 线程池并发读写(每个请求一个线程),所有访问都要过锁。
 _LOGIN_SESSIONS_LOCK = threading.Lock()
 LOGIN_SESSIONS: Dict[str, "_AccountLoginSession"] = {}
@@ -158,6 +163,18 @@ def _format_login_error(exc: Exception) -> str:
     return str(exc) or exc.__class__.__name__
 
 
+def _is_locked_error(exc: BaseException) -> bool:
+    """判断是否是 SQLite 的 ``database is locked``。"""
+    return isinstance(exc, sqlite3.OperationalError) and "locked" in str(exc).lower()
+
+
+_LOCKED_SESSION_MESSAGE = (
+    "该账号的 session 文件正被其它进程占用（database is locked），通常是该账号的"
+    "任务仍在运行，或另一个 WebUI 实例正在使用同一份 session。请先停止该账号的"
+    "任务后重试；也可以点「读取缓存」查看上次登录时缓存的对话列表。"
+)
+
+
 def _account_path(account: str, workdir, suffix: str = "") -> pathlib.Path:
     """返回 ``<workdir>/<account><suffix>``,账号名越界时抛 ``ValueError``。
 
@@ -264,6 +281,8 @@ class _AccountLoginSession:
         self.qr_state = "idle"
         self.qr_message = ""
         self.qr_task: Optional[asyncio.Task] = None
+        # 前端每次轮询 qr-status 都会刷新，用来判断扫码会话是否已被放弃。
+        self.last_seen = time.monotonic()
         self._lock = threading.Lock()
         self.loop = asyncio.new_event_loop()
         # 线程排在 get_client 之后再启动：get_client() 可能抛（session 文件不可用、
@@ -514,6 +533,7 @@ class _AccountLoginSession:
                     await self.qr.recreate()
                 except Exception as exc:  # noqa: BLE001
                     self._qr_fail(exc)
+                    await self._close_client()
                     return
                 self._refresh_qr()
                 continue
@@ -525,6 +545,7 @@ class _AccountLoginSession:
                 raise
             except Exception as exc:  # noqa: BLE001
                 self._qr_fail(exc)
+                await self._close_client()
                 return
             if user is None:
                 continue
@@ -532,8 +553,13 @@ class _AccountLoginSession:
                 self.qr_message = await self._persist_login(user)
             except Exception as exc:  # noqa: BLE001
                 self._qr_fail(exc)
+                await self._close_client()
                 return
             self.qr_state = "ok"
+            # 登录已落盘就立刻断开 client：否则它持有的 session SQLite 文件
+            # （以及 -journal）会一直锁着，用户紧接着去「获取群组」就会撞上
+            # database is locked。状态保留，前端轮询仍能读到 ok。
+            await self._close_client()
             return
 
     def _qr_fail(self, exc: Exception) -> None:
@@ -547,6 +573,8 @@ class _AccountLoginSession:
         )
 
     def qr_status(self) -> Dict[str, Any]:
+        # 前端每 2 秒轮询一次，这里刷新心跳；停止轮询即视为用户放弃了这次登录。
+        self.last_seen = time.monotonic()
         remaining = 0
         if self.qr_expires_at:
             remaining = max(0, int(self.qr_expires_at - time.monotonic() + 0.999))
@@ -558,6 +586,13 @@ class _AccountLoginSession:
             "url": self.qr_url,
             "svg": self.qr_svg if self.qr_state == "pending" else "",
         }
+
+    def is_abandoned(self, now: Optional[float] = None) -> bool:
+        """扫码会话长时间没人轮询 = 用户已关掉弹窗，可以安全回收。"""
+        if self.qr_state != "pending":
+            return False
+        now = time.monotonic() if now is None else now
+        return now - self.last_seen > QR_IDLE_TIMEOUT_SECONDS
 
     def start_qr(self) -> Dict[str, Any]:
         with self._lock:
@@ -594,6 +629,7 @@ class _AccountLoginSession:
             return "error", str(exc)
         self.qr_state = "ok"
         self.qr_message = message
+        await self._close_client()
         return "ok", message
 
     def submit_qr_password(self, password: str) -> Tuple[str, str]:
@@ -656,6 +692,7 @@ def prune_login_sessions() -> List[str]:
             account
             for account, session in LOGIN_SESSIONS.items()
             if now - session.created_at > LOGIN_SESSION_TTL_SECONDS
+            or getattr(session, "is_abandoned", lambda _now: False)(now)
         ]
         sessions = [LOGIN_SESSIONS.pop(account, None) for account in expired]
     closed: List[str] = []
@@ -698,6 +735,25 @@ def _login_lock(account: str) -> threading.Lock:
             lock = threading.Lock()
             _LOGIN_LOCKS[account] = lock
         return lock
+
+
+def _release_login_session(account: str) -> bool:
+    """关闭并移除某账号的登录会话，返回是否真的关掉了一个。
+
+    登录会话（尤其是扫码登录）会一直持有 ``<account>.session``。同账号的
+    「获取最近对话 / 登出」如果再开一个连接，SQLite 会直接报
+    ``database is locked``（实测 WebUI 进程会同时握着 session 与 -journal）。
+    这两个操作开始前先把登录会话收掉。
+    """
+    with _LOGIN_SESSIONS_LOCK:
+        session = LOGIN_SESSIONS.pop(account, None)
+    if session is None:
+        return False
+    try:
+        session.close()
+    except Exception:  # noqa: BLE001
+        pass
+    return True
 
 
 def _open_session(account: str, workdir) -> "_AccountLoginSession":
@@ -871,15 +927,67 @@ async def is_account_authorized(account: str, workdir) -> Tuple[bool, str]:
     return False, f"{account} 未登录或 session 无效，请先在“账号管理”登录"
 
 
+_CONNECT_RETRY_DELAYS: Tuple[float, ...] = (0.5, 1.0)
+
+
+async def _connect_with_retry(client) -> bool:
+    """连接 client；session 文件被短暂占用时退避重试。
+
+    Pyrogram 的 SQLiteStorage 用 ``sqlite3.connect(timeout=1)``，且启动时会写
+    session 表，碰到另一个连接正在提交就很容易直接抛 ``database is locked``。
+    这里按 ``_CONNECT_RETRY_DELAYS`` 退避重试；长期占用仍然抛出，由调用方
+    转成可读提示。
+    """
+    delays = _CONNECT_RETRY_DELAYS
+    for attempt in range(len(delays) + 1):
+        try:
+            return await client.connect()
+        except sqlite3.OperationalError as exc:
+            if not _is_locked_error(exc) or attempt >= len(delays):
+                raise
+            delay = delays[attempt]
+            logger.info(
+                "session 文件被占用，%.1fs 后重试连接 (%d/%d)",
+                delay,
+                attempt + 1,
+                len(delays) + 1,
+            )
+            await asyncio.sleep(delay)
+    raise AssertionError("unreachable")
+
+
+async def _release_client(client) -> None:
+    """断开 client 并彻底关闭它的 storage。
+
+    ``connect()`` 在 storage 已打开、但后续步骤失败时抛异常，此时
+    ``is_connected`` 仍是 False；只按它判断就会漏掉 ``storage.close()``，
+    本进程继续占着 session 文件（以及 -journal），下一次连接直接 locked。
+    """
+    try:
+        if client.is_connected:
+            await client.disconnect()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        await client.storage.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def fetch_dialogs(
     account: str, workdir, limit: int = 50
 ) -> Tuple[bool, str, List[Dict[str, Any]]]:
     """通过指定账号实时获取最近对话，不写入本地缓存。"""
     workdir = pathlib.Path(workdir)
+    # 登录会话会一直握着 <account>.session（含 -journal），不先释放就再开一个
+    # 连接必然 database is locked —— 这正是「刚登录完去获取群组就报错」的成因。
+    prune_login_sessions()
+    if _release_login_session(account):
+        logger.info("获取对话前释放了该账号的登录会话: %s", account)
     client = _new_client(account, workdir)
     chats: List[Dict[str, Any]] = []
     try:
-        authorized = await client.connect()
+        authorized = await _connect_with_retry(client)
         if not authorized:
             return (
                 False,
@@ -890,13 +998,12 @@ async def fetch_dialogs(
         async for dialog in client.get_dialogs(limit=limit):
             chats.append(chat_to_dict(dialog.chat))
     except Exception as exc:  # noqa: BLE001
+        if _is_locked_error(exc):
+            logger.warning("获取最近对话时 session 被占用: account=%s", account)
+            return False, _LOCKED_SESSION_MESSAGE, chats
         return False, f"获取最近对话失败: {exc}", chats
     finally:
-        try:
-            if client.is_connected:
-                await client.disconnect()
-        except Exception:  # noqa: BLE001
-            pass
+        await _release_client(client)
     name = (
         getattr(me, "first_name", None)
         or getattr(me, "username", None)
@@ -914,6 +1021,9 @@ async def logout_account(account: str, workdir) -> str:
         # _new_client(...).connect()，为一个不存在的账号发起真实 Telegram 连接
         # —— 既是无意义的外联，也会在无网络时把请求拖到超时。
         return f"{account} 未登录或 session 不存在，无需登出"
+    # 登录会话同样握着 session 文件，不释放就登出会撞 database is locked。
+    prune_login_sessions()
+    _release_login_session(account)
     client = _new_client(account, workdir)
     failed: Optional[str] = None
     try:
@@ -925,11 +1035,7 @@ async def logout_account(account: str, workdir) -> str:
     except Exception as exc:  # noqa: BLE001
         failed = str(exc)
     finally:
-        try:
-            if client.is_connected:
-                await client.disconnect()
-        except Exception:  # noqa: BLE001
-            pass
+        await _release_client(client)
     # 本地清理放在异常处理之后，而不是 finally：
     # Telegram 侧登出失败（FloodWait / 断网 / session 被吊销）时，API 会如实
     # 返回失败，而清理动作此前在 finally 里无条件执行 —— 用户看到「登出失败」

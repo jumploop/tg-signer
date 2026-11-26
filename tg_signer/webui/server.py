@@ -150,14 +150,45 @@ def require_auth(
         raise HTTPException(status_code=401, detail="未授权或授权码错误")
 
 
+async def _reap_login_sessions_forever() -> None:
+    """定期回收过期 / 被放弃的登录会话。
+
+    登录会话持有 ``<account>.session``（含 -journal）。用户关掉登录弹窗后
+    不会再调用任何登录接口，TTL 就没有触发点 —— WebUI 进程会一直握着该文件，
+    随后「获取最近对话 / 登出」直接撞 ``database is locked``。
+    """
+    while True:
+        await asyncio.sleep(30)
+        try:
+            closed = await asyncio.to_thread(account_mod.prune_login_sessions)
+        except Exception:  # noqa: BLE001
+            logger.warning("回收登录会话失败", exc_info=True)
+            continue
+        if closed:
+            logger.info("已回收过期的登录会话: %s", closed)
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     data_mod._setup_webui_logger(state.workdir)
-    yield
-    # 关闭服务时终止受管子进程，避免遗留孤儿进程。
-    stopped = runner_mod.shutdown_all()
-    if stopped:
-        print(f"WebUI 关闭，已停止任务进程: {stopped}")
+    reaper = asyncio.create_task(_reap_login_sessions_forever())
+    try:
+        yield
+    finally:
+        reaper.cancel()
+        try:
+            await reaper
+        except asyncio.CancelledError:
+            pass
+        # 退出前释放登录会话持有的 session 文件，避免下次启动时残留 -journal。
+        try:
+            account_mod.close_all_login_sessions()
+        except Exception:  # noqa: BLE001
+            logger.warning("关闭登录会话失败", exc_info=True)
+        # 关闭服务时终止受管子进程，避免遗留孤儿进程。
+        stopped = runner_mod.shutdown_all()
+        if stopped:
+            print(f"WebUI 关闭，已停止任务进程: {stopped}")
 
 
 # docs_url/redoc_url/openapi_url 全部关闭：FastAPI 默认无条件公开

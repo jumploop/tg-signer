@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -308,6 +309,12 @@ class _FakeLoginSession:
         with account._LOGIN_SESSIONS_LOCK:
             if account.LOGIN_SESSIONS.get(self.account) is self:
                 account.LOGIN_SESSIONS.pop(self.account, None)
+
+    def is_abandoned(self, now=None):
+        if getattr(self, "qr_state", "idle") != "pending":
+            return False
+        now = time.monotonic() if now is None else now
+        return now - getattr(self, "last_seen", now) > account.QR_IDLE_TIMEOUT_SECONDS
 
 
 @pytest.fixture()
@@ -746,3 +753,135 @@ def test_send_code_message_points_to_qr_when_no_fallback(monkeypatch, tmp_path):
 def test_send_code_unavailable_error_explains_qr_fallback():
     message = account._format_login_error(SimpleNamespace(ID="SEND_CODE_UNAVAILABLE"))
     assert "二维码登录" in message
+
+
+# ---------------------------------------------------------------------------
+# session 文件占用（database is locked）
+#
+# 回归：登录会话（尤其是扫码登录）在登录完成后仍握着 <account>.session 和
+# -journal，用户紧接着点「获取群组」就会拿到 database is locked。
+# ---------------------------------------------------------------------------
+
+
+class _DialogsClient:
+    is_connected = True
+
+    def __init__(self, connect_error=None):
+        self.connect_error = connect_error
+        self.connect_calls = 0
+
+    async def connect(self):
+        self.connect_calls += 1
+        if self.connect_error is not None:
+            raise self.connect_error
+        return True
+
+    async def get_me(self):
+        return SimpleNamespace(id=1, first_name="测试账号", username=None)
+
+    async def get_dialogs(self, limit):
+        yield SimpleNamespace(
+            chat=SimpleNamespace(
+                id=-1001,
+                title="测试频道",
+                type="channel",
+                username=None,
+                first_name=None,
+                last_name=None,
+            )
+        )
+
+    async def disconnect(self):
+        self.is_connected = False
+
+
+@pytest.mark.asyncio
+async def test_fetch_dialogs_releases_login_session_first(
+    clean_login_sessions, monkeypatch, tmp_path
+):
+    """取对话前必须先收掉该账号的登录会话，否则 SQLite 被占。"""
+    session = _FakeLoginSession("acc")
+    with account._LOGIN_SESSIONS_LOCK:
+        account.LOGIN_SESSIONS["acc"] = session
+    monkeypatch.setattr(account, "_new_client", lambda *_args: _DialogsClient())
+
+    ok, _message, chats = await account.fetch_dialogs("acc", tmp_path, 5)
+
+    assert ok
+    assert len(chats) == 1
+    assert session.close_calls == 1
+    with account._LOGIN_SESSIONS_LOCK:
+        assert "acc" not in account.LOGIN_SESSIONS
+
+
+@pytest.mark.asyncio
+async def test_fetch_dialogs_reports_locked_session_clearly(monkeypatch, tmp_path):
+    monkeypatch.setattr(account, "_CONNECT_RETRY_DELAYS", (0.0, 0.0))
+    monkeypatch.setattr(
+        account,
+        "_new_client",
+        lambda *_args: _DialogsClient(
+            connect_error=sqlite3.OperationalError("database is locked")
+        ),
+    )
+
+    ok, message, chats = await account.fetch_dialogs("acc", tmp_path, 5)
+
+    assert not ok
+    assert chats == []
+    assert "database is locked" in message
+    assert "读取缓存" in message
+
+
+@pytest.mark.asyncio
+async def test_connect_with_retry_recovers_from_transient_lock(monkeypatch):
+    monkeypatch.setattr(account, "_CONNECT_RETRY_DELAYS", (0.0, 0.0))
+
+    class _Flaky:
+        def __init__(self):
+            self.calls = 0
+
+        async def connect(self):
+            self.calls += 1
+            if self.calls < 3:
+                raise sqlite3.OperationalError("database is locked")
+            return True
+
+    client = _Flaky()
+    assert await account._connect_with_retry(client) is True
+    assert client.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_connect_with_retry_does_not_swallow_other_errors(monkeypatch):
+    monkeypatch.setattr(account, "_CONNECT_RETRY_DELAYS", (0.0,))
+
+    class _Broken:
+        async def connect(self):
+            raise sqlite3.OperationalError("unable to open database file")
+
+    with pytest.raises(sqlite3.OperationalError, match="unable to open"):
+        await account._connect_with_retry(_Broken())
+
+
+def test_prune_login_sessions_reaps_abandoned_qr_session(clean_login_sessions):
+    """关掉扫码弹窗后没人再轮询，会话必须被主动回收，不能一直占着 session。"""
+    session = _FakeLoginSession("qr")
+    session.qr_state = "pending"
+    session.last_seen = time.monotonic() - account.QR_IDLE_TIMEOUT_SECONDS - 1
+    with account._LOGIN_SESSIONS_LOCK:
+        account.LOGIN_SESSIONS["qr"] = session
+
+    assert account.prune_login_sessions() == ["qr"]
+    assert session.close_calls == 1
+
+
+def test_prune_login_sessions_keeps_actively_polled_qr_session(clean_login_sessions):
+    session = _FakeLoginSession("qr")
+    session.qr_state = "pending"
+    session.last_seen = time.monotonic()
+    with account._LOGIN_SESSIONS_LOCK:
+        account.LOGIN_SESSIONS["qr"] = session
+
+    assert account.prune_login_sessions() == []
+    assert session.close_calls == 0
